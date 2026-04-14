@@ -42,7 +42,6 @@ class TaskMessage:
     QUEU_NAME: str
     RECIPE_PATH: str
     IMG_LIST: list[str]
-    sent_at: str
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize as dictionary for JSON body."""
@@ -53,7 +52,6 @@ class TaskMessage:
             "QUEU_NAME": self.QUEU_NAME,
             "RECIPE_PATH": self.RECIPE_PATH,
             "IMG_LIST": self.IMG_LIST,
-            "sent_at": self.sent_at,
         }
 
 

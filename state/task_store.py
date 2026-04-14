@@ -103,7 +103,6 @@ class TaskStore(QObject):
     ) -> list[TaskMessage]:
         """Create outbound task messages for not-yet-sent requests."""
 
-        now_iso = datetime.now(timezone.utc).isoformat()
         messages: list[TaskMessage] = []
         for task in self._tasks.values():
             if task.status != TaskStatus.PENDING:
@@ -115,7 +114,6 @@ class TaskStore(QObject):
                     QUEU_NAME=result_queue_name,
                     RECIPE_PATH=recipe_path,
                     IMG_LIST=[task.image_path],
-                    sent_at=now_iso,
                 )
             )
         return messages

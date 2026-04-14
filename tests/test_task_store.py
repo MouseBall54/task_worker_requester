@@ -29,6 +29,12 @@ class TaskStoreTest(unittest.TestCase):
         )
         self.assertEqual(len(messages), 3)
         self.assertTrue(all(len(message.IMG_LIST) == 1 for message in messages))
+        payload_keys = set(messages[0].to_dict().keys())
+        self.assertEqual(
+            payload_keys,
+            {"request_id", "action", "QUEU_NAME", "RECIPE_PATH", "IMG_LIST"},
+        )
+        self.assertNotIn("sent_at", payload_keys)
 
     def test_apply_result_updates_summary(self) -> None:
         messages = self.store.build_pending_messages("RUN", "result.q", "r.json")
@@ -87,6 +93,8 @@ class TaskStoreTest(unittest.TestCase):
         self.assertEqual(preview["connection"]["host"], "127.0.0.1")
         self.assertEqual(preview["message"]["request_id"], message.request_id)
         self.assertEqual(preview["payload"]["expected"]["request_id"], message.request_id)
+        self.assertNotIn("sent_at", preview["payload"]["expected"])
+        self.assertNotIn("sent_at", preview["payload"]["published"])
 
 
 if __name__ == "__main__":

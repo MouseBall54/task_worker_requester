@@ -33,6 +33,24 @@ uv run python main.py config/app_config.yaml
 - 실제 서버 사용 시 `mock_mode: false` 로 변경 후 `rabbitmq` 섹션을 설정하세요.
 - `publish.recipe_presets`에 `alias/path`를 등록하면 UI에는 별명이 표시되고 전송에는 실제 path가 사용됩니다.
 
+## 요청 메시지 형식
+
+현재 MQ 요청 payload는 아래 5개 키로 고정됩니다.
+
+```json
+{
+  "request_id": "3dc7831b-7c4b-45f1-b5cb-f00e6952f6d5",
+  "action": "RUN_RECIPE",
+  "QUEU_NAME": "task.result.client.a1b2c3d4",
+  "RECIPE_PATH": "recipes/default_recipe.json",
+  "IMG_LIST": ["D:/data/folder_a/img001.jpg"]
+}
+```
+
+- 이미지 1건당 메시지 1건으로 전송되며 `IMG_LIST` 길이는 항상 `1`입니다.
+- `message_id`, `correlation_id`, `reply_to`는 각각 `request_id`, `request_id`, `QUEU_NAME`으로 설정됩니다.
+- `sent_at`는 앱 내부 상태 추적용이며 네트워크 payload에는 포함하지 않습니다.
+
 ## 테스트
 
 ```bash
