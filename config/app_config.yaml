@@ -1,0 +1,35 @@
+mock_mode: true
+log_level: INFO
+
+rabbitmq:
+  host: "127.0.0.1"
+  port: 5672
+  username: "guest"
+  password: "guest"
+  virtual_host: "/"
+  request_exchange: ""
+  request_routing_key: "task.request"
+  request_queue: "task.request"
+  result_queue_base: "task.result.client"
+  heartbeat: 30
+  blocked_connection_timeout: 30
+  connection_attempts: 3
+  retry_delay_seconds: 2.0
+
+publish:
+  default_action: "RUN_RECIPE"
+  default_recipe_path: "recipes/default_recipe.json"
+  polling_interval_seconds: 5
+  timeout_seconds: 300
+  max_messages_per_poll: 100
+  max_publish_retries: 3
+  publish_retry_backoff_seconds: 1.5
+  image_extensions: [".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"]
+  scan_mode: "direct"
+
+ui:
+  app_name: "RabbitMQ Task Tracker"
+  window_width: 1480
+  window_height: 900
+  theme: "dark"
+  font_family: "Segoe UI"
