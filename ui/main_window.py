@@ -72,10 +72,10 @@ class MQPreviewDialog(QDialog):
             "=== Message ===",
             json.dumps(preview_data.get("message", {}), ensure_ascii=False, indent=2),
             "",
-            "=== Payload (Expected) ===",
+            "=== Payload (Expected / 현재 선택 기준 예상값) ===",
             json.dumps(preview_data.get("payload", {}).get("expected", {}), ensure_ascii=False, indent=2),
             "",
-            "=== Payload (Published) ===",
+            "=== Payload (Published / 실제 전송값) ===",
             json.dumps(preview_data.get("payload", {}).get("published", {}), ensure_ascii=False, indent=2),
         ]
         return "\n".join(sections)

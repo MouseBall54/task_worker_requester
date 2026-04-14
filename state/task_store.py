@@ -15,6 +15,7 @@ from models.task_models import (
     TaskResult,
     TaskStatus,
 )
+from services.broker.routing import resolve_publish_route
 from utils.qt_compat import QObject, Signal
 
 
@@ -129,6 +130,31 @@ class TaskStore(QObject):
         self.task_updated.emit(request_id)
         self.folder_group_updated.emit(task.folder_path)
         self._emit_overall()
+
+    def mark_inflight_running(self) -> int:
+        """Promote SENT tasks to RUNNING while waiting for results."""
+
+        changed_count = 0
+        changed_folders: set[str] = set()
+
+        for task in self._tasks.values():
+            if task.status != TaskStatus.SENT:
+                continue
+            if task.status.is_done:
+                continue
+
+            task.status = TaskStatus.RUNNING
+            changed_count += 1
+            changed_folders.add(task.folder_path)
+            self.task_updated.emit(task.request_id)
+
+        for folder_path in changed_folders:
+            self.folder_group_updated.emit(folder_path)
+
+        if changed_count:
+            self._emit_overall()
+
+        return changed_count
 
     def set_task_expected_message(
         self,
@@ -275,6 +301,8 @@ class TaskStore(QObject):
         request_id: str,
         app_config: AppConfig,
         active_result_queue: str | None,
+        runtime_action: str | None = None,
+        runtime_recipe_path: str | None = None,
     ) -> dict[str, Any] | None:
         """Build MQ preview payload for one request row."""
 
@@ -283,6 +311,34 @@ class TaskStore(QObject):
             return None
 
         rabbitmq = app_config.rabbitmq
+        publish_exchange, publish_routing_key = resolve_publish_route(rabbitmq)
+
+        active_queue = (active_result_queue or "").strip()
+        predicted_queue = active_queue or rabbitmq.result_queue_base
+        resolved_action = (runtime_action or "").strip() or app_config.publish.default_action
+        resolved_recipe_path = (runtime_recipe_path or "").strip() or app_config.publish.default_recipe_path
+
+        dynamic_expected_payload = {
+            "request_id": task.request_id,
+            "action": resolved_action,
+            "QUEU_NAME": predicted_queue,
+            "RECIPE_PATH": resolved_recipe_path,
+            "IMG_LIST": [task.image_path],
+        }
+
+        expected_payload = dict(task.expected_message) if task.expected_message else dynamic_expected_payload
+        published_payload = dict(task.published_message or {})
+
+        dynamic_publish_meta = {
+            "exchange": publish_exchange,
+            "routing_key": publish_routing_key,
+            "reply_to": str(expected_payload.get("QUEU_NAME", predicted_queue)),
+            "message_id": task.request_id,
+            "correlation_id": task.request_id,
+            "content_type": "application/json",
+        }
+        publish_meta = {**dynamic_publish_meta, **dict(task.publish_meta)}
+
         return {
             "connection": {
                 "host": rabbitmq.host,
@@ -292,7 +348,8 @@ class TaskStore(QObject):
                 "request_routing_key": rabbitmq.request_routing_key,
                 "request_queue": rabbitmq.request_queue,
                 "result_queue_base": rabbitmq.result_queue_base,
-                "active_result_queue": active_result_queue or "",
+                "active_result_queue": active_queue,
+                "predicted_result_queue": predicted_queue,
             },
             "message": {
                 "request_id": task.request_id,
@@ -300,11 +357,11 @@ class TaskStore(QObject):
                 "sent_at": self._datetime_to_str(task.sent_at),
                 "completed_at": self._datetime_to_str(task.completed_at),
                 "image_path": task.image_path,
-                "publish_meta": dict(task.publish_meta),
+                "publish_meta": publish_meta,
             },
             "payload": {
-                "expected": dict(task.expected_message or {}),
-                "published": dict(task.published_message or {}),
+                "expected": expected_payload,
+                "published": published_payload,
             },
         }
 

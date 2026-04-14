@@ -5,12 +5,12 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import datetime
 import logging
-from uuid import uuid4
 
 from PySide6.QtCore import QObject, QThread, Slot
 
 from config.models import AppConfig
 from services.broker import AbstractBrokerClient, BrokerResultEnvelope
+from services.broker.routing import resolve_publish_route
 from services.folder_scanner import FolderScanner
 from services.result_parser import parse_task_result
 from services.workers import PollingWorker, PublishWorker
@@ -126,8 +126,7 @@ class TaskController(QObject):
             self._log("Recipe Path 값이 비어 있습니다.")
             return
 
-        client_id = uuid4().hex[:8]
-        queue_name = f"{self._config.rabbitmq.result_queue_base}.{client_id}"
+        queue_name = self._config.rabbitmq.result_queue_base
         messages = self._store.build_pending_messages(action, queue_name, recipe_path)
 
         if not messages:
@@ -142,14 +141,14 @@ class TaskController(QObject):
         self._view.set_active_result_queue(queue_name)
         self._view.set_running_state(True)
 
-        routing_key = self._config.rabbitmq.request_routing_key or self._config.rabbitmq.request_queue
+        publish_exchange, publish_routing_key = resolve_publish_route(self._config.rabbitmq)
         for message in messages:
             self._store.set_task_expected_message(
                 request_id=message.request_id,
                 payload=message.to_dict(),
                 meta={
-                    "exchange": self._config.rabbitmq.request_exchange,
-                    "routing_key": routing_key,
+                    "exchange": publish_exchange,
+                    "routing_key": publish_routing_key,
                     "reply_to": message.QUEU_NAME,
                     "message_id": message.request_id,
                     "correlation_id": message.request_id,
@@ -157,7 +156,11 @@ class TaskController(QObject):
                 },
             )
 
-        self._start_publish_worker(messages=messages, client_id=client_id)
+        self._start_publish_worker(
+            messages=messages,
+            publish_exchange=publish_exchange,
+            publish_routing_key=publish_routing_key,
+        )
         self._log(f"전송 시작 - 총 {len(messages)}건")
 
     @Slot()
@@ -185,10 +188,13 @@ class TaskController(QObject):
     def on_mq_preview_requested(self, request_id: str) -> None:
         """Open MQ preview dialog for selected image task row."""
 
+        runtime_action, runtime_recipe_path, _ = self._view.current_runtime_settings()
         preview = self._store.build_mq_preview(
             request_id=request_id,
             app_config=self._config,
             active_result_queue=self._active_result_queue,
+            runtime_action=runtime_action,
+            runtime_recipe_path=runtime_recipe_path,
         )
         if preview is None:
             self._log(f"MQ 미리보기 대상을 찾지 못했습니다: {request_id}")
@@ -200,7 +206,12 @@ class TaskController(QObject):
 
         self._stop_workers("프로그램 종료로 워커를 중지합니다.")
 
-    def _start_publish_worker(self, messages: list, client_id: str) -> None:
+    def _start_publish_worker(
+        self,
+        messages: list,
+        publish_exchange: str,
+        publish_routing_key: str,
+    ) -> None:
         """Spin up publish worker and attach thread cleanup signals."""
 
         self._publish_thread = QThread(self)
@@ -208,10 +219,8 @@ class TaskController(QObject):
             broker_provider=self._broker_provider,
             messages=messages,
             result_queue_base=self._config.rabbitmq.result_queue_base,
-            client_id=client_id,
-            request_exchange=self._config.rabbitmq.request_exchange,
-            request_routing_key=self._config.rabbitmq.request_routing_key,
-            request_queue=self._config.rabbitmq.request_queue,
+            publish_exchange=publish_exchange,
+            publish_routing_key=publish_routing_key,
             max_retries=self._config.publish.max_publish_retries,
             retry_backoff_seconds=self._config.publish.publish_retry_backoff_seconds,
         )
@@ -314,6 +323,10 @@ class TaskController(QObject):
     @Slot(int)
     def _on_poll_cycle(self, received_count: int) -> None:
         self._log(f"Polling 수행 - 수신 {received_count}건")
+
+        running_count = self._store.mark_inflight_running()
+        if running_count:
+            self._log(f"진행 중 상태 반영 - {running_count}건")
 
         timed_out_ids = self._store.mark_timeouts(self._active_timeout_seconds)
         for request_id in timed_out_ids:

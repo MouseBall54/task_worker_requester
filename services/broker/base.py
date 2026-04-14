@@ -30,8 +30,8 @@ class AbstractBrokerClient(ABC):
         """Close opened resources safely."""
 
     @abstractmethod
-    def declare_result_queue(self, base_name: str, client_id: str) -> str:
-        """Create or ensure existence of a dedicated result queue."""
+    def declare_result_queue(self, queue_name: str) -> str:
+        """Create or ensure existence of the configured result queue."""
 
     @abstractmethod
     def publish_task(self, task_message: TaskMessage) -> None:

@@ -25,10 +25,8 @@ class PublishWorker(QObject):
         broker_provider: Callable[[], AbstractBrokerClient],
         messages: list[TaskMessage],
         result_queue_base: str,
-        client_id: str,
-        request_exchange: str,
-        request_routing_key: str,
-        request_queue: str,
+        publish_exchange: str,
+        publish_routing_key: str,
         max_retries: int,
         retry_backoff_seconds: float,
     ) -> None:
@@ -36,10 +34,8 @@ class PublishWorker(QObject):
         self._broker_provider = broker_provider
         self._messages = messages
         self._result_queue_base = result_queue_base
-        self._client_id = client_id
-        self._request_exchange = request_exchange
-        self._request_routing_key = request_routing_key
-        self._request_queue = request_queue
+        self._publish_exchange = publish_exchange
+        self._publish_routing_key = publish_routing_key
         self._max_retries = max_retries
         self._retry_backoff_seconds = retry_backoff_seconds
         self._stop_requested = False
@@ -53,11 +49,9 @@ class PublishWorker(QObject):
 
         try:
             broker.connect()
-            queue_name = broker.declare_result_queue(self._result_queue_base, self._client_id)
+            queue_name = broker.declare_result_queue(self._result_queue_base)
             self.queue_ready.emit(queue_name)
             self.log.emit(f"브로커 연결 성공, 결과 큐 준비: {queue_name}")
-
-            routing_key = self._request_routing_key or self._request_queue
 
             for index, message in enumerate(self._messages, start=1):
                 if self._stop_requested:
@@ -71,8 +65,8 @@ class PublishWorker(QObject):
                         broker.publish_task(message)
                         published_payload = message.to_dict()
                         publish_meta = {
-                            "exchange": self._request_exchange,
-                            "routing_key": routing_key,
+                            "exchange": self._publish_exchange,
+                            "routing_key": self._publish_routing_key,
                             "reply_to": message.QUEU_NAME,
                             "message_id": message.request_id,
                             "correlation_id": message.request_id,

@@ -9,6 +9,7 @@ from typing import Any
 from config.models import RabbitMQConfig
 from models.task_models import TaskMessage
 from services.broker.base import AbstractBrokerClient, BrokerResultEnvelope
+from services.broker.routing import resolve_publish_route
 
 try:
     import pika
@@ -63,11 +64,10 @@ class RabbitMQClient(AbstractBrokerClient):
         self._channel = None
         self._connection = None
 
-    def declare_result_queue(self, base_name: str, client_id: str) -> str:
-        """Declare a dedicated result queue for this GUI session."""
+    def declare_result_queue(self, queue_name: str) -> str:
+        """Declare the configured result queue used by this GUI."""
 
         self._ensure_connected()
-        queue_name = f"{base_name}.{client_id}"
         assert self._channel is not None
         self._channel.queue_declare(queue=queue_name, durable=True)
         return queue_name
@@ -79,8 +79,7 @@ class RabbitMQClient(AbstractBrokerClient):
         assert self._channel is not None
 
         body = json.dumps(task_message.to_dict(), ensure_ascii=False)
-        exchange = self._config.request_exchange
-        routing_key = self._config.request_routing_key or self._config.request_queue
+        exchange, routing_key = resolve_publish_route(self._config)
 
         properties = pika.BasicProperties(
             message_id=task_message.request_id,

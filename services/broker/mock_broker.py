@@ -95,8 +95,7 @@ class MockBrokerClient(AbstractBrokerClient):
     def close(self) -> None:
         self._connected = False
 
-    def declare_result_queue(self, base_name: str, client_id: str) -> str:
-        queue_name = f"{base_name}.{client_id}"
+    def declare_result_queue(self, queue_name: str) -> str:
         _MockBackend.declare_queue(queue_name)
         return queue_name
 

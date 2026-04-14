@@ -33,6 +33,18 @@ uv run python main.py config/app_config.yaml
 - 실제 서버 사용 시 `mock_mode: false` 로 변경 후 `rabbitmq` 섹션을 설정하세요.
 - `publish.recipe_presets`에 `alias/path`를 등록하면 UI에는 별명이 표시되고 전송에는 실제 path가 사용됩니다.
 
+### RabbitMQ 라우팅 설정 의미
+
+- `request_queue`
+  - 기본 exchange(`request_exchange: ""`) 사용 시 실제 publish 대상 queue 이름입니다.
+  - 이 경우 routing key도 항상 `request_queue`로 강제됩니다.
+- `request_routing_key`
+  - custom exchange(`request_exchange != ""`) 사용 시 우선 routing key로 사용됩니다.
+  - 비어 있으면 `request_queue`를 fallback routing key로 사용합니다.
+- `result_queue_base`
+  - 결과 수신에 사용하는 고정 queue 이름입니다.
+  - 실행 중에도 동일한 queue 이름(`result_queue_base`)으로 polling 합니다.
+
 ## 요청 메시지 형식
 
 현재 MQ 요청 payload는 아래 5개 키로 고정됩니다.

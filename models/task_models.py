@@ -122,15 +122,19 @@ class FolderTaskGroup:
         timeout = sum(task.status == TaskStatus.TIMEOUT for task in tasks)
         error = sum(task.status == TaskStatus.ERROR for task in tasks)
         completed = sum(task.status.is_done for task in tasks)
+        inflight = sum(task.status in {TaskStatus.SENT, TaskStatus.RUNNING} for task in tasks)
 
-        if completed == 0:
+        if total == 0:
             status = TaskStatus.PENDING
-        elif completed < total:
+        elif completed == total:
+            if fail or timeout or error:
+                status = TaskStatus.FAIL
+            else:
+                status = TaskStatus.SUCCESS
+        elif inflight or completed:
             status = TaskStatus.RUNNING
-        elif fail or timeout or error:
-            status = TaskStatus.FAIL
         else:
-            status = TaskStatus.SUCCESS
+            status = TaskStatus.PENDING
 
         progress = (completed / total * 100.0) if total else 0.0
 

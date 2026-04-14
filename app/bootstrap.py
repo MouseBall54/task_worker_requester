@@ -5,7 +5,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QMessageBox
 
 from app.controller import TaskController
 from config.config_loader import ConfigError, ConfigLoader
@@ -21,7 +21,9 @@ def run_app(config_path: str = "config/app_config.yaml") -> int:
     try:
         app_config = ConfigLoader.load(config_path)
     except ConfigError as exc:
+        message = f"설정 파일을 불러오지 못했습니다.\n\n{exc}"
         print(f"[ConfigError] {exc}")
+        _show_config_error_dialog(message)
         return 1
 
     logger = setup_logging(app_config.log_level)
@@ -50,3 +52,25 @@ def run_app(config_path: str = "config/app_config.yaml") -> int:
 
     window.show()
     return app.exec()
+
+
+def _show_config_error_dialog(message: str) -> None:
+    """Try to show user-friendly config error popup in GUI environments."""
+
+    app = QApplication.instance()
+    created_app = False
+
+    if app is None:
+        try:
+            app = QApplication([])
+            created_app = True
+        except Exception:
+            return
+
+    try:
+        QMessageBox.critical(None, "설정 오류", message)
+    except Exception:
+        return
+    finally:
+        if created_app and app is not None:
+            app.quit()
