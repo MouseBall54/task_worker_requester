@@ -1,0 +1,123 @@
+/* Modern dark style for RabbitMQ task tracker */
+QWidget {
+    background-color: #0f172a;
+    color: #e2e8f0;
+    font-family: "Segoe UI", "Noto Sans KR";
+    font-size: 13px;
+}
+
+QMainWindow {
+    background-color: #0b1220;
+}
+
+QFrame#leftPanel,
+QGroupBox {
+    background-color: #111827;
+    border: 1px solid #1f2937;
+    border-radius: 12px;
+}
+
+QGroupBox {
+    margin-top: 8px;
+    padding-top: 14px;
+    font-weight: 600;
+}
+
+QGroupBox::title {
+    subcontrol-origin: margin;
+    left: 12px;
+    padding: 0 4px;
+    color: #cbd5e1;
+}
+
+QLabel#panelTitle {
+    font-size: 16px;
+    font-weight: 700;
+    color: #f8fafc;
+}
+
+QLabel#connectionStatus {
+    border-radius: 8px;
+    padding: 6px 10px;
+    background-color: #334155;
+    color: #e2e8f0;
+}
+
+QLabel#connectionStatus[state="connected"] {
+    background-color: #14532d;
+    color: #dcfce7;
+}
+
+QLabel#connectionStatus[state="disconnected"] {
+    background-color: #7f1d1d;
+    color: #fecaca;
+}
+
+QPushButton {
+    background-color: #1d4ed8;
+    color: white;
+    border: none;
+    border-radius: 8px;
+    padding: 8px 12px;
+    min-height: 18px;
+}
+
+QPushButton:hover {
+    background-color: #2563eb;
+}
+
+QPushButton:pressed {
+    background-color: #1e40af;
+}
+
+QPushButton:disabled {
+    background-color: #334155;
+    color: #94a3b8;
+}
+
+QLineEdit,
+QComboBox,
+QTextEdit,
+QTreeView,
+QTableView {
+    background-color: #0b1220;
+    border: 1px solid #1e293b;
+    border-radius: 8px;
+    padding: 6px;
+    selection-background-color: #1d4ed8;
+    selection-color: #eff6ff;
+}
+
+QTreeView::item {
+    height: 24px;
+}
+
+QHeaderView::section {
+    background-color: #0b1220;
+    color: #cbd5e1;
+    border: 0;
+    border-bottom: 1px solid #1e293b;
+    padding: 8px;
+    font-weight: 600;
+}
+
+QTableView {
+    gridline-color: #1e293b;
+    alternate-background-color: #0f1a30;
+}
+
+QProgressBar {
+    border: 1px solid #1e293b;
+    border-radius: 8px;
+    text-align: center;
+    background-color: #0b1220;
+}
+
+QProgressBar::chunk {
+    background-color: #2563eb;
+    border-radius: 7px;
+}
+
+QSplitter::handle {
+    background: #1f2937;
+}
