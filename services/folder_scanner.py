@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+import os
 from typing import Iterable
 
 
@@ -16,14 +16,14 @@ class FolderScanner:
     def scan_single_folder(self, folder_path: str) -> dict[str, list[str]]:
         """Collect images directly under selected folder only."""
 
-        path = Path(folder_path)
-        if not path.exists() or not path.is_dir():
+        if not os.path.isdir(folder_path):
             return {}
 
-        images = self._collect_images_in_folder(path)
+        normalized_folder = os.path.normpath(folder_path)
+        images = self._collect_images_in_folder(normalized_folder)
         if not images:
             return {}
-        return {str(path): images}
+        return {normalized_folder: images}
 
     def scan_subfolders(self, parent_folder: str, mode: str = "direct") -> dict[str, list[str]]:
         """Collect images under direct or recursive child folder scope.
@@ -36,41 +36,66 @@ class FolderScanner:
             "direct" for immediate children only, "recursive" for full depth.
         """
 
-        parent = Path(parent_folder)
-        if not parent.exists() or not parent.is_dir():
+        if not os.path.isdir(parent_folder):
             return {}
 
+        normalized_parent = os.path.normpath(parent_folder)
         folder_map: dict[str, list[str]] = {}
-        for child in sorted(parent.iterdir(), key=lambda p: p.name.lower()):
-            if not child.is_dir():
-                continue
-            if mode == "recursive":
-                self._scan_recursive(child, folder_map)
-                continue
 
-            images = self._collect_images_in_folder(child)
+        child_dirs: list[str] = []
+        try:
+            with os.scandir(normalized_parent) as entries:
+                for entry in entries:
+                    if entry.is_dir(follow_symlinks=False):
+                        child_dirs.append(os.path.normpath(entry.path))
+        except OSError:
+            return {}
+
+        child_dirs.sort(key=lambda path: os.path.basename(path).lower())
+
+        if mode == "recursive":
+            for child_dir in child_dirs:
+                self._scan_recursive(child_dir, folder_map)
+            return folder_map
+
+        for child_dir in child_dirs:
+            images = self._collect_images_in_folder(child_dir)
             if images:
-                folder_map[str(child)] = images
+                folder_map[child_dir] = images
 
         return folder_map
 
-    def _scan_recursive(self, folder: Path, folder_map: dict[str, list[str]]) -> None:
+    def _scan_recursive(self, folder: str, folder_map: dict[str, list[str]]) -> None:
         """Recursively collect all image-containing directories."""
 
-        images = self._collect_images_in_folder(folder)
-        if images:
-            folder_map[str(folder)] = images
+        for root, dirs, files in os.walk(folder, topdown=True):
+            dirs.sort(key=lambda item: item.lower())
 
-        for child in sorted(folder.iterdir(), key=lambda p: p.name.lower()):
-            if child.is_dir():
-                self._scan_recursive(child, folder_map)
+            images: list[str] = []
+            for file_name in sorted(files, key=lambda item: item.lower()):
+                _, extension = os.path.splitext(file_name)
+                if extension.lower() not in self._extensions:
+                    continue
+                images.append(os.path.normpath(os.path.join(root, file_name)))
 
-    def _collect_images_in_folder(self, folder: Path) -> list[str]:
+            if images:
+                folder_map[os.path.normpath(root)] = images
+
+    def _collect_images_in_folder(self, folder: str) -> list[str]:
         """Return image paths directly inside folder (no recursion)."""
 
-        images = [
-            str(file_path)
-            for file_path in sorted(folder.iterdir(), key=lambda p: p.name.lower())
-            if file_path.is_file() and file_path.suffix.lower() in self._extensions
-        ]
+        images: list[str] = []
+        try:
+            with os.scandir(folder) as entries:
+                for entry in entries:
+                    if not entry.is_file(follow_symlinks=False):
+                        continue
+                    _, extension = os.path.splitext(entry.name)
+                    if extension.lower() not in self._extensions:
+                        continue
+                    images.append(os.path.normpath(entry.path))
+        except OSError:
+            return []
+
+        images.sort(key=lambda path: os.path.basename(path).lower())
         return images

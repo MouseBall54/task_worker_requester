@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import Any
 from uuid import uuid4
 
+from config.models import AppConfig
 from models.task_models import (
     FolderSummary,
     FolderTaskGroup,
@@ -130,6 +132,38 @@ class TaskStore(QObject):
         self.folder_group_updated.emit(task.folder_path)
         self._emit_overall()
 
+    def set_task_expected_message(
+        self,
+        request_id: str,
+        payload: dict[str, Any],
+        meta: dict[str, str] | None = None,
+    ) -> None:
+        """Store expected outbound message snapshot for preview UI."""
+
+        task = self._tasks.get(request_id)
+        if not task:
+            return
+        task.expected_message = dict(payload)
+        if meta:
+            task.publish_meta.update(meta)
+        self.task_updated.emit(request_id)
+
+    def set_task_published_message(
+        self,
+        request_id: str,
+        payload: dict[str, Any],
+        meta: dict[str, str] | None = None,
+    ) -> None:
+        """Store published message snapshot/metadata for preview UI."""
+
+        task = self._tasks.get(request_id)
+        if not task:
+            return
+        task.published_message = dict(payload)
+        if meta:
+            task.publish_meta.update(meta)
+        self.task_updated.emit(request_id)
+
     def mark_task_error(self, request_id: str, message: str) -> None:
         """Mark task as failed during publish/processing errors."""
 
@@ -238,6 +272,44 @@ class TaskStore(QObject):
 
         return self._tasks.get(request_id)
 
+    def build_mq_preview(
+        self,
+        request_id: str,
+        app_config: AppConfig,
+        active_result_queue: str | None,
+    ) -> dict[str, Any] | None:
+        """Build MQ preview payload for one request row."""
+
+        task = self._tasks.get(request_id)
+        if task is None:
+            return None
+
+        rabbitmq = app_config.rabbitmq
+        return {
+            "connection": {
+                "host": rabbitmq.host,
+                "port": rabbitmq.port,
+                "virtual_host": rabbitmq.virtual_host,
+                "request_exchange": rabbitmq.request_exchange,
+                "request_routing_key": rabbitmq.request_routing_key,
+                "request_queue": rabbitmq.request_queue,
+                "result_queue_base": rabbitmq.result_queue_base,
+                "active_result_queue": active_result_queue or "",
+            },
+            "message": {
+                "request_id": task.request_id,
+                "status": task.status.value,
+                "sent_at": self._datetime_to_str(task.sent_at),
+                "completed_at": self._datetime_to_str(task.completed_at),
+                "image_path": task.image_path,
+                "publish_meta": dict(task.publish_meta),
+            },
+            "payload": {
+                "expected": dict(task.expected_message or {}),
+                "published": dict(task.published_message or {}),
+            },
+        }
+
     def get_folder_paths(self) -> list[str]:
         """Return all tracked folder paths."""
 
@@ -291,3 +363,11 @@ class TaskStore(QObject):
             return datetime.fromisoformat(raw_completed_at)
         except ValueError:
             return datetime.now(timezone.utc)
+
+    @staticmethod
+    def _datetime_to_str(value: datetime | None) -> str:
+        """Format datetime for preview output."""
+
+        if value is None:
+            return ""
+        return value.astimezone().isoformat()

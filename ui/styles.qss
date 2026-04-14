@@ -90,6 +90,24 @@ QTableView {
 
 QTreeView::item {
     height: 24px;
+    padding-left: 6px;
+    border-left: 3px solid transparent;
+}
+
+QTreeView::item:hover {
+    background-color: #13223b;
+}
+
+QTreeView::item:selected {
+    background-color: #1e3a8a;
+    color: #eff6ff;
+    border-left: 3px solid #60a5fa;
+}
+
+QTreeView::item:selected:active,
+QTreeView::item:selected:!active {
+    background-color: #1e3a8a;
+    color: #eff6ff;
 }
 
 QHeaderView::section {

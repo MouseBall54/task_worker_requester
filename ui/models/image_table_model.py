@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import os
 
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt
 
@@ -12,7 +13,7 @@ from models.task_models import ImageTask
 class ImageTableModel(QAbstractTableModel):
     """Model for per-image detailed task status."""
 
-    HEADERS = ["이미지", "Request ID", "상태", "전송 시각", "완료 시각", "결과", "에러"]
+    HEADERS = ["MQ", "이미지", "Request ID", "상태", "전송 시각", "완료 시각", "결과", "에러"]
 
     def __init__(self) -> None:
         super().__init__()
@@ -38,18 +39,20 @@ class ImageTableModel(QAbstractTableModel):
 
         if role == Qt.DisplayRole:
             if column == 0:
-                return task.image_path
+                return "보기"
             if column == 1:
-                return task.request_id
+                return os.path.basename(task.image_path) or task.image_path
             if column == 2:
-                return task.status.value
+                return task.request_id
             if column == 3:
-                return self._format_datetime(task.sent_at)
+                return task.status.value
             if column == 4:
-                return self._format_datetime(task.completed_at)
+                return self._format_datetime(task.sent_at)
             if column == 5:
-                return ", ".join(task.result)
+                return self._format_datetime(task.completed_at)
             if column == 6:
+                return ", ".join(task.result)
+            if column == 7:
                 return task.error_message or ""
 
         if role == Qt.UserRole:

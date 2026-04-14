@@ -15,7 +15,7 @@ class PublishWorker(QObject):
     """Publish one-message-per-image requests without blocking GUI."""
 
     queue_ready = Signal(str)
-    message_published = Signal(str, int, int)
+    message_published = Signal(str, int, int, object, object)
     message_failed = Signal(str, str)
     log = Signal(str)
     finished = Signal()
@@ -26,6 +26,9 @@ class PublishWorker(QObject):
         messages: list[TaskMessage],
         result_queue_base: str,
         client_id: str,
+        request_exchange: str,
+        request_routing_key: str,
+        request_queue: str,
         max_retries: int,
         retry_backoff_seconds: float,
     ) -> None:
@@ -34,6 +37,9 @@ class PublishWorker(QObject):
         self._messages = messages
         self._result_queue_base = result_queue_base
         self._client_id = client_id
+        self._request_exchange = request_exchange
+        self._request_routing_key = request_routing_key
+        self._request_queue = request_queue
         self._max_retries = max_retries
         self._retry_backoff_seconds = retry_backoff_seconds
         self._stop_requested = False
@@ -51,6 +57,8 @@ class PublishWorker(QObject):
             self.queue_ready.emit(queue_name)
             self.log.emit(f"브로커 연결 성공, 결과 큐 준비: {queue_name}")
 
+            routing_key = self._request_routing_key or self._request_queue
+
             for index, message in enumerate(self._messages, start=1):
                 if self._stop_requested:
                     self.log.emit("전송 중지 요청으로 게시를 종료합니다.")
@@ -61,7 +69,22 @@ class PublishWorker(QObject):
                 for attempt in range(1, self._max_retries + 1):
                     try:
                         broker.publish_task(message)
-                        self.message_published.emit(message.request_id, index, total)
+                        published_payload = message.to_dict()
+                        publish_meta = {
+                            "exchange": self._request_exchange,
+                            "routing_key": routing_key,
+                            "reply_to": message.QUEU_NAME,
+                            "message_id": message.request_id,
+                            "correlation_id": message.request_id,
+                            "content_type": "application/json",
+                        }
+                        self.message_published.emit(
+                            message.request_id,
+                            index,
+                            total,
+                            published_payload,
+                            publish_meta,
+                        )
                         published = True
                         break
                     except Exception as exc:  # pylint: disable=broad-except

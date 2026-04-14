@@ -48,6 +48,7 @@ class TaskController(QObject):
         self._active = False
         self._active_timeout_seconds = config.publish.timeout_seconds
         self._pending_polling_interval = config.publish.polling_interval_seconds
+        self._active_result_queue: str | None = None
 
         self._wire_signals()
         self._view.set_running_state(False)
@@ -61,6 +62,7 @@ class TaskController(QObject):
         self._view.stop_requested.connect(self.on_stop_requested)
         self._view.reset_requested.connect(self.on_reset_requested)
         self._view.folder_row_selected.connect(self.on_folder_row_selected)
+        self._view.mq_preview_requested.connect(self.on_mq_preview_requested)
 
         self._store.folder_group_added.connect(self._on_folder_group_changed)
         self._store.folder_group_updated.connect(self._on_folder_group_changed)
@@ -136,7 +138,24 @@ class TaskController(QObject):
         self._pending_polling_interval = polling_interval
         self._publish_finished = False
         self._active = True
+        self._active_result_queue = queue_name
+        self._view.set_active_result_queue(queue_name)
         self._view.set_running_state(True)
+
+        routing_key = self._config.rabbitmq.request_routing_key or self._config.rabbitmq.request_queue
+        for message in messages:
+            self._store.set_task_expected_message(
+                request_id=message.request_id,
+                payload=message.to_dict(),
+                meta={
+                    "exchange": self._config.rabbitmq.request_exchange,
+                    "routing_key": routing_key,
+                    "reply_to": message.QUEU_NAME,
+                    "message_id": message.request_id,
+                    "correlation_id": message.request_id,
+                    "content_type": "application/json",
+                },
+            )
 
         self._start_publish_worker(messages=messages, client_id=client_id)
         self._log(f"전송 시작 - 총 {len(messages)}건")
@@ -157,8 +176,24 @@ class TaskController(QObject):
         self._stop_workers("초기화를 위해 워커를 중지합니다.")
         self._store.reset()
         self._selected_folder = None
-        self._view.set_image_tasks([])
+        self._view.clear_progress_views()
+        self._active_result_queue = None
+        self._view.set_active_result_queue(None)
         self._log("작업 상태를 초기화했습니다.")
+
+    @Slot(str)
+    def on_mq_preview_requested(self, request_id: str) -> None:
+        """Open MQ preview dialog for selected image task row."""
+
+        preview = self._store.build_mq_preview(
+            request_id=request_id,
+            app_config=self._config,
+            active_result_queue=self._active_result_queue,
+        )
+        if preview is None:
+            self._log(f"MQ 미리보기 대상을 찾지 못했습니다: {request_id}")
+            return
+        self._view.show_mq_preview(preview)
 
     def shutdown(self) -> None:
         """Application shutdown hook to avoid orphan threads."""
@@ -174,6 +209,9 @@ class TaskController(QObject):
             messages=messages,
             result_queue_base=self._config.rabbitmq.result_queue_base,
             client_id=client_id,
+            request_exchange=self._config.rabbitmq.request_exchange,
+            request_routing_key=self._config.rabbitmq.request_routing_key,
+            request_queue=self._config.rabbitmq.request_queue,
             max_retries=self._config.publish.max_publish_retries,
             retry_backoff_seconds=self._config.publish.publish_retry_backoff_seconds,
         )
@@ -223,11 +261,27 @@ class TaskController(QObject):
                 queue_name=queue_name,
                 polling_interval=self._pending_polling_interval,
             )
+        self._active_result_queue = queue_name
+        self._view.set_active_result_queue(queue_name)
         self._view.set_connection_status(True, f"결과 큐 준비 ({queue_name})")
 
-    @Slot(str, int, int)
-    def _on_message_published(self, request_id: str, index: int, total: int) -> None:
+    @Slot(str, int, int, object, object)
+    def _on_message_published(
+        self,
+        request_id: str,
+        index: int,
+        total: int,
+        payload: object,
+        meta: object,
+    ) -> None:
         self._store.mark_task_sent(request_id)
+        safe_payload = payload if isinstance(payload, dict) else {}
+        safe_meta = meta if isinstance(meta, dict) else {}
+        self._store.set_task_published_message(
+            request_id=request_id,
+            payload=safe_payload,
+            meta={str(key): str(value) for key, value in safe_meta.items()},
+        )
         self._log(f"전송 완료 {index}/{total} - {request_id}")
 
     @Slot(str, str)
@@ -300,8 +354,7 @@ class TaskController(QObject):
 
     @Slot()
     def _on_store_reset(self) -> None:
-        self._view.set_folder_rows([])
-        self._view.set_image_tasks([])
+        self._view.clear_progress_views()
 
     def _stop_polling_only(self, reason: str) -> None:
         if self._poll_worker:
@@ -323,6 +376,8 @@ class TaskController(QObject):
 
         self._active = False
         self._publish_finished = True
+        self._active_result_queue = None
+        self._view.set_active_result_queue(None)
         self._view.set_running_state(False)
         self._log(reason)
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import unittest
 
+from config.models import AppConfig, RabbitMQConfig
 from models.task_models import TaskResult, TaskStatus
 from state.task_store import TaskStore
 
@@ -57,6 +58,35 @@ class TaskStoreTest(unittest.TestCase):
 
         self.assertTrue(first)
         self.assertFalse(second)
+
+    def test_build_mq_preview_contains_connection_and_payload(self) -> None:
+        message = self.store.build_pending_messages("RUN", "result.q", "r.json")[0]
+        self.store.set_task_expected_message(message.request_id, payload=message.to_dict())
+        self.store.set_task_published_message(
+            message.request_id,
+            payload=message.to_dict(),
+            meta={"routing_key": "task.request"},
+        )
+
+        config = AppConfig(
+            rabbitmq=RabbitMQConfig(
+                host="127.0.0.1",
+                port=5672,
+                username="guest",
+                password="guest",
+            )
+        )
+        preview = self.store.build_mq_preview(
+            request_id=message.request_id,
+            app_config=config,
+            active_result_queue="task.result.client.abc123",
+        )
+
+        self.assertIsNotNone(preview)
+        assert preview is not None
+        self.assertEqual(preview["connection"]["host"], "127.0.0.1")
+        self.assertEqual(preview["message"]["request_id"], message.request_id)
+        self.assertEqual(preview["payload"]["expected"]["request_id"], message.request_id)
 
 
 if __name__ == "__main__":

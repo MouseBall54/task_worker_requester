@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import PureWindowsPath
 from pathlib import Path
+from typing import Any
 
 from PySide6.QtCore import QDir, QModelIndex, Qt, Signal
 from PySide6.QtWidgets import (
+    QDialog,
     QFileSystemModel,
     QFrame,
     QGroupBox,
@@ -25,12 +28,57 @@ from PySide6.QtWidgets import (
     QComboBox,
     QProgressBar,
     QHeaderView,
+    QDialogButtonBox,
+    QPlainTextEdit,
 )
 
 from config.models import AppConfig
 from models.task_models import FolderSummary, ImageTask
 from ui.models import FolderTableModel, ImageTableModel, ProgressBarDelegate
-from ui.widgets import StatusBadgeDelegate
+from ui.widgets import MQButtonDelegate, StatusBadgeDelegate
+
+
+class MQPreviewDialog(QDialog):
+    """Dialog displaying connection info and message payload previews."""
+
+    def __init__(self, preview_data: dict[str, Any], parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("MQ 미리보기")
+        self.resize(920, 680)
+
+        layout = QVBoxLayout(self)
+
+        header = QLabel("선택한 작업의 MQ 연결/메시지 정보를 확인합니다.")
+        layout.addWidget(header)
+
+        self._text = QPlainTextEdit(self)
+        self._text.setReadOnly(True)
+        self._text.setPlainText(self._format_preview(preview_data))
+        layout.addWidget(self._text, stretch=1)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Close, parent=self)
+        buttons.rejected.connect(self.reject)
+        buttons.accepted.connect(self.accept)
+        layout.addWidget(buttons)
+
+    @staticmethod
+    def _format_preview(preview_data: dict[str, Any]) -> str:
+        """Convert preview dictionary into readable block text."""
+
+        sections = [
+            "=== Connection ===",
+            json.dumps(preview_data.get("connection", {}), ensure_ascii=False, indent=2),
+            "",
+            "=== Message ===",
+            json.dumps(preview_data.get("message", {}), ensure_ascii=False, indent=2),
+            "",
+            "=== Payload (Expected) ===",
+            json.dumps(preview_data.get("payload", {}).get("expected", {}), ensure_ascii=False, indent=2),
+            "",
+            "=== Payload (Published) ===",
+            json.dumps(preview_data.get("payload", {}).get("published", {}), ensure_ascii=False, indent=2),
+        ]
+        return "\n".join(sections)
 
 
 class MainWindow(QMainWindow):
@@ -43,11 +91,13 @@ class MainWindow(QMainWindow):
     stop_requested = Signal()
     reset_requested = Signal()
     folder_row_selected = Signal(str)
+    mq_preview_requested = Signal(str)
 
     def __init__(self, config: AppConfig) -> None:
         super().__init__()
         self._config = config
         self._is_syncing_navigation = False
+        self._active_result_queue: str | None = None
         self._build_ui()
         self._apply_defaults()
 
@@ -247,10 +297,15 @@ class MainWindow(QMainWindow):
         self.image_table.setSelectionBehavior(QTableView.SelectRows)
         self.image_table.setAlternatingRowColors(True)
         self.image_table.verticalHeader().setVisible(False)
-        self.image_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
-        for col in range(1, self.image_table_model.columnCount()):
+        self.image_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.image_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        for col in range(2, self.image_table_model.columnCount()):
             self.image_table.horizontalHeader().setSectionResizeMode(col, QHeaderView.ResizeToContents)
-        self.image_table.setItemDelegateForColumn(2, StatusBadgeDelegate(self.image_table))
+
+        self._mq_button_delegate = MQButtonDelegate(self.image_table)
+        self._mq_button_delegate.clicked.connect(self._on_mq_button_clicked)
+        self.image_table.setItemDelegateForColumn(0, self._mq_button_delegate)
+        self.image_table.setItemDelegateForColumn(3, StatusBadgeDelegate(self.image_table))
 
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
@@ -392,6 +447,8 @@ class MainWindow(QMainWindow):
         """Replace folder table rows."""
 
         self.folder_table_model.set_rows(rows)
+        if not rows:
+            self.folder_table.clearSelection()
 
     def upsert_folder_row(self, row: FolderSummary) -> None:
         """Insert or update one folder row."""
@@ -402,11 +459,32 @@ class MainWindow(QMainWindow):
         """Replace image detail rows for selected folder."""
 
         self.image_table_model.set_tasks(tasks)
+        if not tasks:
+            self.image_table.clearSelection()
 
     def update_image_task(self, task: ImageTask) -> None:
         """Update one image row in detail table if visible."""
 
         self.image_table_model.update_task(task)
+
+    def clear_progress_views(self) -> None:
+        """Clear folder/image tables and their current selections."""
+
+        self.folder_table_model.clear()
+        self.image_table_model.clear()
+        self.folder_table.clearSelection()
+        self.image_table.clearSelection()
+
+    def set_active_result_queue(self, queue_name: str | None) -> None:
+        """Track currently active result queue for MQ preview dialog."""
+
+        self._active_result_queue = queue_name
+
+    def show_mq_preview(self, preview_data: dict[str, Any]) -> None:
+        """Open modal dialog for one task's MQ preview information."""
+
+        dialog = MQPreviewDialog(preview_data=preview_data, parent=self)
+        dialog.exec()
 
     def confirm_reset(self) -> bool:
         """Show reset confirmation dialog."""
@@ -433,6 +511,11 @@ class MainWindow(QMainWindow):
     def _on_clear_clicked(self) -> None:
         self.folder_tree.clearSelection()
         self.clear_requested.emit()
+
+    def _on_mq_button_clicked(self, request_id: str) -> None:
+        """Forward selected request id to controller for preview generation."""
+
+        self.mq_preview_requested.emit(request_id)
 
     def _on_folder_row_selection_changed(self, *_args) -> None:
         index = self.folder_table.currentIndex()
