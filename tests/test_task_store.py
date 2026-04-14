@@ -100,6 +100,8 @@ class TaskStoreTest(unittest.TestCase):
         self.assertEqual(preview["connection"]["predicted_result_queue"], "task.result.client")
         self.assertNotIn("sent_at", preview["payload"]["expected"])
         self.assertNotIn("sent_at", preview["payload"]["published"])
+        self.assertEqual(preview["payload"]["received"], {})
+        self.assertEqual(preview["message"]["received_meta"], {})
 
     def test_build_mq_preview_generates_expected_payload_for_pending_task(self) -> None:
         message = self.store.build_pending_messages("RUN", "result.q", "r.json")[0]
@@ -164,6 +166,101 @@ class TaskStoreTest(unittest.TestCase):
         self.assertEqual(preview["payload"]["expected"]["QUEU_NAME"], "task.result.client")
         self.assertEqual(preview["connection"]["active_result_queue"], "task.result.client")
         self.assertEqual(preview["connection"]["predicted_result_queue"], "task.result.client")
+
+    def test_set_task_received_message_keeps_first_payload(self) -> None:
+        message = self.store.build_pending_messages("RUN", "result.q", "r.json")[0]
+        self.store.set_task_received_message(
+            request_id=message.request_id,
+            payload={"request_id": message.request_id, "result": ["FAIL"], "status": "FAILED"},
+            meta={"matched_by": "payload.request_id"},
+        )
+        self.store.set_task_received_message(
+            request_id=message.request_id,
+            payload={"request_id": message.request_id, "result": ["PASS"], "status": "DONE"},
+            meta={"matched_by": "correlation_id"},
+        )
+
+        task = self.store.get_task(message.request_id)
+        self.assertIsNotNone(task)
+        assert task is not None
+        self.assertEqual(task.received_message, {"request_id": message.request_id, "result": ["FAIL"], "status": "FAILED"})
+        self.assertEqual(task.received_meta.get("matched_by"), "payload.request_id")
+
+    def test_build_mq_preview_contains_received_payload_and_meta(self) -> None:
+        message = self.store.build_pending_messages("RUN", "result.q", "r.json")[0]
+        self.store.set_task_received_message(
+            request_id=message.request_id,
+            payload={
+                "request_id": message.request_id,
+                "result": ["PASS", "label_ok"],
+                "status": "DONE",
+            },
+            meta={
+                "message_id": message.request_id,
+                "correlation_id": message.request_id,
+                "matched_by": "payload.request_id",
+                "received_at": "2026-04-15T10:00:00+09:00",
+            },
+        )
+
+        config = AppConfig(
+            rabbitmq=RabbitMQConfig(
+                host="127.0.0.1",
+                port=5672,
+                username="guest",
+                password="guest",
+            )
+        )
+        preview = self.store.build_mq_preview(
+            request_id=message.request_id,
+            app_config=config,
+            active_result_queue="task.result.client",
+            runtime_action="RUN_PREVIEW",
+            runtime_recipe_path="recipes/preview.json",
+        )
+
+        self.assertIsNotNone(preview)
+        assert preview is not None
+        self.assertEqual(preview["payload"]["received"]["status"], "DONE")
+        self.assertEqual(preview["message"]["received_meta"]["matched_by"], "payload.request_id")
+
+    def test_reset_clears_received_message_cache(self) -> None:
+        message = self.store.build_pending_messages("RUN", "result.q", "r.json")[0]
+        self.store.set_task_received_message(
+            request_id=message.request_id,
+            payload={"request_id": message.request_id, "status": "DONE"},
+            meta={"matched_by": "payload.request_id"},
+        )
+
+        config = AppConfig(
+            rabbitmq=RabbitMQConfig(
+                host="127.0.0.1",
+                port=5672,
+                username="guest",
+                password="guest",
+            )
+        )
+        preview_before = self.store.build_mq_preview(
+            request_id=message.request_id,
+            app_config=config,
+            active_result_queue="task.result.client",
+            runtime_action="RUN_PREVIEW",
+            runtime_recipe_path="recipes/preview.json",
+        )
+        self.assertIsNotNone(preview_before)
+        assert preview_before is not None
+        self.assertTrue(preview_before["payload"]["received"])
+
+        self.store.reset()
+
+        preview_after = self.store.build_mq_preview(
+            request_id=message.request_id,
+            app_config=config,
+            active_result_queue="task.result.client",
+            runtime_action="RUN_PREVIEW",
+            runtime_recipe_path="recipes/preview.json",
+        )
+        self.assertIsNone(preview_after)
 
     def test_mark_inflight_running_promotes_sent_tasks(self) -> None:
         messages = self.store.build_pending_messages("RUN", "result.q", "r.json")

@@ -188,6 +188,27 @@ class TaskStore(QObject):
             task.publish_meta.update(meta)
         self.task_updated.emit(request_id)
 
+    def set_task_received_message(
+        self,
+        request_id: str,
+        payload: dict[str, Any],
+        meta: dict[str, str] | None = None,
+    ) -> None:
+        """Store first-matched inbound raw message snapshot for preview UI."""
+
+        task = self._tasks.get(request_id)
+        if not task:
+            return
+
+        # Keep first matched raw message for stable forensic preview.
+        if task.received_message is not None:
+            return
+
+        task.received_message = dict(payload)
+        if meta:
+            task.received_meta.update(meta)
+        self.task_updated.emit(request_id)
+
     def mark_task_error(self, request_id: str, message: str) -> None:
         """Mark task as failed during publish/processing errors."""
 
@@ -328,6 +349,7 @@ class TaskStore(QObject):
 
         expected_payload = dict(task.expected_message) if task.expected_message else dynamic_expected_payload
         published_payload = dict(task.published_message or {})
+        received_payload = dict(task.received_message or {})
 
         dynamic_publish_meta = {
             "exchange": publish_exchange,
@@ -358,10 +380,12 @@ class TaskStore(QObject):
                 "completed_at": self._datetime_to_str(task.completed_at),
                 "image_path": task.image_path,
                 "publish_meta": publish_meta,
+                "received_meta": dict(task.received_meta),
             },
             "payload": {
                 "expected": expected_payload,
                 "published": published_payload,
+                "received": received_payload,
             },
         }
 

@@ -87,7 +87,9 @@ class ImageTask:
     error_message: str | None = None
     expected_message: dict[str, Any] | None = None
     published_message: dict[str, Any] | None = None
+    received_message: dict[str, Any] | None = None
     publish_meta: dict[str, str] = field(default_factory=dict)
+    received_meta: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(slots=True)

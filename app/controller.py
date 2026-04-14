@@ -319,6 +319,27 @@ class TaskController(QObject):
             self._log(f"결과 파싱 실패: {exc}")
             return
 
+        payload_request_id = str(envelope.payload.get("request_id", "")).strip()
+        if payload_request_id:
+            matched_by = "payload.request_id"
+        elif envelope.correlation_id:
+            matched_by = "correlation_id"
+        elif envelope.message_id:
+            matched_by = "message_id"
+        else:
+            matched_by = "unknown"
+
+        self._store.set_task_received_message(
+            request_id=parsed.request_id,
+            payload=envelope.payload,
+            meta={
+                "message_id": str(envelope.message_id or ""),
+                "correlation_id": str(envelope.correlation_id or ""),
+                "matched_by": matched_by,
+                "received_at": datetime.now().astimezone().isoformat(),
+            },
+        )
+
         changed = self._store.apply_result(parsed)
         if not changed:
             return
