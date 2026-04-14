@@ -24,11 +24,11 @@ class ConfigLoaderTest(unittest.TestCase):
               password: "guest"
             publish:
               default_action: "RUN_RECIPE"
-              default_recipe_alias: "정밀"
+              default_recipe_alias: "Precision"
               recipe_presets:
-                - alias: "기본"
+                - alias: "Default"
                   path: "recipes/default.json"
-                - alias: "정밀"
+                - alias: "Precision"
                   path: "recipes/precision.json"
             """
         ).strip()
@@ -39,7 +39,7 @@ class ConfigLoaderTest(unittest.TestCase):
 
             config = ConfigLoader.load(config_path)
 
-        self.assertEqual(config.publish.default_recipe_alias, "정밀")
+        self.assertEqual(config.publish.default_recipe_alias, "Precision")
         self.assertEqual(config.publish.default_recipe_path, "recipes/precision.json")
         self.assertEqual(len(config.publish.recipe_presets), 2)
 
@@ -62,10 +62,10 @@ class ConfigLoaderTest(unittest.TestCase):
 
             config = ConfigLoader.load(config_path)
 
-        self.assertEqual(config.publish.default_recipe_alias, "기본 레시피")
+        self.assertEqual(config.publish.default_recipe_alias, "Default Recipe")
         self.assertEqual(config.publish.default_recipe_path, "recipes/legacy.json")
         self.assertEqual(len(config.publish.recipe_presets), 1)
-        self.assertEqual(config.publish.recipe_presets[0].alias, "기본 레시피")
+        self.assertEqual(config.publish.recipe_presets[0].alias, "Default Recipe")
 
 
 if __name__ == "__main__":

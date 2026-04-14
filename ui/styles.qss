@@ -78,8 +78,7 @@ QPushButton:disabled {
 QLineEdit,
 QComboBox,
 QTextEdit,
-QTreeView,
-QTableView {
+QTreeView {
     background-color: #0b1220;
     border: 1px solid #1e293b;
     border-radius: 8px;
@@ -120,8 +119,18 @@ QHeaderView::section {
 }
 
 QTableView {
+    background-color: #0b1220;
+    border: 1px solid #1e293b;
+    border-radius: 8px;
+    selection-background-color: #1d4ed8;
+    selection-color: #eff6ff;
     gridline-color: #1e293b;
     alternate-background-color: #0f1a30;
+    padding: 0px;
+}
+
+QTableView::item {
+    padding: 6px 8px;
 }
 
 QProgressBar {

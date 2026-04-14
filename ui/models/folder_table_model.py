@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt
+from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt, QSize
 from PySide6.QtGui import QPainter
 from PySide6.QtWidgets import QStyledItemDelegate, QStyleOptionProgressBar, QApplication, QStyle
 
@@ -12,7 +12,7 @@ from models.task_models import FolderSummary
 class FolderTableModel(QAbstractTableModel):
     """Table model that tracks folder-level progress rows."""
 
-    HEADERS = ["폴더", "총", "완료", "성공", "실패", "타임아웃", "진행률", "상태"]
+    HEADERS = ["진행률", "상태", "폴더", "총", "완료", "성공", "실패", "타임아웃"]
 
     def __init__(self) -> None:
         super().__init__()
@@ -38,21 +38,21 @@ class FolderTableModel(QAbstractTableModel):
 
         if role == Qt.DisplayRole:
             if column == 0:
-                return row.folder_path
-            if column == 1:
-                return row.total
-            if column == 2:
-                return row.completed
-            if column == 3:
-                return row.success
-            if column == 4:
-                return row.fail + row.error
-            if column == 5:
-                return row.timeout
-            if column == 6:
                 return round(row.progress, 1)
-            if column == 7:
+            if column == 1:
                 return row.status.value
+            if column == 2:
+                return row.folder_path
+            if column == 3:
+                return row.total
+            if column == 4:
+                return row.completed
+            if column == 5:
+                return row.success
+            if column == 6:
+                return row.fail + row.error
+            if column == 7:
+                return row.timeout
 
         if role == Qt.UserRole:
             return row
@@ -115,6 +115,15 @@ class FolderTableModel(QAbstractTableModel):
 class ProgressBarDelegate(QStyledItemDelegate):
     """Paint folder progress percentage as native progress bar."""
 
+    def sizeHint(self, option, index: QModelIndex) -> QSize:  # type: ignore[override]
+        """Return stable minimum room so progress bars remain readable."""
+
+        metrics = option.fontMetrics
+        text_width = metrics.horizontalAdvance("100%")
+        min_width = max(112, text_width + 56)
+        min_height = max(28, metrics.height() + 10)
+        return QSize(min_width, min_height)
+
     def paint(self, painter: QPainter, option, index: QModelIndex) -> None:  # type: ignore[override]
         value = index.data(Qt.DisplayRole)
         try:
@@ -123,7 +132,7 @@ class ProgressBarDelegate(QStyledItemDelegate):
             progress = 0
 
         progress_option = QStyleOptionProgressBar()
-        progress_option.rect = option.rect.adjusted(6, 6, -6, -6)
+        progress_option.rect = option.rect.adjusted(8, 5, -8, -5)
         progress_option.minimum = 0
         progress_option.maximum = 100
         progress_option.progress = progress

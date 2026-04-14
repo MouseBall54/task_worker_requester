@@ -9,6 +9,7 @@ from typing import Any
 
 from PySide6.QtCore import QDir, QModelIndex, Qt, Signal
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QDialog,
     QFileSystemModel,
     QFrame,
@@ -267,18 +268,21 @@ class MainWindow(QMainWindow):
         self.folder_table.setSelectionMode(QTableView.SingleSelection)
         self.folder_table.setAlternatingRowColors(True)
         self.folder_table.verticalHeader().setVisible(False)
-        self.folder_table.horizontalHeader().setStretchLastSection(False)
-        self.folder_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
-        self.folder_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        self.folder_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        self.folder_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
-        self.folder_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
-        self.folder_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeToContents)
-        self.folder_table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeToContents)
-        self.folder_table.horizontalHeader().setSectionResizeMode(7, QHeaderView.ResizeToContents)
+        self.folder_table.verticalHeader().setDefaultSectionSize(38)
+        self.folder_table.verticalHeader().setMinimumSectionSize(34)
+        self.folder_table.setWordWrap(False)
+        self.folder_table.setTextElideMode(Qt.ElideRight)
+        self.folder_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.folder_table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self.folder_table.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
 
-        self.folder_table.setItemDelegateForColumn(6, ProgressBarDelegate(self.folder_table))
-        self.folder_table.setItemDelegateForColumn(7, StatusBadgeDelegate(self.folder_table))
+        folder_header = self.folder_table.horizontalHeader()
+        folder_header.setStretchLastSection(False)
+        folder_header.setSectionResizeMode(QHeaderView.ResizeToContents)
+        folder_header.setResizeContentsPrecision(-1)
+        folder_header.setMinimumSectionSize(56)
+        self.folder_table.setItemDelegateForColumn(0, ProgressBarDelegate(self.folder_table))
+        self.folder_table.setItemDelegateForColumn(1, StatusBadgeDelegate(self.folder_table))
         self.folder_table.selectionModel().selectionChanged.connect(self._on_folder_row_selection_changed)
 
         layout.addWidget(self.folder_table)
@@ -297,10 +301,19 @@ class MainWindow(QMainWindow):
         self.image_table.setSelectionBehavior(QTableView.SelectRows)
         self.image_table.setAlternatingRowColors(True)
         self.image_table.verticalHeader().setVisible(False)
-        self.image_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        self.image_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
-        for col in range(2, self.image_table_model.columnCount()):
-            self.image_table.horizontalHeader().setSectionResizeMode(col, QHeaderView.ResizeToContents)
+        self.image_table.verticalHeader().setDefaultSectionSize(38)
+        self.image_table.verticalHeader().setMinimumSectionSize(34)
+        self.image_table.setWordWrap(False)
+        self.image_table.setTextElideMode(Qt.ElideRight)
+        self.image_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.image_table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self.image_table.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+
+        image_header = self.image_table.horizontalHeader()
+        image_header.setStretchLastSection(False)
+        image_header.setSectionResizeMode(QHeaderView.ResizeToContents)
+        image_header.setResizeContentsPrecision(-1)
+        image_header.setMinimumSectionSize(70)
 
         self._mq_button_delegate = MQButtonDelegate(self.image_table)
         self._mq_button_delegate.clicked.connect(self._on_mq_button_clicked)
@@ -310,6 +323,8 @@ class MainWindow(QMainWindow):
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
         self.log_text.setPlaceholderText("작업 로그가 여기에 표시됩니다.")
+        self.log_text.setLineWrapMode(QTextEdit.NoWrap)
+        self.log_text.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
 
         splitter.addWidget(self.image_table)
         splitter.addWidget(self.log_text)

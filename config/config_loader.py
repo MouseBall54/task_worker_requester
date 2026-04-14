@@ -179,6 +179,6 @@ class ConfigLoader:
             default_path = str(publish_raw.get("default_recipe_path", fallback_default_path)).strip()
             if not default_path:
                 default_path = PublishConfig.default_recipe_path
-            presets.append(RecipePreset(alias="기본 레시피", path=default_path))
+            presets.append(RecipePreset(alias="Default Recipe", path=default_path))
 
         return presets

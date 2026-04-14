@@ -176,10 +176,16 @@ class TaskController(QObject):
         if not self._view.confirm_reset():
             return
 
-        self._stop_workers("초기화를 위해 워커를 중지합니다.")
-        self._store.reset()
-        self._selected_folder = None
+        # Clear visible rows first so reset feedback is immediate to users.
         self._view.clear_progress_views()
+        self._selected_folder = None
+
+        try:
+            self._stop_workers("초기화를 위해 워커를 중지합니다.")
+        except Exception as exc:  # pylint: disable=broad-except
+            self._log(f"워커 중지 중 오류가 발생했지만 초기화를 계속 진행합니다: {exc}")
+
+        self._store.reset()
         self._active_result_queue = None
         self._view.set_active_result_queue(None)
         self._log("작업 상태를 초기화했습니다.")
@@ -375,17 +381,17 @@ class TaskController(QObject):
             self._log(reason)
 
     def _stop_workers(self, reason: str) -> None:
-        if self._publish_worker:
-            self._publish_worker.stop()
-        if self._poll_worker:
-            self._poll_worker.stop()
+        self._safe_stop_worker(self._publish_worker)
+        self._safe_stop_worker(self._poll_worker)
 
-        if self._publish_thread and self._publish_thread.isRunning():
-            self._publish_thread.quit()
-            self._publish_thread.wait(1500)
-        if self._poll_thread and self._poll_thread.isRunning():
-            self._poll_thread.quit()
-            self._poll_thread.wait(1500)
+        self._safe_quit_thread(self._publish_thread)
+        self._safe_quit_thread(self._poll_thread)
+
+        # Prevent stale references to already deleted Qt objects.
+        self._publish_worker = None
+        self._poll_worker = None
+        self._publish_thread = None
+        self._poll_thread = None
 
         self._active = False
         self._publish_finished = True
@@ -393,6 +399,32 @@ class TaskController(QObject):
         self._view.set_active_result_queue(None)
         self._view.set_running_state(False)
         self._log(reason)
+
+    @staticmethod
+    def _safe_stop_worker(worker: object | None) -> None:
+        """Stop worker if available, ignoring deleted-object runtime errors."""
+
+        if worker is None:
+            return
+        try:
+            stop = getattr(worker, "stop", None)
+            if callable(stop):
+                stop()
+        except RuntimeError:
+            return
+
+    @staticmethod
+    def _safe_quit_thread(thread: QThread | None) -> None:
+        """Quit/wait thread safely, tolerating deleted Qt wrappers."""
+
+        if thread is None:
+            return
+        try:
+            if thread.isRunning():
+                thread.quit()
+                thread.wait(1500)
+        except RuntimeError:
+            return
 
     def _check_connection_once(self) -> None:
         """Best-effort broker connectivity check for initial status badge."""
