@@ -1,0 +1,293 @@
+"""Centralized in-memory task state store."""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from uuid import uuid4
+
+from models.task_models import (
+    FolderSummary,
+    FolderTaskGroup,
+    ImageTask,
+    TaskMessage,
+    TaskResult,
+    TaskStatus,
+)
+from utils.qt_compat import QObject, Signal
+
+
+class TaskStore(QObject):
+    """Owns all runtime task/group states and emits update signals."""
+
+    folder_group_added = Signal(str)
+    folder_group_updated = Signal(str)
+    task_updated = Signal(str)
+    store_reset = Signal()
+    overall_updated = Signal(dict)
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._tasks: dict[str, ImageTask] = {}
+        self._groups: dict[str, FolderTaskGroup] = {}
+        self._folder_order: list[str] = []
+        self._processed_request_ids: set[str] = set()
+        self._folder_image_index: dict[str, set[str]] = {}
+
+    def reset(self) -> None:
+        """Clear every runtime state item."""
+
+        self._tasks.clear()
+        self._groups.clear()
+        self._folder_order.clear()
+        self._processed_request_ids.clear()
+        self._folder_image_index.clear()
+        self.store_reset.emit()
+        self._emit_overall()
+
+    def register_folder_map(self, folder_map: dict[str, list[str]]) -> tuple[int, int]:
+        """Register image tasks grouped by folder.
+
+        Returns
+        -------
+        tuple[int, int]
+            Added folder count, added image count.
+        """
+
+        added_folders = 0
+        added_images = 0
+
+        for folder_path, image_paths in folder_map.items():
+            if not image_paths:
+                continue
+
+            if folder_path not in self._groups:
+                self._groups[folder_path] = FolderTaskGroup(folder_path=folder_path)
+                self._folder_order.append(folder_path)
+                self._folder_image_index[folder_path] = set()
+                added_folders += 1
+                self.folder_group_added.emit(folder_path)
+
+            group = self._groups[folder_path]
+            index = self._folder_image_index[folder_path]
+
+            for image_path in image_paths:
+                if image_path in index:
+                    continue
+
+                request_id = str(uuid4())
+                task = ImageTask(
+                    request_id=request_id,
+                    image_path=image_path,
+                    folder_path=folder_path,
+                )
+                self._tasks[request_id] = task
+                group.task_ids.append(request_id)
+                index.add(image_path)
+                added_images += 1
+                self.task_updated.emit(request_id)
+
+            self.folder_group_updated.emit(folder_path)
+
+        if added_folders or added_images:
+            self._emit_overall()
+
+        return added_folders, added_images
+
+    def build_pending_messages(
+        self,
+        action: str,
+        result_queue_name: str,
+        recipe_path: str,
+    ) -> list[TaskMessage]:
+        """Create outbound task messages for not-yet-sent requests."""
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+        messages: list[TaskMessage] = []
+        for task in self._tasks.values():
+            if task.status != TaskStatus.PENDING:
+                continue
+            messages.append(
+                TaskMessage(
+                    request_id=task.request_id,
+                    action=action,
+                    QUEU_NAME=result_queue_name,
+                    RECIPE_PATH=recipe_path,
+                    IMG_LIST=[task.image_path],
+                    sent_at=now_iso,
+                )
+            )
+        return messages
+
+    def mark_task_sent(self, request_id: str) -> None:
+        """Update state when one request publish succeeds."""
+
+        task = self._tasks.get(request_id)
+        if not task or task.status != TaskStatus.PENDING:
+            return
+        task.status = TaskStatus.SENT
+        task.sent_at = datetime.now(timezone.utc)
+        self.task_updated.emit(request_id)
+        self.folder_group_updated.emit(task.folder_path)
+        self._emit_overall()
+
+    def mark_task_error(self, request_id: str, message: str) -> None:
+        """Mark task as failed during publish/processing errors."""
+
+        task = self._tasks.get(request_id)
+        if not task:
+            return
+        if task.status.is_done:
+            return
+
+        task.status = TaskStatus.ERROR
+        task.error_message = message
+        task.completed_at = datetime.now(timezone.utc)
+        self.task_updated.emit(request_id)
+        self.folder_group_updated.emit(task.folder_path)
+        self._emit_overall()
+
+    def apply_result(self, task_result: TaskResult) -> bool:
+        """Merge one inbound result into task state.
+
+        Returns
+        -------
+        bool
+            True when state changed, False for duplicate/unknown.
+        """
+
+        request_id = task_result.request_id
+        if request_id in self._processed_request_ids:
+            return False
+
+        task = self._tasks.get(request_id)
+        if not task:
+            return False
+
+        if task.status.is_done:
+            self._processed_request_ids.add(request_id)
+            return False
+
+        task.result = task_result.result
+        task.error_message = task_result.error
+        task.completed_at = self._parse_completed_at(task_result.completed_at)
+
+        if task_result.is_success:
+            task.status = TaskStatus.SUCCESS
+        else:
+            task.status = TaskStatus.FAIL
+
+        self._processed_request_ids.add(request_id)
+        self.task_updated.emit(request_id)
+        self.folder_group_updated.emit(task.folder_path)
+        self._emit_overall()
+        return True
+
+    def mark_timeouts(self, timeout_seconds: int) -> list[str]:
+        """Mark non-terminal sent tasks as timeout after threshold."""
+
+        now = datetime.now(timezone.utc)
+        timed_out_request_ids: list[str] = []
+
+        for task in self._tasks.values():
+            if task.status not in {TaskStatus.SENT, TaskStatus.RUNNING}:
+                continue
+            if task.sent_at is None:
+                continue
+            elapsed = (now - task.sent_at).total_seconds()
+            if elapsed < timeout_seconds:
+                continue
+
+            task.status = TaskStatus.TIMEOUT
+            task.completed_at = now
+            task.error_message = "결과 수신 시간 초과"
+            self._processed_request_ids.add(task.request_id)
+            timed_out_request_ids.append(task.request_id)
+            self.task_updated.emit(task.request_id)
+            self.folder_group_updated.emit(task.folder_path)
+
+        if timed_out_request_ids:
+            self._emit_overall()
+
+        return timed_out_request_ids
+
+    def get_folder_summaries(self) -> list[FolderSummary]:
+        """Return summaries in stable insertion order."""
+
+        return [self._groups[path].to_summary(self._tasks) for path in self._folder_order]
+
+    def get_folder_summary(self, folder_path: str) -> FolderSummary | None:
+        """Return one folder summary by path."""
+
+        group = self._groups.get(folder_path)
+        if not group:
+            return None
+        return group.to_summary(self._tasks)
+
+    def get_image_tasks(self, folder_path: str) -> list[ImageTask]:
+        """Return image tasks for selected folder."""
+
+        group = self._groups.get(folder_path)
+        if not group:
+            return []
+
+        tasks = [self._tasks[task_id] for task_id in group.task_ids if task_id in self._tasks]
+        return sorted(tasks, key=lambda task: task.image_path.lower())
+
+    def get_task(self, request_id: str) -> ImageTask | None:
+        """Return task by request ID."""
+
+        return self._tasks.get(request_id)
+
+    def get_folder_paths(self) -> list[str]:
+        """Return all tracked folder paths."""
+
+        return list(self._folder_order)
+
+    def has_pending_tasks(self) -> bool:
+        """Return whether there are tasks not yet published."""
+
+        return any(task.status == TaskStatus.PENDING for task in self._tasks.values())
+
+    def all_tasks_terminal(self) -> bool:
+        """Return True when every tracked task is in terminal state."""
+
+        if not self._tasks:
+            return False
+        return all(task.status.is_done for task in self._tasks.values())
+
+    def overall_stats(self) -> dict[str, float | int]:
+        """Calculate total progress across all folders."""
+
+        total = len(self._tasks)
+        completed = sum(task.status.is_done for task in self._tasks.values())
+        success = sum(task.status == TaskStatus.SUCCESS for task in self._tasks.values())
+        fail = sum(task.status == TaskStatus.FAIL for task in self._tasks.values())
+        timeout = sum(task.status == TaskStatus.TIMEOUT for task in self._tasks.values())
+        error = sum(task.status == TaskStatus.ERROR for task in self._tasks.values())
+        progress = (completed / total * 100.0) if total else 0.0
+
+        return {
+            "total": total,
+            "completed": completed,
+            "success": success,
+            "fail": fail,
+            "timeout": timeout,
+            "error": error,
+            "progress": progress,
+        }
+
+    def _emit_overall(self) -> None:
+        """Emit aggregate progress to update global UI widgets."""
+
+        self.overall_updated.emit(self.overall_stats())
+
+    @staticmethod
+    def _parse_completed_at(raw_completed_at: str | None) -> datetime:
+        """Parse completed timestamp from message or fallback to now."""
+
+        if not raw_completed_at:
+            return datetime.now(timezone.utc)
+        try:
+            return datetime.fromisoformat(raw_completed_at)
+        except ValueError:
+            return datetime.now(timezone.utc)
