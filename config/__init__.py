@@ -1,7 +1,7 @@
 """Configuration package."""
 
 from config.config_loader import ConfigError, ConfigLoader
-from config.models import AppConfig, PublishConfig, RabbitMQConfig, UiConfig
+from config.models import AppConfig, PublishConfig, RabbitMQConfig, RecipePreset, UiConfig
 
 __all__ = [
     "AppConfig",
@@ -9,5 +9,6 @@ __all__ = [
     "ConfigLoader",
     "PublishConfig",
     "RabbitMQConfig",
+    "RecipePreset",
     "UiConfig",
 ]

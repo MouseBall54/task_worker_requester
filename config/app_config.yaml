@@ -18,7 +18,15 @@ rabbitmq:
 
 publish:
   default_action: "RUN_RECIPE"
+  default_recipe_alias: "기본 레시피"
   default_recipe_path: "recipes/default_recipe.json"
+  recipe_presets:
+    - alias: "기본 레시피"
+      path: "recipes/default_recipe.json"
+    - alias: "고속 판정 레시피"
+      path: "recipes/fast_recipe.json"
+    - alias: "정밀 판정 레시피"
+      path: "recipes/precision_recipe.json"
   polling_interval_seconds: 5
   timeout_seconds: 300
   max_messages_per_poll: 100

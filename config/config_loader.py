@@ -8,7 +8,7 @@ from typing import Any, Mapping, TypeVar
 
 import yaml
 
-from config.models import AppConfig, PublishConfig, RabbitMQConfig, UiConfig
+from config.models import AppConfig, PublishConfig, RabbitMQConfig, RecipePreset, UiConfig
 
 
 class ConfigError(RuntimeError):
@@ -76,7 +76,12 @@ class ConfigLoader:
             raise ConfigError("publish/ui 설정은 key-value 형식이어야 합니다.")
 
         rabbitmq = _build_dataclass(RabbitMQConfig, rabbitmq_raw)
-        publish = _build_dataclass(PublishConfig, publish_raw)
+        publish_for_parse = dict(publish_raw)
+        publish_for_parse["recipe_presets"] = ConfigLoader._parse_recipe_presets(
+            publish_raw=publish_raw,
+            fallback_default_path=str(publish_raw.get("default_recipe_path", PublishConfig.default_recipe_path)),
+        )
+        publish = _build_dataclass(PublishConfig, publish_for_parse)
         ui = _build_dataclass(UiConfig, ui_raw)
 
         config = AppConfig(
@@ -113,3 +118,67 @@ class ConfigLoader:
 
         if config.publish.scan_mode not in {"direct", "recursive"}:
             raise ConfigError("scan_mode 는 direct 또는 recursive 여야 합니다.")
+
+        presets = config.publish.recipe_presets
+        if not presets:
+            raise ConfigError("recipe_presets 가 비어 있습니다. 최소 1개 이상의 레시피를 설정해주세요.")
+
+        alias_set: set[str] = set()
+        for preset in presets:
+            alias = preset.alias.strip()
+            recipe_path = preset.path.strip()
+            if not alias:
+                raise ConfigError("recipe_presets.alias 는 빈 값일 수 없습니다.")
+            if not recipe_path:
+                raise ConfigError("recipe_presets.path 는 빈 값일 수 없습니다.")
+            key = alias.lower()
+            if key in alias_set:
+                raise ConfigError(f"recipe_presets alias 중복: {alias}")
+            alias_set.add(key)
+            preset.alias = alias
+            preset.path = recipe_path
+
+        if config.publish.default_recipe_alias:
+            selected_alias = config.publish.default_recipe_alias.strip()
+            if selected_alias.lower() not in alias_set:
+                raise ConfigError(
+                    f"default_recipe_alias '{selected_alias}' 는 recipe_presets 에 정의되어야 합니다."
+                )
+            config.publish.default_recipe_alias = selected_alias
+        else:
+            config.publish.default_recipe_alias = presets[0].alias
+
+        # Keep backward-compatible path field aligned with selected default alias.
+        selected_preset = next(
+            preset
+            for preset in presets
+            if preset.alias.lower() == config.publish.default_recipe_alias.lower()
+        )
+        config.publish.default_recipe_path = selected_preset.path
+
+    @staticmethod
+    def _parse_recipe_presets(publish_raw: Mapping[str, Any], fallback_default_path: str) -> list[RecipePreset]:
+        """Parse recipe presets from config with backward compatibility."""
+
+        raw_presets = publish_raw.get("recipe_presets")
+        presets: list[RecipePreset] = []
+
+        if isinstance(raw_presets, list):
+            for idx, item in enumerate(raw_presets, start=1):
+                if not isinstance(item, Mapping):
+                    raise ConfigError(f"recipe_presets[{idx}] 항목은 key-value 형식이어야 합니다.")
+                alias = str(item.get("alias", "")).strip()
+                path = str(item.get("path", "")).strip()
+                if not alias or not path:
+                    raise ConfigError(
+                        f"recipe_presets[{idx}] 항목은 alias/path 모두 필요합니다."
+                    )
+                presets.append(RecipePreset(alias=alias, path=path))
+
+        if not presets:
+            default_path = str(publish_raw.get("default_recipe_path", fallback_default_path)).strip()
+            if not default_path:
+                default_path = PublishConfig.default_recipe_path
+            presets.append(RecipePreset(alias="기본 레시피", path=default_path))
+
+        return presets

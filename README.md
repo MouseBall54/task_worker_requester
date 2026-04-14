@@ -10,6 +10,7 @@ RabbitMQ로 이미지 단위 작업 요청을 전송하고(`IMG_LIST` 1건), 전
 - 폴더 단위 진행률/성공/실패/타임아웃 집계
 - 실시간 로그 패널
 - Mock Broker 모드 (`mock_mode: true`)
+- 설정 파일의 레시피 별명(`alias`) 선택 지원
 
 ## 실행
 
@@ -30,6 +31,7 @@ uv run python main.py config/app_config.yaml
 
 - `mock_mode: true` 이면 실제 RabbitMQ 없이 시뮬레이션 결과를 생성합니다.
 - 실제 서버 사용 시 `mock_mode: false` 로 변경 후 `rabbitmq` 섹션을 설정하세요.
+- `publish.recipe_presets`에 `alias/path`를 등록하면 UI에는 별명이 표시되고 전송에는 실제 path가 사용됩니다.
 
 ## 테스트
 

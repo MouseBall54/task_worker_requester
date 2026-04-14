@@ -11,6 +11,14 @@ ScanMode = Literal["direct", "recursive"]
 
 
 @dataclass(slots=True)
+class RecipePreset:
+    """Alias/path pair shown in UI recipe selector."""
+
+    alias: str
+    path: str
+
+
+@dataclass(slots=True)
 class RabbitMQConfig:
     """RabbitMQ connection and queue settings."""
 
@@ -35,6 +43,8 @@ class PublishConfig:
 
     default_action: str = "RUN_RECIPE"
     default_recipe_path: str = "recipes/default_recipe.json"
+    default_recipe_alias: str | None = None
+    recipe_presets: list[RecipePreset] = field(default_factory=list)
     polling_interval_seconds: int = 5
     timeout_seconds: int = 300
     max_messages_per_poll: int = 50

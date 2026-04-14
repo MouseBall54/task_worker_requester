@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from pathlib import PureWindowsPath
 from pathlib import Path
 
-from PySide6.QtCore import QDir, Qt, Signal
+from PySide6.QtCore import QDir, QModelIndex, Qt, Signal
 from PySide6.QtWidgets import (
     QFileSystemModel,
     QFrame,
@@ -46,6 +47,7 @@ class MainWindow(QMainWindow):
     def __init__(self, config: AppConfig) -> None:
         super().__init__()
         self._config = config
+        self._is_syncing_navigation = False
         self._build_ui()
         self._apply_defaults()
 
@@ -78,22 +80,41 @@ class MainWindow(QMainWindow):
         title.setObjectName("panelTitle")
         layout.addWidget(title)
 
+        drive_row = QHBoxLayout()
+        drive_row.addWidget(QLabel("드라이브"), stretch=0)
+        self.drive_combo = QComboBox()
+        self.drive_combo.currentIndexChanged.connect(self._on_drive_changed)
+        drive_row.addWidget(self.drive_combo, stretch=1)
+        layout.addLayout(drive_row)
+
+        jump_row = QHBoxLayout()
+        self.path_jump_edit = QLineEdit()
+        self.path_jump_edit.setPlaceholderText(r"경로 입력 (예: D:\data\set1)")
+        self.path_jump_edit.returnPressed.connect(self._on_path_jump_requested)
+        self.btn_path_jump = QPushButton("이동")
+        self.btn_path_jump.clicked.connect(self._on_path_jump_requested)
+        jump_row.addWidget(self.path_jump_edit, stretch=1)
+        jump_row.addWidget(self.btn_path_jump, stretch=0)
+        layout.addLayout(jump_row)
+
         self.folder_tree = QTreeView()
         self.folder_tree.setHeaderHidden(True)
         self.folder_tree.setAnimated(True)
         self.folder_tree.setIndentation(18)
 
         self.file_system_model = QFileSystemModel(self.folder_tree)
-        self.file_system_model.setRootPath(QDir.rootPath())
-        self.file_system_model.setFilter(QDir.AllDirs | QDir.NoDotAndDotDot)
+        self.file_system_model.setRootPath("")
+        self.file_system_model.setFilter(QDir.AllDirs | QDir.NoDotAndDotDot | QDir.Drives)
 
         self.folder_tree.setModel(self.file_system_model)
         for col in range(1, 4):
             self.folder_tree.hideColumn(col)
+        if self.folder_tree.selectionModel():
+            self.folder_tree.selectionModel().currentChanged.connect(self._on_tree_current_changed)
 
-        home_index = self.file_system_model.index(str(Path.home()))
-        self.folder_tree.setRootIndex(home_index)
-        self.folder_tree.expand(home_index)
+        self.folder_tree.setRootIndex(QModelIndex())
+        self._populate_drive_combo()
+        self.jump_to_path(str(Path.home()), show_feedback=False)
 
         layout.addWidget(self.folder_tree, stretch=1)
 
@@ -140,10 +161,18 @@ class MainWindow(QMainWindow):
         layout.addLayout(row_action)
 
         row_recipe = QHBoxLayout()
-        row_recipe.addWidget(QLabel("Recipe Path"), stretch=0)
-        self.recipe_edit = QLineEdit()
-        row_recipe.addWidget(self.recipe_edit, stretch=1)
+        row_recipe.addWidget(QLabel("Recipe"), stretch=0)
+        self.recipe_combo = QComboBox()
+        self.recipe_combo.currentIndexChanged.connect(self._on_recipe_changed)
+        row_recipe.addWidget(self.recipe_combo, stretch=1)
         layout.addLayout(row_recipe)
+
+        recipe_path_row = QHBoxLayout()
+        recipe_path_row.addWidget(QLabel("선택 경로"), stretch=0)
+        self.recipe_path_preview = QLineEdit()
+        self.recipe_path_preview.setReadOnly(True)
+        recipe_path_row.addWidget(self.recipe_path_preview, stretch=1)
+        layout.addLayout(recipe_path_row)
 
         row_polling = QHBoxLayout()
         row_polling.addWidget(QLabel("Polling 간격"), stretch=0)
@@ -236,7 +265,7 @@ class MainWindow(QMainWindow):
 
     def _apply_defaults(self) -> None:
         self.action_edit.setText(self._config.publish.default_action)
-        self.recipe_edit.setText(self._config.publish.default_recipe_path)
+        self._populate_recipe_selector()
 
         idx = self.polling_combo.findText(str(self._config.publish.polling_interval_seconds))
         if idx >= 0:
@@ -244,11 +273,68 @@ class MainWindow(QMainWindow):
         else:
             self.polling_combo.setCurrentText(str(self._config.publish.polling_interval_seconds))
 
+    def jump_to_path(self, path: str, show_feedback: bool = True) -> bool:
+        """Move tree focus to a specific path without auto-registering tasks."""
+
+        cleaned_path = path.strip()
+        if not cleaned_path:
+            if show_feedback:
+                self._show_path_error("이동할 경로를 입력해주세요.")
+            return False
+
+        target = Path(cleaned_path).expanduser()
+        try:
+            if not target.is_absolute():
+                target = (Path.cwd() / target).resolve()
+            else:
+                target = target.resolve()
+        except OSError:
+            if show_feedback:
+                self._show_path_error(f"경로를 해석할 수 없습니다: {cleaned_path}")
+            return False
+
+        if target.is_file():
+            target = target.parent
+
+        if not target.exists() or not target.is_dir():
+            if show_feedback:
+                self._show_path_error(f"유효한 폴더 경로가 아닙니다: {target}")
+            return False
+
+        target_path = str(target)
+        model_index = self.file_system_model.index(target_path)
+        if not model_index.isValid():
+            if show_feedback:
+                self._show_path_error(f"트리에서 경로를 찾을 수 없습니다: {target_path}")
+            return False
+
+        self._is_syncing_navigation = True
+        try:
+            # Keep global root visible so all drives remain visible in the tree.
+            self.folder_tree.setRootIndex(QModelIndex())
+
+            self._expand_parent_chain(model_index)
+            self.folder_tree.setCurrentIndex(model_index)
+            self.folder_tree.scrollTo(model_index, QTreeView.PositionAtCenter)
+            self.folder_tree.expand(model_index)
+            self.folder_tree.setFocus(Qt.OtherFocusReason)
+
+            self.path_jump_edit.setText(str(target))
+            self._sync_drive_combo_for_path(target)
+        finally:
+            self._is_syncing_navigation = False
+
+        if show_feedback:
+            self.append_log(f"[탐색] 경로 이동 완료: {target}")
+        return True
+
     def current_runtime_settings(self) -> tuple[str, str, int]:
         """Return action, recipe path, polling interval from UI fields."""
 
         action = self.action_edit.text().strip()
-        recipe_path = self.recipe_edit.text().strip()
+        recipe_path = str(self.recipe_combo.currentData() or "").strip()
+        if not recipe_path:
+            recipe_path = self._config.publish.default_recipe_path
 
         polling_text = self.polling_combo.currentText().strip() or "5"
         try:
@@ -355,3 +441,151 @@ class MainWindow(QMainWindow):
         folder_path = self.folder_table_model.folder_at(index.row())
         if folder_path:
             self.folder_row_selected.emit(folder_path)
+
+    def _populate_drive_combo(self) -> None:
+        """Populate drive selector from OS drive list."""
+
+        self.drive_combo.blockSignals(True)
+        self.drive_combo.clear()
+
+        seen: set[str] = set()
+        drives = QDir.drives()
+        for drive_info in drives:
+            drive_path = drive_info.absoluteFilePath()
+            normalized_key = drive_path.lower()
+            if normalized_key in seen:
+                continue
+            seen.add(normalized_key)
+
+            label = self._drive_label(drive_path)
+            self.drive_combo.addItem(label, drive_path)
+
+        if self.drive_combo.count() == 0:
+            # Non-Windows fallback: keep at least one root entry.
+            self.drive_combo.addItem(QDir.rootPath(), QDir.rootPath())
+
+        self.drive_combo.blockSignals(False)
+        self._sync_drive_combo_for_path(Path.home())
+
+    def _on_drive_changed(self, index: int) -> None:
+        """Jump tree focus when user picks a drive from combo box."""
+
+        if index < 0 or self._is_syncing_navigation:
+            return
+        drive_path = str(self.drive_combo.itemData(index) or "").strip()
+        if not drive_path:
+            return
+
+        drive_index = self.file_system_model.index(drive_path)
+        if not drive_index.isValid():
+            self._show_path_error(f"드라이브를 트리에서 찾을 수 없습니다: {drive_path}")
+            return
+
+        self._is_syncing_navigation = True
+        try:
+            # Always show the global drive list in the tree.
+            self.folder_tree.setRootIndex(QModelIndex())
+            self.folder_tree.setCurrentIndex(drive_index)
+            self.folder_tree.scrollTo(drive_index, QTreeView.PositionAtCenter)
+            self.folder_tree.expand(drive_index)
+            self.folder_tree.setFocus(Qt.OtherFocusReason)
+            self.path_jump_edit.setText(str(Path(drive_path)))
+        finally:
+            self._is_syncing_navigation = False
+
+        self.append_log(f"[탐색] 드라이브 선택: {drive_path}")
+
+    def _on_path_jump_requested(self) -> None:
+        """Handle explicit path jump request from left panel."""
+
+        input_path = self.path_jump_edit.text()
+        self.jump_to_path(input_path, show_feedback=True)
+
+    def _show_path_error(self, message: str) -> None:
+        """Show path validation errors in both dialog and log panel."""
+
+        QMessageBox.warning(self, "경로 이동 실패", message)
+        self.append_log(f"[탐색] {message}")
+
+    def _expand_parent_chain(self, index: QModelIndex) -> None:
+        """Expand ancestor nodes so target path is visible in the tree."""
+
+        parent = index.parent()
+        while parent.isValid():
+            self.folder_tree.expand(parent)
+            parent = parent.parent()
+
+    def _sync_drive_combo_for_path(self, target_path: str | Path) -> None:
+        """Sync drive combo selection to the current path."""
+
+        target = Path(target_path)
+        drive = PureWindowsPath(str(target)).drive
+        if not drive:
+            return
+
+        target_drive = drive.lower().rstrip("\\/")
+        for idx in range(self.drive_combo.count()):
+            data = str(self.drive_combo.itemData(idx) or "")
+            combo_drive = PureWindowsPath(data).drive.lower().rstrip("\\/")
+            if combo_drive == target_drive:
+                self.drive_combo.blockSignals(True)
+                self.drive_combo.setCurrentIndex(idx)
+                self.drive_combo.blockSignals(False)
+                return
+
+    def _on_tree_current_changed(self, current: QModelIndex, _previous: QModelIndex) -> None:
+        """Reflect current tree selection immediately into path input and drive combo."""
+
+        if self._is_syncing_navigation or not current.isValid():
+            return
+
+        selected_path = self.file_system_model.filePath(current)
+        if not selected_path:
+            return
+
+        self._is_syncing_navigation = True
+        try:
+            self.path_jump_edit.setText(selected_path)
+            self._sync_drive_combo_for_path(selected_path)
+        finally:
+            self._is_syncing_navigation = False
+
+    @staticmethod
+    def _drive_label(drive_path: str) -> str:
+        """Return user-friendly label for drive combo entries."""
+
+        drive = PureWindowsPath(drive_path).drive
+        if drive:
+            return f"{drive}\\"
+        return drive_path
+
+    def _populate_recipe_selector(self) -> None:
+        """Populate recipe alias combo from config presets."""
+
+        self.recipe_combo.blockSignals(True)
+        self.recipe_combo.clear()
+
+        for preset in self._config.publish.recipe_presets:
+            self.recipe_combo.addItem(preset.alias, preset.path)
+
+        default_alias = (self._config.publish.default_recipe_alias or "").strip().lower()
+        selected_idx = 0
+        if default_alias:
+            for idx in range(self.recipe_combo.count()):
+                alias = self.recipe_combo.itemText(idx).strip().lower()
+                if alias == default_alias:
+                    selected_idx = idx
+                    break
+        self.recipe_combo.setCurrentIndex(selected_idx)
+        self.recipe_combo.blockSignals(False)
+        self._on_recipe_changed(selected_idx)
+
+    def _on_recipe_changed(self, index: int) -> None:
+        """Update path preview when user selects recipe alias."""
+
+        if index < 0:
+            self.recipe_path_preview.clear()
+            return
+        recipe_path = str(self.recipe_combo.itemData(index) or "")
+        self.recipe_path_preview.setText(recipe_path)
+        self.recipe_path_preview.setToolTip(recipe_path)
