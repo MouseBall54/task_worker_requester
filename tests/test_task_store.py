@@ -33,7 +33,7 @@ class TaskStoreTest(unittest.TestCase):
         payload_keys = set(messages[0].to_dict().keys())
         self.assertEqual(
             payload_keys,
-            {"request_id", "action", "QUEU_NAME", "RECIPE_PATH", "IMG_LIST"},
+            {"request_id", "action", "QUEUE_NAME", "RECIPE_PATH", "IMG_LIST"},
         )
         self.assertNotIn("sent_at", payload_keys)
 
@@ -148,7 +148,7 @@ class TaskStoreTest(unittest.TestCase):
         self.assertEqual(expected_payload["request_id"], message.request_id)
         self.assertEqual(expected_payload["action"], "RUN_PREVIEW")
         self.assertEqual(expected_payload["RECIPE_PATH"], "recipes/preview.json")
-        self.assertEqual(expected_payload["QUEU_NAME"], "task.result.client")
+        self.assertEqual(expected_payload["QUEUE_NAME"], "task.result.client")
         self.assertEqual(expected_payload["IMG_LIST"], [task.image_path])
         self.assertEqual(preview["payload"]["published"], {})
         self.assertEqual(preview["connection"]["predicted_result_queue"], "task.result.client")
@@ -176,7 +176,7 @@ class TaskStoreTest(unittest.TestCase):
 
         self.assertIsNotNone(preview)
         assert preview is not None
-        self.assertEqual(preview["payload"]["expected"]["QUEU_NAME"], "task.result.client")
+        self.assertEqual(preview["payload"]["expected"]["QUEUE_NAME"], "task.result.client")
         self.assertEqual(preview["connection"]["active_result_queue"], "task.result.client")
         self.assertEqual(preview["connection"]["predicted_result_queue"], "task.result.client")
 

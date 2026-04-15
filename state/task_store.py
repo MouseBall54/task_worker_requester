@@ -112,7 +112,7 @@ class TaskStore(QObject):
                 TaskMessage(
                     request_id=task.request_id,
                     action=action,
-                    QUEU_NAME=result_queue_name,
+                    QUEUE_NAME=result_queue_name,
                     RECIPE_PATH=recipe_path,
                     IMG_LIST=[task.image_path],
                 )
@@ -142,7 +142,7 @@ class TaskStore(QObject):
                     TaskMessage(
                         request_id=task.request_id,
                         action=action,
-                        QUEU_NAME=result_queue_name,
+                        QUEUE_NAME=result_queue_name,
                         RECIPE_PATH=recipe_path,
                         IMG_LIST=[task.image_path],
                     )
@@ -376,7 +376,7 @@ class TaskStore(QObject):
         dynamic_expected_payload = {
             "request_id": task.request_id,
             "action": resolved_action,
-            "QUEU_NAME": predicted_queue,
+            "QUEUE_NAME": predicted_queue,
             "RECIPE_PATH": resolved_recipe_path,
             "IMG_LIST": [task.image_path],
         }
@@ -388,7 +388,7 @@ class TaskStore(QObject):
         dynamic_publish_meta = {
             "exchange": publish_exchange,
             "routing_key": publish_routing_key,
-            "reply_to": str(expected_payload.get("QUEU_NAME", predicted_queue)),
+            "reply_to": str(expected_payload.get("QUEUE_NAME", predicted_queue)),
             "message_id": task.request_id,
             "correlation_id": task.request_id,
             "content_type": "application/json",

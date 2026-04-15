@@ -36,7 +36,7 @@ class _MockBackend:
 
     @classmethod
     def schedule_result(cls, task_message: TaskMessage) -> None:
-        queue_name = task_message.QUEU_NAME
+        queue_name = task_message.QUEUE_NAME
         cls.declare_queue(queue_name)
 
         # Keep deterministic-ish behavior for testing: some fail, mostly pass.

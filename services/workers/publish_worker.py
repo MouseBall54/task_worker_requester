@@ -67,7 +67,7 @@ class PublishWorker(QObject):
                         publish_meta = {
                             "exchange": self._publish_exchange,
                             "routing_key": self._publish_routing_key,
-                            "reply_to": message.QUEU_NAME,
+                            "reply_to": message.QUEUE_NAME,
                             "message_id": message.request_id,
                             "correlation_id": message.request_id,
                             "content_type": "application/json",

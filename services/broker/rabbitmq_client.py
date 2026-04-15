@@ -52,7 +52,7 @@ class RabbitMQClient(AbstractBrokerClient):
         self._channel = self._connection.channel()
 
         # Ensure request queue exists when using default exchange.
-        self._channel.queue_declare(queue=self._config.request_queue, durable=True)
+        self._channel.queue_declare(queue=self._config.request_queue, arguments={"x-max-priority": 5, "module_group":"IPDK_WORKER"}, durable=True)
 
     def close(self) -> None:
         """Close channel and connection safely."""
@@ -69,7 +69,7 @@ class RabbitMQClient(AbstractBrokerClient):
 
         self._ensure_connected()
         assert self._channel is not None
-        self._channel.queue_declare(queue=queue_name, durable=True)
+        self._channel.queue_declare(queue=queue_name, arguments={"x-max-priority": 5, "module_group":"default"}, durable=True)
         return queue_name
 
     def publish_task(self, task_message: TaskMessage) -> None:
@@ -84,7 +84,7 @@ class RabbitMQClient(AbstractBrokerClient):
         properties = pika.BasicProperties(
             message_id=task_message.request_id,
             correlation_id=task_message.request_id,
-            reply_to=task_message.QUEU_NAME,
+            reply_to=task_message.QUEUE_NAME,
             content_type="application/json",
             delivery_mode=2,
             timestamp=int(time.time()),

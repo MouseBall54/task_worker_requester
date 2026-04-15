@@ -53,14 +53,14 @@ uv run python main.py config/app_config.yaml
 {
   "request_id": "3dc7831b-7c4b-45f1-b5cb-f00e6952f6d5",
   "action": "RUN_RECIPE",
-  "QUEU_NAME": "task.result.client.a1b2c3d4",
+  "QUEUE_NAME": "task.result.client.a1b2c3d4",
   "RECIPE_PATH": "recipes/default_recipe.json",
   "IMG_LIST": ["D:/data/folder_a/img001.jpg"]
 }
 ```
 
 - 이미지 1건당 메시지 1건으로 전송되며 `IMG_LIST` 길이는 항상 `1`입니다.
-- `message_id`, `correlation_id`, `reply_to`는 각각 `request_id`, `request_id`, `QUEU_NAME`으로 설정됩니다.
+- `message_id`, `correlation_id`, `reply_to`는 각각 `request_id`, `request_id`, `QUEUE_NAME`으로 설정됩니다.
 - `sent_at`는 앱 내부 상태 추적용이며 네트워크 payload에는 포함하지 않습니다.
 
 ## 테스트

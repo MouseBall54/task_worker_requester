@@ -39,7 +39,7 @@ class TaskMessage:
 
     request_id: str
     action: str
-    QUEU_NAME: str
+    QUEUE_NAME: str
     RECIPE_PATH: str
     IMG_LIST: list[str]
 
@@ -49,7 +49,7 @@ class TaskMessage:
         return {
             "request_id": self.request_id,
             "action": self.action,
-            "QUEU_NAME": self.QUEU_NAME,
+            "QUEUE_NAME": self.QUEUE_NAME,
             "RECIPE_PATH": self.RECIPE_PATH,
             "IMG_LIST": self.IMG_LIST,
         }
