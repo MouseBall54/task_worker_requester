@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -16,6 +17,9 @@ class BrokerResultEnvelope:
     payload: dict[str, Any]
     message_id: str | None = None
     correlation_id: str | None = None
+
+
+BrokerConsumeCallback = Callable[[BrokerResultEnvelope], None]
 
 
 class AbstractBrokerClient(ABC):
@@ -38,8 +42,21 @@ class AbstractBrokerClient(ABC):
         """Publish one image task message to RabbitMQ."""
 
     @abstractmethod
-    def poll_results(self, queue_name: str, max_messages: int) -> list[BrokerResultEnvelope]:
-        """Pull messages from result queue and acknowledge internally."""
+    def start_result_consumer(
+        self,
+        queue_name: str,
+        on_envelope: BrokerConsumeCallback,
+        prefetch_count: int,
+    ) -> None:
+        """Register a result consumer callback for the queue."""
+
+    @abstractmethod
+    def pump_events(self, time_limit_seconds: float) -> int:
+        """Process broker events for up to time_limit_seconds and return delivered count."""
+
+    @abstractmethod
+    def stop_result_consumer(self) -> None:
+        """Cancel any registered result consumer safely."""
 
     @abstractmethod
     def ping(self) -> bool:

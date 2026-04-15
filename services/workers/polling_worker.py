@@ -34,34 +34,54 @@ class PollingWorker(QObject):
 
     @Slot()
     def run(self) -> None:
-        """Poll queue repeatedly and emit every received result envelope."""
+        """Keep a consumer active while emitting periodic state-management ticks."""
 
         broker = self._broker_provider()
         try:
             broker.connect()
-            self.log.emit(f"결과 polling 시작: {self._queue_name}")
+            broker.declare_result_queue(self._queue_name)
+            self.log.emit(f"결과 consumer 등록 시작: {self._queue_name}")
+
+            received_since_tick = 0
+
+            def _on_envelope(envelope: BrokerResultEnvelope) -> None:
+                nonlocal received_since_tick
+                received_since_tick += 1
+                self.result_received.emit(envelope)
+
+            broker.start_result_consumer(
+                queue_name=self._queue_name,
+                on_envelope=_on_envelope,
+                prefetch_count=self._max_messages_per_poll,
+            )
+            self.log.emit(f"결과 consumer active: {self._queue_name}")
+
+            interval_seconds = max(0.1, float(self._polling_interval_seconds))
+            next_tick_at = time.monotonic() + interval_seconds
             while not self._stop_requested:
                 try:
-                    envelopes = broker.poll_results(
-                        queue_name=self._queue_name,
-                        max_messages=self._max_messages_per_poll,
-                    )
-                    for envelope in envelopes:
-                        self.result_received.emit(envelope)
-                    self.poll_cycle.emit(len(envelopes))
+                    broker.pump_events(time_limit_seconds=0.2)
                 except Exception as exc:  # pylint: disable=broad-except
-                    self.log.emit(f"polling 중 오류: {exc}")
+                    self.log.emit(f"consumer 이벤트 처리 중 오류: {exc}")
 
-                sleep_left = float(self._polling_interval_seconds)
-                while sleep_left > 0 and not self._stop_requested:
-                    step = min(0.2, sleep_left)
-                    time.sleep(step)
-                    sleep_left -= step
+                now = time.monotonic()
+                if now < next_tick_at:
+                    continue
 
-            self.log.emit("결과 polling 워커가 종료되었습니다.")
+                self.poll_cycle.emit(received_since_tick)
+                self.log.emit(f"tick 수행 - 수신 {received_since_tick}건")
+                received_since_tick = 0
+                next_tick_at = now + interval_seconds
+
+            self.log.emit("결과 consumer 워커가 종료되었습니다.")
         except Exception as exc:  # pylint: disable=broad-except
-            self.log.emit(f"결과 polling 워커 초기화 실패: {exc}")
+            self.log.emit(f"결과 consumer 워커 초기화 실패: {exc}")
         finally:
+            try:
+                broker.stop_result_consumer()
+                self.log.emit("consumer stop/cancel")
+            except Exception:  # pragma: no cover
+                pass
             try:
                 broker.close()
             except Exception:  # pragma: no cover

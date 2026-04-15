@@ -8,7 +8,7 @@ from typing import Any
 
 from config.models import RabbitMQConfig
 from models.task_models import TaskMessage
-from services.broker.base import AbstractBrokerClient, BrokerResultEnvelope
+from services.broker.base import AbstractBrokerClient, BrokerConsumeCallback, BrokerResultEnvelope
 from services.broker.routing import resolve_publish_route
 
 try:
@@ -26,6 +26,9 @@ class RabbitMQClient(AbstractBrokerClient):
         self._config = config
         self._connection: pika.BlockingConnection | None = None
         self._channel: BlockingChannel | None = None
+        self._consumer_tag: str | None = None
+        self._consumer_callback: BrokerConsumeCallback | None = None
+        self._delivered_since_pump = 0
 
     def connect(self) -> None:
         """Connect to RabbitMQ and prepare base request queue."""
@@ -57,6 +60,7 @@ class RabbitMQClient(AbstractBrokerClient):
     def close(self) -> None:
         """Close channel and connection safely."""
 
+        self.stop_result_consumer()
         if self._channel and self._channel.is_open:
             self._channel.close()
         if self._connection and self._connection.is_open:
@@ -98,37 +102,70 @@ class RabbitMQClient(AbstractBrokerClient):
             mandatory=False,
         )
 
-    def poll_results(self, queue_name: str, max_messages: int) -> list[BrokerResultEnvelope]:
-        """Fetch up to max_messages from queue via basic_get and ack each."""
+    def start_result_consumer(
+        self,
+        queue_name: str,
+        on_envelope: BrokerConsumeCallback,
+        prefetch_count: int,
+    ) -> None:
+        """Register a long-lived consumer so RabbitMQ shows active consumers."""
 
         self._ensure_connected()
         assert self._channel is not None
+        if self._consumer_tag is not None:
+            self.stop_result_consumer()
 
-        envelopes: list[BrokerResultEnvelope] = []
-        for _ in range(max_messages):
-            method_frame, properties, body = self._channel.basic_get(queue=queue_name, auto_ack=False)
-            if method_frame is None:
-                break
+        self._channel.basic_qos(prefetch_count=max(1, int(prefetch_count)))
+        self._consumer_callback = on_envelope
+        self._delivered_since_pump = 0
 
-            payload: dict[str, Any]
-            try:
-                decoded = body.decode("utf-8")
-                loaded = json.loads(decoded)
-                payload = loaded if isinstance(loaded, dict) else {"raw": loaded}
-            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-                payload = {"error": f"결과 메시지 파싱 실패: {exc}", "raw": str(body)}
-
-            envelopes.append(
-                BrokerResultEnvelope(
-                    payload=payload,
-                    message_id=getattr(properties, "message_id", None),
-                    correlation_id=getattr(properties, "correlation_id", None),
-                )
+        def _handle_message(channel, method_frame, properties, body: bytes) -> None:  # type: ignore[no-untyped-def]
+            payload = self._decode_payload(body)
+            envelope = BrokerResultEnvelope(
+                payload=payload,
+                message_id=getattr(properties, "message_id", None),
+                correlation_id=getattr(properties, "correlation_id", None),
             )
+            try:
+                if self._consumer_callback is not None:
+                    self._consumer_callback(envelope)
+            finally:
+                channel.basic_ack(delivery_tag=method_frame.delivery_tag)
+                self._delivered_since_pump += 1
 
-            self._channel.basic_ack(delivery_tag=method_frame.delivery_tag)
+        self._consumer_tag = self._channel.basic_consume(
+            queue=queue_name,
+            on_message_callback=_handle_message,
+            auto_ack=False,
+        )
 
-        return envelopes
+    def pump_events(self, time_limit_seconds: float) -> int:
+        """Pump pika events and return how many envelopes were delivered."""
+
+        self._ensure_connected()
+        assert self._connection is not None
+
+        self._delivered_since_pump = 0
+        self._connection.process_data_events(time_limit=max(0.0, float(time_limit_seconds)))
+        delivered = self._delivered_since_pump
+        self._delivered_since_pump = 0
+        return delivered
+
+    def stop_result_consumer(self) -> None:
+        """Cancel registered result consumer if it exists."""
+
+        if self._consumer_tag is None:
+            return
+
+        if self._channel and self._channel.is_open:
+            try:
+                self._channel.basic_cancel(self._consumer_tag)
+            except Exception:  # pragma: no cover - best effort cleanup
+                pass
+
+        self._consumer_tag = None
+        self._consumer_callback = None
+        self._delivered_since_pump = 0
 
     def ping(self) -> bool:
         """Return whether current connection appears healthy."""
@@ -140,3 +177,14 @@ class RabbitMQClient(AbstractBrokerClient):
 
         if self._connection is None or self._channel is None or not self._connection.is_open:
             self.connect()
+
+    @staticmethod
+    def _decode_payload(body: bytes) -> dict[str, Any]:
+        """Decode one broker body into a normalized dict payload."""
+
+        try:
+            decoded = body.decode("utf-8")
+            loaded = json.loads(decoded)
+            return loaded if isinstance(loaded, dict) else {"raw": loaded}
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            return {"error": f"결과 메시지 파싱 실패: {exc}", "raw": str(body)}

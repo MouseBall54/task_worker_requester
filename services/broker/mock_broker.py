@@ -5,12 +5,11 @@ from __future__ import annotations
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
-import random
 import threading
 import time
 
 from models.task_models import TaskMessage
-from services.broker.base import AbstractBrokerClient, BrokerResultEnvelope
+from services.broker.base import AbstractBrokerClient, BrokerConsumeCallback, BrokerResultEnvelope
 
 
 @dataclass(slots=True)
@@ -88,6 +87,9 @@ class MockBrokerClient(AbstractBrokerClient):
 
     def __init__(self) -> None:
         self._connected = False
+        self._consumer_queue_name: str | None = None
+        self._consumer_callback: BrokerConsumeCallback | None = None
+        self._prefetch_count = 1
 
     def connect(self) -> None:
         self._connected = True
@@ -103,9 +105,37 @@ class MockBrokerClient(AbstractBrokerClient):
         self._ensure_connected()
         _MockBackend.schedule_result(task_message)
 
-    def poll_results(self, queue_name: str, max_messages: int) -> list[BrokerResultEnvelope]:
+    def start_result_consumer(
+        self,
+        queue_name: str,
+        on_envelope: BrokerConsumeCallback,
+        prefetch_count: int,
+    ) -> None:
         self._ensure_connected()
-        return _MockBackend.collect_results(queue_name=queue_name, max_messages=max_messages)
+        _MockBackend.declare_queue(queue_name)
+        self._consumer_queue_name = queue_name
+        self._consumer_callback = on_envelope
+        self._prefetch_count = max(1, int(prefetch_count))
+
+    def pump_events(self, time_limit_seconds: float) -> int:
+        self._ensure_connected()
+        if self._consumer_queue_name is None or self._consumer_callback is None:
+            time.sleep(max(0.0, float(time_limit_seconds)))
+            return 0
+
+        time.sleep(max(0.0, float(time_limit_seconds)))
+        envelopes = _MockBackend.collect_results(
+            queue_name=self._consumer_queue_name,
+            max_messages=self._prefetch_count,
+        )
+        for envelope in envelopes:
+            self._consumer_callback(envelope)
+        return len(envelopes)
+
+    def stop_result_consumer(self) -> None:
+        self._consumer_queue_name = None
+        self._consumer_callback = None
+        self._prefetch_count = 1
 
     def ping(self) -> bool:
         return self._connected
