@@ -36,6 +36,13 @@ QLabel#panelTitle {
     color: #f8fafc;
 }
 
+QLabel#subPanelTitle {
+    font-size: 12px;
+    font-weight: 600;
+    color: #93c5fd;
+    padding: 2px 2px 0 2px;
+}
+
 QLabel#connectionStatus {
     border-radius: 8px;
     padding: 6px 10px;
@@ -131,6 +138,36 @@ QTableView {
 
 QTableView::item {
     padding: 6px 8px;
+}
+
+QTabWidget#bottomTabs::pane {
+    border: 1px solid #1e293b;
+    border-radius: 10px;
+    background-color: #0b1220;
+    top: -1px;
+}
+
+QTabWidget#bottomTabs QTabBar::tab {
+    background-color: #0f1a30;
+    color: #94a3b8;
+    border: 1px solid #1e293b;
+    border-bottom: none;
+    padding: 7px 14px;
+    margin-right: 4px;
+    border-top-left-radius: 8px;
+    border-top-right-radius: 8px;
+    min-width: 88px;
+}
+
+QTabWidget#bottomTabs QTabBar::tab:selected {
+    background-color: #1e3a8a;
+    color: #eff6ff;
+    border-color: #2563eb;
+}
+
+QTabWidget#bottomTabs QTabBar::tab:hover:!selected {
+    background-color: #13223b;
+    color: #cbd5e1;
 }
 
 QProgressBar {

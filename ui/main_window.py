@@ -7,7 +7,7 @@ from pathlib import PureWindowsPath
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QDir, QModelIndex, Qt, Signal
+from PySide6.QtCore import QDir, QModelIndex, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QDialog,
@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
-    QSplitter,
+    QTabWidget,
     QTableView,
     QTextEdit,
     QTreeView,
@@ -109,6 +109,11 @@ class MainWindow(QMainWindow):
         self._config = config
         self._is_syncing_navigation = False
         self._active_result_queue: str | None = None
+        self._is_syncing_folder_selection = False
+        self._pending_jump_target: str | None = None
+        self._pending_jump_show_feedback = False
+        self._pending_jump_attempts = 0
+        self._max_pending_jump_attempts = 10
         self._build_ui()
         self._apply_defaults()
 
@@ -166,6 +171,7 @@ class MainWindow(QMainWindow):
         self.file_system_model = QFileSystemModel(self.folder_tree)
         self.file_system_model.setRootPath("")
         self.file_system_model.setFilter(QDir.AllDirs | QDir.NoDotAndDotDot | QDir.Drives)
+        self.file_system_model.directoryLoaded.connect(self._on_directory_loaded)
 
         self.folder_tree.setModel(self.file_system_model)
         for col in range(1, 4):
@@ -200,8 +206,8 @@ class MainWindow(QMainWindow):
         layout.setSpacing(12)
 
         layout.addWidget(self._build_control_panel())
-        layout.addWidget(self._build_folder_progress_panel(), stretch=1)
-        layout.addWidget(self._build_bottom_panel(), stretch=1)
+        layout.addWidget(self._build_folder_progress_panel(), stretch=13)
+        layout.addWidget(self._build_bottom_panel(), stretch=7)
 
         return panel
 
@@ -215,18 +221,25 @@ class MainWindow(QMainWindow):
         self.connection_label.setObjectName("connectionStatus")
         layout.addWidget(self.connection_label)
 
-        row_action = QHBoxLayout()
-        row_action.addWidget(QLabel("Action"), stretch=0)
-        self.action_edit = QLineEdit()
-        row_action.addWidget(self.action_edit, stretch=1)
-        layout.addLayout(row_action)
+        row_action_recipe = QHBoxLayout()
 
-        row_recipe = QHBoxLayout()
-        row_recipe.addWidget(QLabel("Recipe"), stretch=0)
+        action_col = QHBoxLayout()
+        action_col.addWidget(QLabel("Action"), stretch=0)
+        self.action_edit = QLineEdit()
+        self.action_edit.setMinimumWidth(180)
+        action_col.addWidget(self.action_edit, stretch=1)
+
+        recipe_col = QHBoxLayout()
+        recipe_col.addWidget(QLabel("Recipe"), stretch=0)
         self.recipe_combo = QComboBox()
         self.recipe_combo.currentIndexChanged.connect(self._on_recipe_changed)
-        row_recipe.addWidget(self.recipe_combo, stretch=1)
-        layout.addLayout(row_recipe)
+        self.recipe_combo.setMinimumWidth(180)
+        recipe_col.addWidget(self.recipe_combo, stretch=1)
+
+        row_action_recipe.addLayout(action_col, stretch=1)
+        row_action_recipe.addSpacing(12)
+        row_action_recipe.addLayout(recipe_col, stretch=1)
+        layout.addLayout(row_action_recipe)
 
         recipe_path_row = QHBoxLayout()
         recipe_path_row.addWidget(QLabel("선택 경로"), stretch=0)
@@ -240,6 +253,8 @@ class MainWindow(QMainWindow):
         self.polling_combo = QComboBox()
         self.polling_combo.addItems(["3", "5", "10", "15"])
         self.polling_combo.setEditable(True)
+        self.polling_combo.setMinimumContentsLength(4)
+        self.polling_combo.setMinimumWidth(96)
         row_polling.addWidget(self.polling_combo, stretch=0)
         row_polling.addWidget(QLabel("초"), stretch=0)
         row_polling.addStretch(1)
@@ -270,40 +285,76 @@ class MainWindow(QMainWindow):
         panel = QGroupBox("폴더 단위 진행 현황")
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
 
-        self.folder_table_model = FolderTableModel()
-        self.folder_table = QTableView()
-        self.folder_table.setModel(self.folder_table_model)
-        self.folder_table.setSelectionBehavior(QTableView.SelectRows)
-        self.folder_table.setSelectionMode(QTableView.SingleSelection)
-        self.folder_table.setAlternatingRowColors(True)
-        self.folder_table.verticalHeader().setVisible(False)
-        self.folder_table.verticalHeader().setDefaultSectionSize(38)
-        self.folder_table.verticalHeader().setMinimumSectionSize(34)
-        self.folder_table.setWordWrap(False)
-        self.folder_table.setTextElideMode(Qt.ElideRight)
-        self.folder_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        self.folder_table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
-        self.folder_table.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self.active_folder_table_model = FolderTableModel()
+        self.completed_folder_table_model = FolderTableModel()
+        # Keep backward-compatible attribute names for existing references.
+        self.folder_table_model = self.active_folder_table_model
 
-        folder_header = self.folder_table.horizontalHeader()
-        folder_header.setStretchLastSection(False)
-        folder_header.setSectionResizeMode(QHeaderView.ResizeToContents)
-        folder_header.setResizeContentsPrecision(-1)
-        folder_header.setMinimumSectionSize(56)
-        self.folder_table.setItemDelegateForColumn(0, ProgressBarDelegate(self.folder_table))
-        self.folder_table.setItemDelegateForColumn(1, StatusBadgeDelegate(self.folder_table))
-        self.folder_table.selectionModel().selectionChanged.connect(self._on_folder_row_selection_changed)
+        active_label = QLabel("진행중/대기 폴더")
+        active_label.setObjectName("subPanelTitle")
+        layout.addWidget(active_label)
 
-        layout.addWidget(self.folder_table)
+        self.active_folder_table = self._create_folder_table(self.active_folder_table_model)
+        # Keep active list visibly larger from first render as requested.
+        self.active_folder_table.setMinimumHeight(210)
+        self.active_folder_table.selectionModel().selectionChanged.connect(self._on_active_folder_selection_changed)
+        # Keep backward-compatible attribute name.
+        self.folder_table = self.active_folder_table
+        layout.addWidget(self.active_folder_table, stretch=11)
+
+        completed_label = QLabel("완료된 폴더")
+        completed_label.setObjectName("subPanelTitle")
+        layout.addWidget(completed_label)
+
+        self.completed_folder_table = self._create_folder_table(self.completed_folder_table_model)
+        # Preserve completed-list readability without stealing too much initial height.
+        self.completed_folder_table.setMinimumHeight(150)
+        self.completed_folder_table.selectionModel().selectionChanged.connect(
+            self._on_completed_folder_selection_changed
+        )
+        layout.addWidget(self.completed_folder_table, stretch=9)
         return panel
+
+    def _create_folder_table(self, model: FolderTableModel) -> QTableView:
+        """Create one folder table with shared visual/column policy."""
+
+        table = QTableView()
+        table.setModel(model)
+        table.setSelectionBehavior(QTableView.SelectRows)
+        table.setSelectionMode(QTableView.SingleSelection)
+        table.setAlternatingRowColors(True)
+        table.verticalHeader().setVisible(False)
+        table.verticalHeader().setDefaultSectionSize(38)
+        table.verticalHeader().setMinimumSectionSize(34)
+        table.setWordWrap(False)
+        table.setTextElideMode(Qt.ElideRight)
+        table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
+        table.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+
+        header = table.horizontalHeader()
+        header.setStretchLastSection(False)
+        header.setSectionResizeMode(QHeaderView.ResizeToContents)
+        header.setResizeContentsPrecision(-1)
+        header.setMinimumSectionSize(56)
+        header.setSectionResizeMode(0, QHeaderView.Interactive)
+        header.setSectionResizeMode(1, QHeaderView.Interactive)
+        table.setColumnWidth(0, 190)
+        table.setColumnWidth(1, 120)
+        table.setItemDelegateForColumn(0, ProgressBarDelegate(table))
+        table.setItemDelegateForColumn(1, StatusBadgeDelegate(table))
+        return table
 
     def _build_bottom_panel(self) -> QWidget:
         panel = QGroupBox("상세 상태 및 로그")
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
 
-        splitter = QSplitter(Qt.Vertical)
+        tabs = QTabWidget()
+        tabs.setObjectName("bottomTabs")
 
         self.image_table_model = ImageTableModel()
         self.image_table = QTableView()
@@ -330,17 +381,25 @@ class MainWindow(QMainWindow):
         self.image_table.setItemDelegateForColumn(0, self._mq_button_delegate)
         self.image_table.setItemDelegateForColumn(3, StatusBadgeDelegate(self.image_table))
 
+        detail_tab = QWidget()
+        detail_layout = QVBoxLayout(detail_tab)
+        detail_layout.setContentsMargins(0, 0, 0, 0)
+        detail_layout.addWidget(self.image_table)
+
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
         self.log_text.setPlaceholderText("작업 로그가 여기에 표시됩니다.")
         self.log_text.setLineWrapMode(QTextEdit.NoWrap)
         self.log_text.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
 
-        splitter.addWidget(self.image_table)
-        splitter.addWidget(self.log_text)
-        splitter.setSizes([400, 220])
+        log_tab = QWidget()
+        log_layout = QVBoxLayout(log_tab)
+        log_layout.setContentsMargins(0, 0, 0, 0)
+        log_layout.addWidget(self.log_text)
 
-        layout.addWidget(splitter)
+        tabs.addTab(detail_tab, "상세 상태")
+        tabs.addTab(log_tab, "로그")
+        layout.addWidget(tabs)
         return panel
 
     def _apply_defaults(self) -> None:
@@ -382,30 +441,21 @@ class MainWindow(QMainWindow):
             return False
 
         target_path = str(target)
-        model_index = self.file_system_model.index(target_path)
-        if not model_index.isValid():
+        if self._try_focus_tree_path(target_path):
+            self._clear_pending_jump()
             if show_feedback:
-                self._show_path_error(f"트리에서 경로를 찾을 수 없습니다: {target_path}")
-            return False
+                self.append_log(f"[탐색] 경로 이동 완료: {target}")
+            return True
 
-        self._is_syncing_navigation = True
-        try:
-            # Keep global root visible so all drives remain visible in the tree.
-            self.folder_tree.setRootIndex(QModelIndex())
-
-            self._expand_parent_chain(model_index)
-            self.folder_tree.setCurrentIndex(model_index)
-            self.folder_tree.scrollTo(model_index, QTreeView.PositionAtCenter)
-            self.folder_tree.expand(model_index)
-            self.folder_tree.setFocus(Qt.OtherFocusReason)
-
-            self.path_jump_edit.setText(str(target))
-            self._sync_drive_combo_for_path(target)
-        finally:
-            self._is_syncing_navigation = False
-
-        if show_feedback:
-            self.append_log(f"[탐색] 경로 이동 완료: {target}")
+        # First-click fallback: wait for QFileSystemModel async directory loading.
+        self._pending_jump_target = target_path
+        self._pending_jump_show_feedback = show_feedback
+        self._pending_jump_attempts = 0
+        self.file_system_model.setRootPath(target_path)
+        parent_path = str(target.parent)
+        if parent_path and parent_path != target_path:
+            self.file_system_model.setRootPath(parent_path)
+        QTimer.singleShot(80, self._retry_pending_jump)
         return True
 
     def current_runtime_settings(self) -> tuple[str, str, int]:
@@ -449,15 +499,30 @@ class MainWindow(QMainWindow):
         self.connection_label.style().unpolish(self.connection_label)
         self.connection_label.style().polish(self.connection_label)
 
-    def set_overall_stats(self, stats: dict[str, float | int]) -> None:
+    def set_overall_stats(self, stats: dict[str, float | int | None]) -> None:
         """Update overall progress widgets."""
 
         progress = int(float(stats.get("progress", 0.0)))
         completed = int(stats.get("completed", 0))
         total = int(stats.get("total", 0))
+
+        avg_seconds = stats.get("avg_processing_seconds")
+        avg_text = (
+            f"{float(avg_seconds):.1f}s/이미지"
+            if isinstance(avg_seconds, (int, float)) and float(avg_seconds) > 0
+            else "-"
+        )
+        eta_seconds = stats.get("eta_seconds")
+        eta_text = (
+            self._format_duration(float(eta_seconds))
+            if isinstance(eta_seconds, (int, float)) and float(eta_seconds) >= 0
+            else "-"
+        )
+
         self.overall_progress.setValue(progress)
         self.overall_label.setText(
-            f"전체 진행률 {float(stats.get('progress', 0.0)):.1f}% ({completed}/{total})"
+            f"전체 진행률 {float(stats.get('progress', 0.0)):.1f}% ({completed}/{total}) "
+            f"| 평균 {avg_text} | 예상 잔여 {eta_text}"
         )
 
     def set_running_state(self, running: bool) -> None:
@@ -471,14 +536,23 @@ class MainWindow(QMainWindow):
     def set_folder_rows(self, rows: list[FolderSummary]) -> None:
         """Replace folder table rows."""
 
-        self.folder_table_model.set_rows(rows)
+        active_rows = [row for row in rows if not row.status.is_done]
+        completed_rows = [row for row in rows if row.status.is_done]
+        self.active_folder_table_model.set_rows(active_rows)
+        self.completed_folder_table_model.set_rows(completed_rows)
         if not rows:
-            self.folder_table.clearSelection()
+            self.active_folder_table.clearSelection()
+            self.completed_folder_table.clearSelection()
 
     def upsert_folder_row(self, row: FolderSummary) -> None:
         """Insert or update one folder row."""
 
-        self.folder_table_model.upsert_summary(row)
+        if row.status.is_done:
+            self.active_folder_table_model.remove_by_folder_path(row.folder_path)
+            self.completed_folder_table_model.upsert_summary(row)
+        else:
+            self.completed_folder_table_model.remove_by_folder_path(row.folder_path)
+            self.active_folder_table_model.upsert_summary(row)
 
     def set_image_tasks(self, tasks: list[ImageTask]) -> None:
         """Replace image detail rows for selected folder."""
@@ -495,9 +569,11 @@ class MainWindow(QMainWindow):
     def clear_progress_views(self) -> None:
         """Clear folder/image tables and their current selections."""
 
-        self.folder_table_model.clear()
+        self.active_folder_table_model.clear()
+        self.completed_folder_table_model.clear()
         self.image_table_model.clear()
-        self.folder_table.clearSelection()
+        self.active_folder_table.clearSelection()
+        self.completed_folder_table.clearSelection()
         self.image_table.clearSelection()
 
     def set_active_result_queue(self, queue_name: str | None) -> None:
@@ -542,13 +618,35 @@ class MainWindow(QMainWindow):
 
         self.mq_preview_requested.emit(request_id)
 
-    def _on_folder_row_selection_changed(self, *_args) -> None:
-        index = self.folder_table.currentIndex()
+    def _emit_folder_selection(self, table: QTableView, model: FolderTableModel) -> None:
+        """Emit folder selection from one table and clear opposite table selection."""
+
+        index = table.currentIndex()
         if not index.isValid():
             return
-        folder_path = self.folder_table_model.folder_at(index.row())
+        folder_path = model.folder_at(index.row())
         if folder_path:
             self.folder_row_selected.emit(folder_path)
+
+    def _on_active_folder_selection_changed(self, *_args) -> None:
+        if self._is_syncing_folder_selection:
+            return
+        self._is_syncing_folder_selection = True
+        try:
+            self.completed_folder_table.clearSelection()
+            self._emit_folder_selection(self.active_folder_table, self.active_folder_table_model)
+        finally:
+            self._is_syncing_folder_selection = False
+
+    def _on_completed_folder_selection_changed(self, *_args) -> None:
+        if self._is_syncing_folder_selection:
+            return
+        self._is_syncing_folder_selection = True
+        try:
+            self.active_folder_table.clearSelection()
+            self._emit_folder_selection(self.completed_folder_table, self.completed_folder_table_model)
+        finally:
+            self._is_syncing_folder_selection = False
 
     def _populate_drive_combo(self) -> None:
         """Populate drive selector from OS drive list."""
@@ -658,6 +756,13 @@ class MainWindow(QMainWindow):
         finally:
             self._is_syncing_navigation = False
 
+    def _on_directory_loaded(self, _path: str) -> None:
+        """Retry pending jump after filesystem model loads directories."""
+
+        if not self._pending_jump_target:
+            return
+        QTimer.singleShot(0, self._retry_pending_jump)
+
     @staticmethod
     def _drive_label(drive_path: str) -> str:
         """Return user-friendly label for drive combo entries."""
@@ -697,3 +802,66 @@ class MainWindow(QMainWindow):
         recipe_path = str(self.recipe_combo.itemData(index) or "")
         self.recipe_path_preview.setText(recipe_path)
         self.recipe_path_preview.setToolTip(recipe_path)
+
+    def _retry_pending_jump(self) -> None:
+        """Retry async path focus after QFileSystemModel has loaded indexes."""
+
+        if not self._pending_jump_target:
+            return
+
+        target_path = self._pending_jump_target
+        if self._try_focus_tree_path(target_path):
+            if self._pending_jump_show_feedback:
+                self.append_log(f"[탐색] 경로 이동 완료: {target_path}")
+            self._clear_pending_jump()
+            return
+
+        self._pending_jump_attempts += 1
+        if self._pending_jump_attempts >= self._max_pending_jump_attempts:
+            if self._pending_jump_show_feedback:
+                self._show_path_error(f"트리에서 경로를 찾을 수 없습니다: {target_path}")
+            self._clear_pending_jump()
+            return
+
+        QTimer.singleShot(100, self._retry_pending_jump)
+
+    def _try_focus_tree_path(self, target_path: str) -> bool:
+        """Try selecting/centering a path in the tree immediately."""
+
+        model_index = self.file_system_model.index(target_path)
+        if not model_index.isValid():
+            return False
+
+        self._is_syncing_navigation = True
+        try:
+            # Keep global root visible so all drives remain visible in the tree.
+            self.folder_tree.setRootIndex(QModelIndex())
+            self._expand_parent_chain(model_index)
+            self.folder_tree.setCurrentIndex(model_index)
+            self.folder_tree.scrollTo(model_index, QTreeView.PositionAtCenter)
+            self.folder_tree.expand(model_index)
+            self.folder_tree.setFocus(Qt.OtherFocusReason)
+            self.path_jump_edit.setText(target_path)
+            self._sync_drive_combo_for_path(target_path)
+        finally:
+            self._is_syncing_navigation = False
+
+        return True
+
+    def _clear_pending_jump(self) -> None:
+        """Clear async jump retry state."""
+
+        self._pending_jump_target = None
+        self._pending_jump_show_feedback = False
+        self._pending_jump_attempts = 0
+
+    @staticmethod
+    def _format_duration(seconds: float) -> str:
+        """Format seconds as H:MM:SS or MM:SS."""
+
+        total_seconds = max(0, int(round(seconds)))
+        hours, rem = divmod(total_seconds, 3600)
+        minutes, secs = divmod(rem, 60)
+        if hours:
+            return f"{hours:d}:{minutes:02d}:{secs:02d}"
+        return f"{minutes:02d}:{secs:02d}"
