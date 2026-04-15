@@ -49,6 +49,16 @@ class TaskController(QObject):
         self._active_timeout_seconds = config.publish.timeout_seconds
         self._pending_polling_interval = config.publish.polling_interval_seconds
         self._active_result_queue: str | None = None
+        self._publish_exchange = ""
+        self._publish_routing_key = ""
+
+        self._max_initial_open_folders = 2
+        self._next_open_threshold = 50.0
+        self._folder_message_batches: list[tuple[str, list]] = []
+        self._next_folder_batch_index = 0
+        self._opened_folder_paths: set[str] = set()
+        self._planned_publish_total = 0
+        self._published_count = 0
 
         self._wire_signals()
         self._view.set_running_state(False)
@@ -127,11 +137,15 @@ class TaskController(QObject):
             return
 
         queue_name = self._config.rabbitmq.result_queue_base
-        messages = self._store.build_pending_messages(action, queue_name, recipe_path)
+        grouped_messages = self._store.build_pending_messages_by_folder(action, queue_name, recipe_path)
 
-        if not messages:
+        if not grouped_messages:
             self._log("전송할 PENDING 작업이 없습니다.")
             return
+
+        self._reset_publish_schedule_state()
+        self._folder_message_batches = grouped_messages
+        self._planned_publish_total = sum(len(messages) for _, messages in grouped_messages)
 
         self._active_timeout_seconds = self._config.publish.timeout_seconds
         self._pending_polling_interval = polling_interval
@@ -141,27 +155,41 @@ class TaskController(QObject):
         self._view.set_active_result_queue(queue_name)
         self._view.set_running_state(True)
 
-        publish_exchange, publish_routing_key = resolve_publish_route(self._config.rabbitmq)
-        for message in messages:
-            self._store.set_task_expected_message(
-                request_id=message.request_id,
-                payload=message.to_dict(),
-                meta={
-                    "exchange": publish_exchange,
-                    "routing_key": publish_routing_key,
-                    "reply_to": message.QUEU_NAME,
-                    "message_id": message.request_id,
-                    "correlation_id": message.request_id,
-                    "content_type": "application/json",
-                },
-            )
+        self._publish_exchange, self._publish_routing_key = resolve_publish_route(self._config.rabbitmq)
+        for _, messages in grouped_messages:
+            for message in messages:
+                self._store.set_task_expected_message(
+                    request_id=message.request_id,
+                    payload=message.to_dict(),
+                    meta={
+                        "exchange": self._publish_exchange,
+                        "routing_key": self._publish_routing_key,
+                        "reply_to": message.QUEU_NAME,
+                        "message_id": message.request_id,
+                        "correlation_id": message.request_id,
+                        "content_type": "application/json",
+                    },
+                )
+
+        initial_messages, opened_folders = self._take_next_folder_batches(self._max_initial_open_folders)
+        if not initial_messages:
+            self._log("초기 전송 대상 메시지를 구성하지 못했습니다.")
+            self._active = False
+            self._view.set_running_state(False)
+            return
 
         self._start_publish_worker(
-            messages=messages,
-            publish_exchange=publish_exchange,
-            publish_routing_key=publish_routing_key,
+            messages=initial_messages,
+            publish_exchange=self._publish_exchange,
+            publish_routing_key=self._publish_routing_key,
         )
-        self._log(f"전송 시작 - 총 {len(messages)}건")
+        self._log(
+            f"전송 시작 - 총 {self._planned_publish_total}건, 초기 개방 폴더 {len(opened_folders)}개 "
+            f"(정책 최대 {self._max_initial_open_folders}개)"
+        )
+        self._log(
+            f"밸런싱 정책 - 개방 폴더 중 진행률 {self._next_open_threshold:.0f}% 도달 시 다음 폴더 1개 추가 개방"
+        )
 
     @Slot()
     def on_stop_requested(self) -> None:
@@ -297,7 +325,11 @@ class TaskController(QObject):
             payload=safe_payload,
             meta={str(key): str(value) for key, value in safe_meta.items()},
         )
-        self._log(f"전송 완료 {index}/{total} - {request_id}")
+        _ = index
+        _ = total
+        self._published_count += 1
+        publish_total = self._planned_publish_total if self._planned_publish_total else self._published_count
+        self._log(f"전송 완료 {self._published_count}/{publish_total} - {request_id}")
 
     @Slot(str, str)
     def _on_message_failed(self, request_id: str, error: str) -> None:
@@ -354,6 +386,8 @@ class TaskController(QObject):
         running_count = self._store.mark_inflight_running()
         if running_count:
             self._log(f"진행 중 상태 반영 - {running_count}건")
+
+        self._maybe_dispatch_next_folder_batch()
 
         timed_out_ids = self._store.mark_timeouts(self._active_timeout_seconds)
         for request_id in timed_out_ids:
@@ -413,6 +447,7 @@ class TaskController(QObject):
         self._poll_worker = None
         self._publish_thread = None
         self._poll_thread = None
+        self._reset_publish_schedule_state()
 
         self._active = False
         self._publish_finished = True
@@ -470,3 +505,72 @@ class TaskController(QObject):
         timestamped = f"[{datetime.now().strftime('%H:%M:%S')}] {message}"
         self._view.append_log(timestamped)
         self._logger.info(message)
+
+    def _reset_publish_schedule_state(self) -> None:
+        """Reset folder-based dispatch scheduling state."""
+
+        self._folder_message_batches = []
+        self._next_folder_batch_index = 0
+        self._opened_folder_paths.clear()
+        self._planned_publish_total = 0
+        self._published_count = 0
+        self._publish_exchange = ""
+        self._publish_routing_key = ""
+
+    def _take_next_folder_batches(self, max_folder_count: int) -> tuple[list, list[str]]:
+        """Take next folder batches and flatten to one message list."""
+
+        selected_messages: list = []
+        opened_folders: list[str] = []
+
+        while (
+            len(opened_folders) < max_folder_count
+            and self._next_folder_batch_index < len(self._folder_message_batches)
+        ):
+            folder_path, messages = self._folder_message_batches[self._next_folder_batch_index]
+            self._next_folder_batch_index += 1
+            opened_folders.append(folder_path)
+            self._opened_folder_paths.add(folder_path)
+            selected_messages.extend(messages)
+
+        return selected_messages, opened_folders
+
+    def _maybe_dispatch_next_folder_batch(self) -> None:
+        """Open one more folder batch when active folders pass threshold."""
+
+        if self._next_folder_batch_index >= len(self._folder_message_batches):
+            return
+        if self._publish_thread is not None:
+            try:
+                if self._publish_thread.isRunning():
+                    return
+            except RuntimeError:
+                pass
+
+        should_open_next = False
+        for folder_path in self._opened_folder_paths:
+            summary = self._store.get_folder_summary(folder_path)
+            if summary is None:
+                continue
+            if summary.progress >= self._next_open_threshold:
+                should_open_next = True
+                break
+
+        if not should_open_next:
+            return
+
+        next_messages, opened_folders = self._take_next_folder_batches(1)
+        if not next_messages:
+            return
+
+        self._publish_finished = False
+        self._start_publish_worker(
+            messages=next_messages,
+            publish_exchange=self._publish_exchange,
+            publish_routing_key=self._publish_routing_key,
+        )
+        self._log(
+            f"밸런싱 개방 - 다음 폴더 {len(opened_folders)}개 추가 전송 시작 "
+            f"(조건: {self._next_open_threshold:.0f}% 도달, "
+            f"{self._next_folder_batch_index}/{len(self._folder_message_batches)})"
+        )

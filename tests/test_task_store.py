@@ -37,6 +37,19 @@ class TaskStoreTest(unittest.TestCase):
         )
         self.assertNotIn("sent_at", payload_keys)
 
+    def test_build_pending_messages_by_folder_keeps_folder_order(self) -> None:
+        grouped = self.store.build_pending_messages_by_folder(
+            action="RUN_RECIPE",
+            result_queue_name="result.client.1",
+            recipe_path="recipe.json",
+        )
+        self.assertEqual(len(grouped), 2)
+        self.assertEqual(grouped[0][0], "folder_a")
+        self.assertEqual(grouped[1][0], "folder_b")
+        self.assertEqual(len(grouped[0][1]), 2)
+        self.assertEqual(len(grouped[1][1]), 1)
+        self.assertTrue(all(len(message.IMG_LIST) == 1 for _, messages in grouped for message in messages))
+
     def test_apply_result_updates_summary(self) -> None:
         messages = self.store.build_pending_messages("RUN", "result.q", "r.json")
         target = messages[0]
@@ -291,6 +304,22 @@ class TaskStoreTest(unittest.TestCase):
         timed_out = self.store.mark_timeouts(timeout_seconds=1)
         self.assertIn(message.request_id, timed_out)
         self.assertEqual(task.status, TaskStatus.TIMEOUT)
+
+    def test_overall_stats_includes_avg_and_eta(self) -> None:
+        message = self.store.build_pending_messages("RUN", "result.q", "r.json")[0]
+        self.store.mark_task_sent(message.request_id)
+
+        task = self.store.get_task(message.request_id)
+        assert task is not None
+        task.sent_at = datetime.now(timezone.utc) - timedelta(seconds=4)
+        task.completed_at = datetime.now(timezone.utc)
+        task.status = TaskStatus.SUCCESS
+
+        stats = self.store.overall_stats()
+        self.assertIsInstance(stats["avg_processing_seconds"], float)
+        self.assertGreater(float(stats["avg_processing_seconds"] or 0), 0.0)
+        self.assertIsInstance(stats["eta_seconds"], float)
+        self.assertGreaterEqual(float(stats["eta_seconds"] or 0), 0.0)
 
 
 if __name__ == "__main__":

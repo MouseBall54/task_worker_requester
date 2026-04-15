@@ -119,6 +119,40 @@ class TaskStore(QObject):
             )
         return messages
 
+    def build_pending_messages_by_folder(
+        self,
+        action: str,
+        result_queue_name: str,
+        recipe_path: str,
+    ) -> list[tuple[str, list[TaskMessage]]]:
+        """Create outbound messages grouped by folder in stable folder order."""
+
+        grouped: list[tuple[str, list[TaskMessage]]] = []
+        for folder_path in self._folder_order:
+            group = self._groups.get(folder_path)
+            if group is None:
+                continue
+
+            messages: list[TaskMessage] = []
+            for task_id in group.task_ids:
+                task = self._tasks.get(task_id)
+                if task is None or task.status != TaskStatus.PENDING:
+                    continue
+                messages.append(
+                    TaskMessage(
+                        request_id=task.request_id,
+                        action=action,
+                        QUEU_NAME=result_queue_name,
+                        RECIPE_PATH=recipe_path,
+                        IMG_LIST=[task.image_path],
+                    )
+                )
+
+            if messages:
+                grouped.append((folder_path, messages))
+
+        return grouped
+
     def mark_task_sent(self, request_id: str) -> None:
         """Update state when one request publish succeeds."""
 
@@ -406,7 +440,7 @@ class TaskStore(QObject):
             return False
         return all(task.status.is_done for task in self._tasks.values())
 
-    def overall_stats(self) -> dict[str, float | int]:
+    def overall_stats(self) -> dict[str, float | int | None]:
         """Calculate total progress across all folders."""
 
         total = len(self._tasks)
@@ -417,6 +451,18 @@ class TaskStore(QObject):
         error = sum(task.status == TaskStatus.ERROR for task in self._tasks.values())
         progress = (completed / total * 100.0) if total else 0.0
 
+        durations: list[float] = []
+        for task in self._tasks.values():
+            if not task.status.is_done or not task.sent_at or not task.completed_at:
+                continue
+            delta = (task.completed_at - task.sent_at).total_seconds()
+            if delta >= 0:
+                durations.append(delta)
+
+        avg_processing_seconds = (sum(durations) / len(durations)) if durations else None
+        remaining = max(total - completed, 0)
+        eta_seconds = (avg_processing_seconds * remaining) if avg_processing_seconds is not None else None
+
         return {
             "total": total,
             "completed": completed,
@@ -425,6 +471,8 @@ class TaskStore(QObject):
             "timeout": timeout,
             "error": error,
             "progress": progress,
+            "avg_processing_seconds": avg_processing_seconds,
+            "eta_seconds": eta_seconds,
         }
 
     def _emit_overall(self) -> None:
