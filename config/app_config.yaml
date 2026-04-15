@@ -1,4 +1,4 @@
-mock_mode: false
+mock_mode: true
 log_level: INFO
 
 rabbitmq:
