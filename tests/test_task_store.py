@@ -321,7 +321,7 @@ class TaskStoreTest(unittest.TestCase):
         self.assertIsInstance(stats["eta_seconds"], float)
         self.assertGreaterEqual(float(stats["eta_seconds"] or 0), 0.0)
 
-    def test_overall_stats_eta_prefers_throughput(self) -> None:
+    def test_overall_stats_uses_elapsed_per_completed_for_avg(self) -> None:
         messages = self.store.build_pending_messages("RUN", "result.q", "r.json")
         now = datetime.now(timezone.utc)
 
@@ -344,14 +344,14 @@ class TaskStoreTest(unittest.TestCase):
         stats = self.store.overall_stats()
         avg_seconds = float(stats["avg_processing_seconds"] or 0.0)
         eta_seconds = float(stats["eta_seconds"] or 0.0)
+        elapsed = 10.0
+        completed = 2
+        remaining = 1
 
-        # Throughput ETA should be near 5 seconds (remaining 1, throughput 2/10).
-        self.assertGreater(avg_seconds, 8.0)
-        self.assertLess(eta_seconds, avg_seconds)
-        self.assertGreater(eta_seconds, 0.0)
-        self.assertLess(eta_seconds, 7.0)
+        self.assertAlmostEqual(avg_seconds, elapsed / completed, delta=0.5)
+        self.assertAlmostEqual(eta_seconds, (elapsed / completed) * remaining, delta=0.7)
 
-    def test_overall_stats_excludes_timeout_and_error_from_avg(self) -> None:
+    def test_overall_stats_includes_terminal_statuses_in_completed_count(self) -> None:
         messages = self.store.build_pending_messages("RUN", "result.q", "r.json")
         now = datetime.now(timezone.utc)
 
@@ -378,9 +378,24 @@ class TaskStoreTest(unittest.TestCase):
         task_error.status = TaskStatus.ERROR
 
         stats = self.store.overall_stats()
-        self.assertAlmostEqual(float(stats["avg_processing_seconds"] or 0.0), 2.0, delta=0.2)
+        self.assertEqual(int(stats["completed"] or 0), 3)
+        self.assertIsInstance(stats["avg_processing_seconds"], float)
+        self.assertEqual(float(stats["eta_seconds"] or 0.0), 0.0)
 
-    def test_overall_stats_falls_back_to_latency_when_throughput_unavailable(self) -> None:
+    def test_overall_stats_returns_none_when_completed_zero(self) -> None:
+        now = datetime.now(timezone.utc)
+        for message in self.store.build_pending_messages("RUN", "result.q", "r.json"):
+            self.store.mark_task_sent(message.request_id)
+            task = self.store.get_task(message.request_id)
+            assert task is not None
+            task.sent_at = now - timedelta(seconds=5)
+            task.status = TaskStatus.RUNNING
+
+        stats = self.store.overall_stats()
+        self.assertIsNone(stats["avg_processing_seconds"])
+        self.assertIsNone(stats["eta_seconds"])
+
+    def test_overall_stats_returns_none_when_elapsed_not_positive(self) -> None:
         message = self.store.build_pending_messages("RUN", "result.q", "r.json")[0]
         self.store.mark_task_sent(message.request_id)
 
@@ -388,12 +403,12 @@ class TaskStoreTest(unittest.TestCase):
         task = self.store.get_task(message.request_id)
         assert task is not None
         task.sent_at = now + timedelta(seconds=30)
-        task.completed_at = now + timedelta(seconds=35)
+        task.completed_at = now + timedelta(seconds=31)
         task.status = TaskStatus.SUCCESS
 
         stats = self.store.overall_stats()
-        self.assertAlmostEqual(float(stats["avg_processing_seconds"] or 0.0), 5.0, delta=0.1)
-        self.assertAlmostEqual(float(stats["eta_seconds"] or 0.0), 10.0, delta=0.2)
+        self.assertIsNone(stats["avg_processing_seconds"])
+        self.assertIsNone(stats["eta_seconds"])
 
     def test_overall_stats_handles_naive_aware_datetime_mix(self) -> None:
         message = self.store.build_pending_messages("RUN", "result.q", "r.json")[0]
@@ -408,6 +423,31 @@ class TaskStoreTest(unittest.TestCase):
         stats = self.store.overall_stats()
         self.assertIsInstance(stats["avg_processing_seconds"], float)
         self.assertGreater(float(stats["avg_processing_seconds"] or 0.0), 0.0)
+
+    def test_overall_stats_eta_decreases_as_completed_increases(self) -> None:
+        messages = self.store.build_pending_messages("RUN", "result.q", "r.json")
+        now = datetime.now(timezone.utc)
+
+        for message in messages:
+            self.store.mark_task_sent(message.request_id)
+            task = self.store.get_task(message.request_id)
+            assert task is not None
+            task.sent_at = now - timedelta(seconds=12)
+
+        task1 = self.store.get_task(messages[0].request_id)
+        task2 = self.store.get_task(messages[1].request_id)
+        assert task1 is not None
+        assert task2 is not None
+
+        task1.completed_at = now - timedelta(seconds=2)
+        task1.status = TaskStatus.SUCCESS
+        eta_after_one = float(self.store.overall_stats()["eta_seconds"] or 0.0)
+
+        task2.completed_at = now - timedelta(seconds=1)
+        task2.status = TaskStatus.FAIL
+        eta_after_two = float(self.store.overall_stats()["eta_seconds"] or 0.0)
+
+        self.assertGreater(eta_after_one, eta_after_two)
 
 
 if __name__ == "__main__":

@@ -451,48 +451,30 @@ class TaskStore(QObject):
         error = sum(task.status == TaskStatus.ERROR for task in self._tasks.values())
         progress = (completed / total * 100.0) if total else 0.0
 
-        speed_sample_durations: list[float] = []
         first_sent_at: datetime | None = None
         now_utc = datetime.now(timezone.utc)
 
         for task in self._tasks.values():
-            # Average speed focuses on real processed outcomes only.
-            if task.status not in {TaskStatus.SUCCESS, TaskStatus.FAIL}:
-                continue
-
             sent_at = self._to_utc_datetime(task.sent_at)
-            completed_at = self._to_utc_datetime(task.completed_at)
-            if sent_at is None or completed_at is None:
+            if sent_at is None:
                 continue
 
-            delta = (completed_at - sent_at).total_seconds()
-            if delta >= 0:
-                speed_sample_durations.append(delta)
-                if first_sent_at is None or sent_at < first_sent_at:
-                    first_sent_at = sent_at
+            if first_sent_at is None or sent_at < first_sent_at:
+                first_sent_at = sent_at
 
-        avg_processing_seconds = (
-            sum(speed_sample_durations) / len(speed_sample_durations)
-            if speed_sample_durations
-            else None
-        )
         remaining = max(total - completed, 0)
+        avg_processing_seconds: float | None = None
         eta_seconds: float | None = None
 
         if remaining == 0:
             eta_seconds = 0.0
-        else:
-            throughput: float | None = None
-            if first_sent_at is not None and speed_sample_durations:
-                elapsed_since_first_sent = (now_utc - first_sent_at).total_seconds()
-                if elapsed_since_first_sent > 0:
-                    throughput = len(speed_sample_durations) / elapsed_since_first_sent
-
-            if throughput is not None and throughput > 0:
-                eta_seconds = remaining / throughput
-            elif avg_processing_seconds is not None:
-                # Fallback when throughput cannot be derived yet.
-                eta_seconds = avg_processing_seconds * remaining
+        if first_sent_at is not None and completed > 0:
+            elapsed_since_first_sent = (now_utc - first_sent_at).total_seconds()
+            if elapsed_since_first_sent > 0:
+                throughput = completed / elapsed_since_first_sent
+                if throughput > 0:
+                    avg_processing_seconds = elapsed_since_first_sent / completed
+                    eta_seconds = remaining / throughput if remaining > 0 else 0.0
 
         return {
             "total": total,
