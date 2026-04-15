@@ -53,12 +53,15 @@ class TaskController(QObject):
         self._publish_routing_key = ""
 
         self._max_initial_open_folders = 2
+        self._max_active_open_folders = 3
         self._next_open_threshold = 50.0
         self._folder_message_batches: list[tuple[str, list]] = []
         self._next_folder_batch_index = 0
         self._opened_folder_paths: set[str] = set()
+        self._active_folder_paths: set[str] = set()
         self._planned_publish_total = 0
         self._published_count = 0
+        self._last_dispatch_skip_reason: str | None = None
 
         self._wire_signals()
         self._view.set_running_state(False)
@@ -188,7 +191,8 @@ class TaskController(QObject):
             f"(정책 최대 {self._max_initial_open_folders}개)"
         )
         self._log(
-            f"밸런싱 정책 - 개방 폴더 중 진행률 {self._next_open_threshold:.0f}% 도달 시 다음 폴더 1개 추가 개방"
+            f"밸런싱 정책 - 개방 폴더 중 진행률 {self._next_open_threshold:.0f}% 도달 시 다음 폴더 1개 추가 개방 "
+            f"(동시 active cap={self._max_active_open_folders})"
         )
 
     @Slot()
@@ -512,10 +516,12 @@ class TaskController(QObject):
         self._folder_message_batches = []
         self._next_folder_batch_index = 0
         self._opened_folder_paths.clear()
+        self._active_folder_paths.clear()
         self._planned_publish_total = 0
         self._published_count = 0
         self._publish_exchange = ""
         self._publish_routing_key = ""
+        self._last_dispatch_skip_reason = None
 
     def _take_next_folder_batches(self, max_folder_count: int) -> tuple[list, list[str]]:
         """Take next folder batches and flatten to one message list."""
@@ -531,6 +537,7 @@ class TaskController(QObject):
             self._next_folder_batch_index += 1
             opened_folders.append(folder_path)
             self._opened_folder_paths.add(folder_path)
+            self._active_folder_paths.add(folder_path)
             selected_messages.extend(messages)
 
         return selected_messages, opened_folders
@@ -538,17 +545,32 @@ class TaskController(QObject):
     def _maybe_dispatch_next_folder_batch(self) -> None:
         """Open one more folder batch when active folders pass threshold."""
 
+        self._refresh_active_folder_paths()
+        remaining_batches = len(self._folder_message_batches) - self._next_folder_batch_index
         if self._next_folder_batch_index >= len(self._folder_message_batches):
+            self._last_dispatch_skip_reason = None
             return
         if self._publish_thread is not None:
             try:
                 if self._publish_thread.isRunning():
+                    self._log_dispatch_skip(
+                        reason="publish worker running",
+                        remaining_batches=remaining_batches,
+                    )
                     return
             except RuntimeError:
                 pass
 
+        active_count = len(self._active_folder_paths)
+        if active_count >= self._max_active_open_folders:
+            self._log_dispatch_skip(
+                reason=f"active cap reached({self._max_active_open_folders})",
+                remaining_batches=remaining_batches,
+            )
+            return
+
         should_open_next = False
-        for folder_path in self._opened_folder_paths:
+        for folder_path in self._active_folder_paths:
             summary = self._store.get_folder_summary(folder_path)
             if summary is None:
                 continue
@@ -557,12 +579,17 @@ class TaskController(QObject):
                 break
 
         if not should_open_next:
+            self._log_dispatch_skip(
+                reason="threshold unmet",
+                remaining_batches=remaining_batches,
+            )
             return
 
         next_messages, opened_folders = self._take_next_folder_batches(1)
         if not next_messages:
             return
 
+        self._last_dispatch_skip_reason = None
         self._publish_finished = False
         self._start_publish_worker(
             messages=next_messages,
@@ -572,5 +599,36 @@ class TaskController(QObject):
         self._log(
             f"밸런싱 개방 - 다음 폴더 {len(opened_folders)}개 추가 전송 시작 "
             f"(조건: {self._next_open_threshold:.0f}% 도달, "
-            f"{self._next_folder_batch_index}/{len(self._folder_message_batches)})"
+            f"{self._next_folder_batch_index}/{len(self._folder_message_batches)}, "
+            f"active_count={len(self._active_folder_paths)}, "
+            f"opened_count={len(self._opened_folder_paths)}, "
+            f"remaining_batches={len(self._folder_message_batches) - self._next_folder_batch_index})"
+        )
+
+    def _refresh_active_folder_paths(self) -> None:
+        """Keep only non-terminal folders in active tracking set."""
+
+        stale_paths: list[str] = []
+        for folder_path in self._active_folder_paths:
+            summary = self._store.get_folder_summary(folder_path)
+            if summary is None or summary.status.is_done:
+                stale_paths.append(folder_path)
+
+        if not stale_paths:
+            return
+
+        for folder_path in stale_paths:
+            self._active_folder_paths.discard(folder_path)
+
+    def _log_dispatch_skip(self, reason: str, remaining_batches: int) -> None:
+        """Log dispatch skip reason with deduplication to avoid noisy logs."""
+
+        if reason == self._last_dispatch_skip_reason:
+            return
+        self._last_dispatch_skip_reason = reason
+        self._log(
+            "밸런싱 대기 - "
+            f"{reason} (active_count={len(self._active_folder_paths)}, "
+            f"opened_count={len(self._opened_folder_paths)}, "
+            f"remaining_batches={remaining_batches})"
         )

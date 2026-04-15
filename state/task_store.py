@@ -451,17 +451,48 @@ class TaskStore(QObject):
         error = sum(task.status == TaskStatus.ERROR for task in self._tasks.values())
         progress = (completed / total * 100.0) if total else 0.0
 
-        durations: list[float] = []
-        for task in self._tasks.values():
-            if not task.status.is_done or not task.sent_at or not task.completed_at:
-                continue
-            delta = (task.completed_at - task.sent_at).total_seconds()
-            if delta >= 0:
-                durations.append(delta)
+        speed_sample_durations: list[float] = []
+        first_sent_at: datetime | None = None
+        now_utc = datetime.now(timezone.utc)
 
-        avg_processing_seconds = (sum(durations) / len(durations)) if durations else None
+        for task in self._tasks.values():
+            # Average speed focuses on real processed outcomes only.
+            if task.status not in {TaskStatus.SUCCESS, TaskStatus.FAIL}:
+                continue
+
+            sent_at = self._to_utc_datetime(task.sent_at)
+            completed_at = self._to_utc_datetime(task.completed_at)
+            if sent_at is None or completed_at is None:
+                continue
+
+            delta = (completed_at - sent_at).total_seconds()
+            if delta >= 0:
+                speed_sample_durations.append(delta)
+                if first_sent_at is None or sent_at < first_sent_at:
+                    first_sent_at = sent_at
+
+        avg_processing_seconds = (
+            sum(speed_sample_durations) / len(speed_sample_durations)
+            if speed_sample_durations
+            else None
+        )
         remaining = max(total - completed, 0)
-        eta_seconds = (avg_processing_seconds * remaining) if avg_processing_seconds is not None else None
+        eta_seconds: float | None = None
+
+        if remaining == 0:
+            eta_seconds = 0.0
+        else:
+            throughput: float | None = None
+            if first_sent_at is not None and speed_sample_durations:
+                elapsed_since_first_sent = (now_utc - first_sent_at).total_seconds()
+                if elapsed_since_first_sent > 0:
+                    throughput = len(speed_sample_durations) / elapsed_since_first_sent
+
+            if throughput is not None and throughput > 0:
+                eta_seconds = remaining / throughput
+            elif avg_processing_seconds is not None:
+                # Fallback when throughput cannot be derived yet.
+                eta_seconds = avg_processing_seconds * remaining
 
         return {
             "total": total,
@@ -487,7 +518,11 @@ class TaskStore(QObject):
         if not raw_completed_at:
             return datetime.now(timezone.utc)
         try:
-            return datetime.fromisoformat(raw_completed_at)
+            parsed = datetime.fromisoformat(raw_completed_at)
+            normalized = TaskStore._to_utc_datetime(parsed)
+            if normalized is not None:
+                return normalized
+            return datetime.now(timezone.utc)
         except ValueError:
             return datetime.now(timezone.utc)
 
@@ -495,6 +530,17 @@ class TaskStore(QObject):
     def _datetime_to_str(value: datetime | None) -> str:
         """Format datetime for preview output."""
 
-        if value is None:
+        normalized = TaskStore._to_utc_datetime(value)
+        if normalized is None:
             return ""
-        return value.astimezone().isoformat()
+        return normalized.astimezone().isoformat()
+
+    @staticmethod
+    def _to_utc_datetime(value: datetime | None) -> datetime | None:
+        """Normalize datetime to timezone-aware UTC for safe arithmetic."""
+
+        if value is None:
+            return None
+        if value.tzinfo is None or value.tzinfo.utcoffset(value) is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)

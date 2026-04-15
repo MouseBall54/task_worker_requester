@@ -321,6 +321,94 @@ class TaskStoreTest(unittest.TestCase):
         self.assertIsInstance(stats["eta_seconds"], float)
         self.assertGreaterEqual(float(stats["eta_seconds"] or 0), 0.0)
 
+    def test_overall_stats_eta_prefers_throughput(self) -> None:
+        messages = self.store.build_pending_messages("RUN", "result.q", "r.json")
+        now = datetime.now(timezone.utc)
+
+        for message in messages[:2]:
+            self.store.mark_task_sent(message.request_id)
+
+        task_a = self.store.get_task(messages[0].request_id)
+        task_b = self.store.get_task(messages[1].request_id)
+        assert task_a is not None
+        assert task_b is not None
+
+        task_a.sent_at = now - timedelta(seconds=10)
+        task_a.completed_at = now - timedelta(seconds=2)
+        task_a.status = TaskStatus.SUCCESS
+
+        task_b.sent_at = now - timedelta(seconds=10)
+        task_b.completed_at = now - timedelta(seconds=1)
+        task_b.status = TaskStatus.FAIL
+
+        stats = self.store.overall_stats()
+        avg_seconds = float(stats["avg_processing_seconds"] or 0.0)
+        eta_seconds = float(stats["eta_seconds"] or 0.0)
+
+        # Throughput ETA should be near 5 seconds (remaining 1, throughput 2/10).
+        self.assertGreater(avg_seconds, 8.0)
+        self.assertLess(eta_seconds, avg_seconds)
+        self.assertGreater(eta_seconds, 0.0)
+        self.assertLess(eta_seconds, 7.0)
+
+    def test_overall_stats_excludes_timeout_and_error_from_avg(self) -> None:
+        messages = self.store.build_pending_messages("RUN", "result.q", "r.json")
+        now = datetime.now(timezone.utc)
+
+        for message in messages:
+            self.store.mark_task_sent(message.request_id)
+
+        task_success = self.store.get_task(messages[0].request_id)
+        task_timeout = self.store.get_task(messages[1].request_id)
+        task_error = self.store.get_task(messages[2].request_id)
+        assert task_success is not None
+        assert task_timeout is not None
+        assert task_error is not None
+
+        task_success.sent_at = now - timedelta(seconds=5)
+        task_success.completed_at = now - timedelta(seconds=3)
+        task_success.status = TaskStatus.SUCCESS
+
+        task_timeout.sent_at = now - timedelta(seconds=120)
+        task_timeout.completed_at = now
+        task_timeout.status = TaskStatus.TIMEOUT
+
+        task_error.sent_at = now - timedelta(seconds=90)
+        task_error.completed_at = now
+        task_error.status = TaskStatus.ERROR
+
+        stats = self.store.overall_stats()
+        self.assertAlmostEqual(float(stats["avg_processing_seconds"] or 0.0), 2.0, delta=0.2)
+
+    def test_overall_stats_falls_back_to_latency_when_throughput_unavailable(self) -> None:
+        message = self.store.build_pending_messages("RUN", "result.q", "r.json")[0]
+        self.store.mark_task_sent(message.request_id)
+
+        now = datetime.now(timezone.utc)
+        task = self.store.get_task(message.request_id)
+        assert task is not None
+        task.sent_at = now + timedelta(seconds=30)
+        task.completed_at = now + timedelta(seconds=35)
+        task.status = TaskStatus.SUCCESS
+
+        stats = self.store.overall_stats()
+        self.assertAlmostEqual(float(stats["avg_processing_seconds"] or 0.0), 5.0, delta=0.1)
+        self.assertAlmostEqual(float(stats["eta_seconds"] or 0.0), 10.0, delta=0.2)
+
+    def test_overall_stats_handles_naive_aware_datetime_mix(self) -> None:
+        message = self.store.build_pending_messages("RUN", "result.q", "r.json")[0]
+        self.store.mark_task_sent(message.request_id)
+
+        task = self.store.get_task(message.request_id)
+        assert task is not None
+        task.sent_at = datetime.utcnow() - timedelta(seconds=3)
+        task.completed_at = datetime.now(timezone.utc)
+        task.status = TaskStatus.SUCCESS
+
+        stats = self.store.overall_stats()
+        self.assertIsInstance(stats["avg_processing_seconds"], float)
+        self.assertGreater(float(stats["avg_processing_seconds"] or 0.0), 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()

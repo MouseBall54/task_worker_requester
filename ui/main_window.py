@@ -206,6 +206,7 @@ class MainWindow(QMainWindow):
         layout.setSpacing(12)
 
         layout.addWidget(self._build_control_panel())
+        # Keep body area around 65:35 (folder progress : detail/log).
         layout.addWidget(self._build_folder_progress_panel(), stretch=13)
         layout.addWidget(self._build_bottom_panel(), stretch=7)
 
@@ -298,7 +299,7 @@ class MainWindow(QMainWindow):
 
         self.active_folder_table = self._create_folder_table(self.active_folder_table_model)
         # Keep active list visibly larger from first render as requested.
-        self.active_folder_table.setMinimumHeight(210)
+        self.active_folder_table.setMinimumHeight(190)
         self.active_folder_table.selectionModel().selectionChanged.connect(self._on_active_folder_selection_changed)
         # Keep backward-compatible attribute name.
         self.folder_table = self.active_folder_table
@@ -310,7 +311,7 @@ class MainWindow(QMainWindow):
 
         self.completed_folder_table = self._create_folder_table(self.completed_folder_table_model)
         # Preserve completed-list readability without stealing too much initial height.
-        self.completed_folder_table.setMinimumHeight(150)
+        self.completed_folder_table.setMinimumHeight(140)
         self.completed_folder_table.selectionModel().selectionChanged.connect(
             self._on_completed_folder_selection_changed
         )
@@ -326,8 +327,8 @@ class MainWindow(QMainWindow):
         table.setSelectionMode(QTableView.SingleSelection)
         table.setAlternatingRowColors(True)
         table.verticalHeader().setVisible(False)
-        table.verticalHeader().setDefaultSectionSize(38)
-        table.verticalHeader().setMinimumSectionSize(34)
+        table.verticalHeader().setDefaultSectionSize(34)
+        table.verticalHeader().setMinimumSectionSize(30)
         table.setWordWrap(False)
         table.setTextElideMode(Qt.ElideRight)
         table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
@@ -362,8 +363,8 @@ class MainWindow(QMainWindow):
         self.image_table.setSelectionBehavior(QTableView.SelectRows)
         self.image_table.setAlternatingRowColors(True)
         self.image_table.verticalHeader().setVisible(False)
-        self.image_table.verticalHeader().setDefaultSectionSize(38)
-        self.image_table.verticalHeader().setMinimumSectionSize(34)
+        self.image_table.verticalHeader().setDefaultSectionSize(34)
+        self.image_table.verticalHeader().setMinimumSectionSize(30)
         self.image_table.setWordWrap(False)
         self.image_table.setTextElideMode(Qt.ElideRight)
         self.image_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
@@ -508,7 +509,7 @@ class MainWindow(QMainWindow):
 
         avg_seconds = stats.get("avg_processing_seconds")
         avg_text = (
-            f"{float(avg_seconds):.1f}s/이미지"
+            f"{float(avg_seconds):.1f}s"
             if isinstance(avg_seconds, (int, float)) and float(avg_seconds) > 0
             else "-"
         )
@@ -522,7 +523,7 @@ class MainWindow(QMainWindow):
         self.overall_progress.setValue(progress)
         self.overall_label.setText(
             f"전체 진행률 {float(stats.get('progress', 0.0)):.1f}% ({completed}/{total}) "
-            f"| 평균 {avg_text} | 예상 잔여 {eta_text}"
+            f"| Avg Time/Image {avg_text} | ETA {eta_text}"
         )
 
     def set_running_state(self, running: bool) -> None:
