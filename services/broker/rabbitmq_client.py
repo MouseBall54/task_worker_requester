@@ -55,7 +55,10 @@ class RabbitMQClient(AbstractBrokerClient):
         self._channel = self._connection.channel()
 
         # Ensure request queue exists when using default exchange.
-        self._channel.queue_declare(queue=self._config.request_queue, arguments={"x-max-priority": 5, "module_group":"IPDK_WORKER"}, durable=True)
+        self._channel.queue_declare(
+            queue=self._config.request_queue,
+            **self._build_queue_declare_kwargs(self._config.request_queue_declare),
+        )
 
     def close(self) -> None:
         """Close channel and connection safely."""
@@ -73,7 +76,10 @@ class RabbitMQClient(AbstractBrokerClient):
 
         self._ensure_connected()
         assert self._channel is not None
-        self._channel.queue_declare(queue=queue_name, arguments={"x-max-priority": 5, "module_group":"default"}, durable=True)
+        self._channel.queue_declare(
+            queue=queue_name,
+            **self._build_queue_declare_kwargs(self._config.result_queue_declare),
+        )
         return queue_name
 
     def publish_task(self, task_message: TaskMessage) -> None:
@@ -177,6 +183,19 @@ class RabbitMQClient(AbstractBrokerClient):
 
         if self._connection is None or self._channel is None or not self._connection.is_open:
             self.connect()
+
+    @staticmethod
+    def _build_queue_declare_kwargs(queue_config) -> dict[str, Any]:  # noqa: ANN001
+        """Translate queue config dataclass into pika queue_declare kwargs."""
+
+        kwargs: dict[str, Any] = {
+            "durable": bool(queue_config.durable),
+            "exclusive": bool(queue_config.exclusive),
+            "auto_delete": bool(queue_config.auto_delete),
+        }
+        if queue_config.arguments:
+            kwargs["arguments"] = dict(queue_config.arguments)
+        return kwargs
 
     @staticmethod
     def _decode_payload(body: bytes) -> dict[str, Any]:

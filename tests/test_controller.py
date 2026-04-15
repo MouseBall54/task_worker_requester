@@ -123,6 +123,34 @@ class TaskControllerTest(unittest.TestCase):
         self.assertEqual(store.overall_stats()["total"], 1)
         self.assertTrue(len(view.logs) >= 1)
 
+    def test_controller_uses_configured_folder_open_limits(self) -> None:
+        config = AppConfig(
+            rabbitmq=RabbitMQConfig(host="127.0.0.1", port=5672, username="guest", password="guest"),
+            publish=PublishConfig(
+                image_extensions=[".jpg"],
+                initial_open_folders=1,
+                max_active_open_folders=4,
+            ),
+            ui=UiConfig(),
+            mock_mode=True,
+        )
+        view = DummyView()
+        store = TaskStore()
+        logger = logging.getLogger("controller_limits_test")
+        logger.handlers.clear()
+        logger.addHandler(logging.NullHandler())
+
+        controller = TaskController(
+            config=config,
+            view=view,  # type: ignore[arg-type]
+            store=store,
+            broker_provider=build_broker_provider(config),
+            logger=logger,
+        )
+
+        self.assertEqual(controller._max_initial_open_folders, 1)
+        self.assertEqual(controller._max_active_open_folders, 4)
+
     def test_dispatch_opens_only_one_more_when_threshold_met_and_respects_active_cap(self) -> None:
         config = AppConfig(
             rabbitmq=RabbitMQConfig(host="127.0.0.1", port=5672, username="guest", password="guest"),

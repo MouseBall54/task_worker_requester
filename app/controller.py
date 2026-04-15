@@ -52,8 +52,11 @@ class TaskController(QObject):
         self._publish_exchange = ""
         self._publish_routing_key = ""
 
-        self._max_initial_open_folders = 2
-        self._max_active_open_folders = 3
+        self._max_active_open_folders = max(1, int(config.publish.max_active_open_folders))
+        self._max_initial_open_folders = max(
+            1,
+            min(int(config.publish.initial_open_folders), self._max_active_open_folders),
+        )
         self._next_open_threshold = 50.0
         self._folder_message_batches: list[tuple[str, list]] = []
         self._next_folder_batch_index = 0

@@ -111,6 +111,8 @@ class TaskStoreTest(unittest.TestCase):
         self.assertEqual(preview["payload"]["expected"]["request_id"], message.request_id)
         self.assertEqual(preview["payload"]["expected"]["action"], "RUN")
         self.assertEqual(preview["connection"]["predicted_result_queue"], "task.result.client")
+        self.assertIn("request_queue_declare", preview["connection"])
+        self.assertIn("result_queue_declare", preview["connection"])
         self.assertNotIn("sent_at", preview["payload"]["expected"])
         self.assertNotIn("sent_at", preview["payload"]["published"])
         self.assertEqual(preview["payload"]["received"], {})

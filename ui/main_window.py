@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import PureWindowsPath
 from pathlib import Path
 from typing import Any
@@ -422,30 +423,24 @@ class MainWindow(QMainWindow):
                 self._show_path_error("이동할 경로를 입력해주세요.")
             return False
 
-        target = Path(cleaned_path).expanduser()
-        try:
-            if not target.is_absolute():
-                target = (Path.cwd() / target).resolve()
-            else:
-                target = target.resolve()
-        except OSError:
+        target_path = self._normalize_navigation_path(cleaned_path)
+        if not target_path:
             if show_feedback:
                 self._show_path_error(f"경로를 해석할 수 없습니다: {cleaned_path}")
             return False
 
-        if target.is_file():
-            target = target.parent
+        if os.path.isfile(target_path):
+            target_path = os.path.dirname(target_path)
 
-        if not target.exists() or not target.is_dir():
+        if not os.path.isdir(target_path):
             if show_feedback:
-                self._show_path_error(f"유효한 폴더 경로가 아닙니다: {target}")
+                self._show_path_error(f"유효한 폴더 경로가 아닙니다: {target_path}")
             return False
 
-        target_path = str(target)
         if self._try_focus_tree_path(target_path):
             self._clear_pending_jump()
             if show_feedback:
-                self.append_log(f"[탐색] 경로 이동 완료: {target}")
+                self.append_log(f"[탐색] 경로 이동 완료: {target_path}")
             return True
 
         # First-click fallback: wait for QFileSystemModel async directory loading.
@@ -453,7 +448,7 @@ class MainWindow(QMainWindow):
         self._pending_jump_show_feedback = show_feedback
         self._pending_jump_attempts = 0
         self.file_system_model.setRootPath(target_path)
-        parent_path = str(target.parent)
+        parent_path = os.path.dirname(target_path)
         if parent_path and parent_path != target_path:
             self.file_system_model.setRootPath(parent_path)
         QTimer.singleShot(80, self._retry_pending_jump)
@@ -465,7 +460,7 @@ class MainWindow(QMainWindow):
         action = self.action_edit.text().strip()
         recipe_path = str(self.recipe_combo.currentData() or "").strip()
         if not recipe_path:
-            recipe_path = self._config.publish.default_recipe_path
+            recipe_path = self._config.recipe_config.default_path
 
         polling_text = self.polling_combo.currentText().strip() or "5"
         try:
@@ -774,15 +769,15 @@ class MainWindow(QMainWindow):
         return drive_path
 
     def _populate_recipe_selector(self) -> None:
-        """Populate recipe alias combo from config presets."""
+        """Populate recipe alias combo from top-level recipe config."""
 
         self.recipe_combo.blockSignals(True)
         self.recipe_combo.clear()
 
-        for preset in self._config.publish.recipe_presets:
-            self.recipe_combo.addItem(preset.alias, preset.path)
+        for recipe_item in self._config.recipe_config.recipes:
+            self.recipe_combo.addItem(recipe_item.alias, recipe_item.path)
 
-        default_alias = (self._config.publish.default_recipe_alias or "").strip().lower()
+        default_alias = (self._config.recipe_config.default_alias or "").strip().lower()
         selected_idx = 0
         if default_alias:
             for idx in range(self.recipe_combo.count()):
@@ -855,6 +850,24 @@ class MainWindow(QMainWindow):
         self._pending_jump_target = None
         self._pending_jump_show_feedback = False
         self._pending_jump_attempts = 0
+
+    @staticmethod
+    def _normalize_navigation_path(path: str) -> str:
+        """Normalize user-entered navigation path without resolving network aliases.
+
+        This intentionally avoids ``Path.resolve()`` so mapped drives or UNC paths
+        stay as entered instead of being canonicalized to server/IP targets.
+        """
+
+        expanded = os.path.expandvars(os.path.expanduser(path.strip()))
+        if not expanded:
+            return ""
+
+        normalized = os.path.normpath(expanded)
+        if os.path.isabs(normalized):
+            return normalized
+
+        return os.path.abspath(os.path.join(os.getcwd(), normalized))
 
     @staticmethod
     def _format_duration(seconds: float) -> str:

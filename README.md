@@ -10,7 +10,9 @@ RabbitMQ로 이미지 단위 작업 요청을 전송하고(`IMG_LIST` 1건), 전
 - 폴더 단위 진행률/성공/실패/타임아웃 집계
 - 실시간 로그 패널
 - Mock Broker 모드 (`mock_mode: true`)
-- 설정 파일의 레시피 별명(`alias`) 선택 지원
+- 별도 recipe 설정 파일의 레시피 별명(`alias`) 선택 지원
+- request/result queue별 `queue_declare` 옵션 설정 지원
+- 폴더 동시 전송 수 설정 지원
 
 ## 실행
 
@@ -31,19 +33,39 @@ uv run python main.py config/app_config.yaml
 
 - `mock_mode: true` 이면 실제 RabbitMQ 없이 시뮬레이션 결과를 생성합니다.
 - 실제 서버 사용 시 `mock_mode: false` 로 변경 후 `rabbitmq` 섹션을 설정하세요.
-- `publish.recipe_presets`에 `alias/path`를 등록하면 UI에는 별명이 표시되고 전송에는 실제 path가 사용됩니다.
+- `recipe_config_path`는 별도 recipe 설정 YAML 파일 경로입니다.
+- 예제 기본 경로는 [config/app_config.yaml](D:\GIT\task_worker_requester\config\app_config.yaml) 기준 상대경로인 `recipe_config.yaml` 입니다.
+- 별도 recipe 파일의 `recipes`에 `alias/path`를 등록하면 UI에는 별명이 표시되고 전송에는 실제 path가 사용됩니다.
+- `rabbitmq.request_queue_declare`, `rabbitmq.result_queue_declare`로 queue declare 옵션을 각각 설정할 수 있습니다.
+- `publish.initial_open_folders`, `publish.max_active_open_folders`로 폴더 개방 정책을 조정할 수 있습니다.
+
+### Recipe 설정 분리
+
+- 메인 설정: [config/app_config.yaml](D:\GIT\task_worker_requester\config\app_config.yaml)
+  - `recipe_config_path: "recipe_config.yaml"`
+- 별도 recipe 설정: [config/recipe_config.yaml](D:\GIT\task_worker_requester\config\recipe_config.yaml)
+  - `default_alias`
+  - `recipes`
+  - `recipes[].alias`
+  - `recipes[].path`
+
+메인 설정 파일 안의 inline `recipe_config` 블록은 더 이상 지원하지 않습니다.
 
 ### RabbitMQ 라우팅 설정 의미
 
 - `request_queue`
   - 기본 exchange(`request_exchange: ""`) 사용 시 실제 publish 대상 queue 이름입니다.
   - 이 경우 routing key도 항상 `request_queue`로 강제됩니다.
+- `request_queue_declare`
+  - request queue 선언 시 사용할 `durable`, `exclusive`, `auto_delete`, `arguments` 설정입니다.
 - `request_routing_key`
   - custom exchange(`request_exchange != ""`) 사용 시 우선 routing key로 사용됩니다.
   - 비어 있으면 `request_queue`를 fallback routing key로 사용합니다.
 - `result_queue_base`
   - 결과 수신에 사용하는 고정 queue 이름입니다.
   - 실행 중에도 동일한 queue 이름(`result_queue_base`)으로 polling 합니다.
+- `result_queue_declare`
+  - result queue 선언 시 사용할 `durable`, `exclusive`, `auto_delete`, `arguments` 설정입니다.
 
 ## 요청 메시지 형식
 
@@ -53,7 +75,7 @@ uv run python main.py config/app_config.yaml
 {
   "request_id": "3dc7831b-7c4b-45f1-b5cb-f00e6952f6d5",
   "action": "RUN_RECIPE",
-  "QUEUE_NAME": "task.result.client.a1b2c3d4",
+  "QUEUE_NAME": "task.result.client",
   "RECIPE_PATH": "recipes/default_recipe.json",
   "IMG_LIST": ["D:/data/folder_a/img001.jpg"]
 }

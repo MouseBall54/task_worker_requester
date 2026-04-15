@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
@@ -371,7 +372,7 @@ class TaskStore(QObject):
         active_queue = (active_result_queue or "").strip()
         predicted_queue = active_queue or rabbitmq.result_queue_base
         resolved_action = (runtime_action or "").strip() or app_config.publish.default_action
-        resolved_recipe_path = (runtime_recipe_path or "").strip() or app_config.publish.default_recipe_path
+        resolved_recipe_path = (runtime_recipe_path or "").strip() or app_config.recipe_config.default_path
 
         dynamic_expected_payload = {
             "request_id": task.request_id,
@@ -404,6 +405,8 @@ class TaskStore(QObject):
                 "request_routing_key": rabbitmq.request_routing_key,
                 "request_queue": rabbitmq.request_queue,
                 "result_queue_base": rabbitmq.result_queue_base,
+                "request_queue_declare": asdict(rabbitmq.request_queue_declare),
+                "result_queue_declare": asdict(rabbitmq.result_queue_declare),
                 "active_result_queue": active_queue,
                 "predicted_result_queue": predicted_queue,
             },

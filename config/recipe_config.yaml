@@ -1,0 +1,8 @@
+default_alias: "Default Recipe"
+recipes:
+  - alias: "Default Recipe"
+    path: "recipes/default_recipe.json"
+  - alias: "Fast Recipe"
+    path: "recipes/fast_recipe.json"
+  - alias: "Precision Recipe"
+    path: "recipes/precision_recipe.json"
