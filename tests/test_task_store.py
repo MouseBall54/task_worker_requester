@@ -27,9 +27,11 @@ class TaskStoreTest(unittest.TestCase):
             action="RUN_RECIPE",
             result_queue_name="result.client.1",
             recipe_path="recipe.json",
+            priority=4,
         )
         self.assertEqual(len(messages), 3)
         self.assertTrue(all(len(message.IMG_LIST) == 1 for message in messages))
+        self.assertTrue(all(message.priority == 4 for message in messages))
         payload_keys = set(messages[0].to_dict().keys())
         self.assertEqual(
             payload_keys,
@@ -113,6 +115,8 @@ class TaskStoreTest(unittest.TestCase):
         self.assertEqual(preview["connection"]["predicted_result_queue"], "task.result.client")
         self.assertIn("request_queue_declare", preview["connection"])
         self.assertIn("result_queue_declare", preview["connection"])
+        self.assertEqual(preview["connection"]["request_queue_max_priority"], 5)
+        self.assertEqual(preview["message"]["selected_priority"], 0)
         self.assertNotIn("sent_at", preview["payload"]["expected"])
         self.assertNotIn("sent_at", preview["payload"]["published"])
         self.assertEqual(preview["payload"]["received"], {})
@@ -139,6 +143,7 @@ class TaskStoreTest(unittest.TestCase):
             active_result_queue=None,
             runtime_action="RUN_PREVIEW",
             runtime_recipe_path="recipes/preview.json",
+            runtime_priority=3,
         )
 
         self.assertIsNotNone(preview)
@@ -155,6 +160,8 @@ class TaskStoreTest(unittest.TestCase):
         self.assertEqual(preview["payload"]["published"], {})
         self.assertEqual(preview["connection"]["predicted_result_queue"], "task.result.client")
         self.assertEqual(preview["message"]["publish_meta"]["routing_key"], "task.request.queue")
+        self.assertEqual(preview["message"]["selected_priority"], 3)
+        self.assertEqual(preview["message"]["publish_meta"]["priority"], 3)
 
     def test_build_mq_preview_uses_active_result_queue_when_present(self) -> None:
         message = self.store.build_pending_messages("RUN", "result.q", "r.json")[0]
@@ -181,6 +188,17 @@ class TaskStoreTest(unittest.TestCase):
         self.assertEqual(preview["payload"]["expected"]["QUEUE_NAME"], "task.result.client")
         self.assertEqual(preview["connection"]["active_result_queue"], "task.result.client")
         self.assertEqual(preview["connection"]["predicted_result_queue"], "task.result.client")
+
+    def test_build_pending_messages_by_folder_keeps_runtime_priority(self) -> None:
+        grouped = self.store.build_pending_messages_by_folder(
+            action="RUN_RECIPE",
+            result_queue_name="result.client.1",
+            recipe_path="recipe.json",
+            priority=2,
+        )
+
+        self.assertTrue(grouped)
+        self.assertTrue(all(message.priority == 2 for _, messages in grouped for message in messages))
 
     def test_set_task_received_message_keeps_first_payload(self) -> None:
         message = self.store.build_pending_messages("RUN", "result.q", "r.json")[0]

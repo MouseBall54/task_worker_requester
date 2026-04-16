@@ -1,4 +1,4 @@
-mock_mode: true
+mock_mode: false
 log_level: INFO
 recipe_config_path: "recipe_config.yaml"
 
@@ -9,9 +9,9 @@ rabbitmq:
   password: "young"
   virtual_host: "/"
   request_exchange: ""
-  request_routing_key: "task.request22"
-  request_queue: "task.request" #목표 큐 이름
-  result_queue_base: "Q_RESULT" #받아올 큐 이름, 요청 보낼때 보내면 해당 큐이름으로 받아옴 
+  request_routing_key: "task.request"
+  request_queue: "IPDK_WORKER_INTERFACE" #목표 큐 이름
+  result_queue_base: "IPDK_WORKER_INTERFACE_RESULT" #받아올 큐 이름, 요청 보낼때 보내면 해당 큐이름으로 받아옴 
   request_queue_declare:
     durable: true
     exclusive: false
@@ -31,9 +31,10 @@ rabbitmq:
   connection_attempts: 3
   retry_delay_seconds: 2.0
 publish:
-  default_action: "RUN_RECIPE"
+  default_action: "RUN_EXECUTE"
+  default_priority: 0
   polling_interval_seconds: 5
-  timeout_seconds: 300
+  timeout_seconds: 86400
   max_messages_per_poll: 100
   max_publish_retries: 3
   publish_retry_backoff_seconds: 1.5

@@ -134,7 +134,7 @@ class TaskController(QObject):
             self._log("이미 작업이 실행 중입니다.")
             return
 
-        action, recipe_path, polling_interval = self._view.current_runtime_settings()
+        action, recipe_path, polling_interval, priority = self._view.current_runtime_settings()
         if not action:
             self._log("Action 값이 비어 있습니다.")
             return
@@ -143,7 +143,12 @@ class TaskController(QObject):
             return
 
         queue_name = self._config.rabbitmq.result_queue_base
-        grouped_messages = self._store.build_pending_messages_by_folder(action, queue_name, recipe_path)
+        grouped_messages = self._store.build_pending_messages_by_folder(
+            action,
+            queue_name,
+            recipe_path,
+            priority=priority,
+        )
 
         if not grouped_messages:
             self._log("전송할 PENDING 작업이 없습니다.")
@@ -174,6 +179,7 @@ class TaskController(QObject):
                         "message_id": message.request_id,
                         "correlation_id": message.request_id,
                         "content_type": "application/json",
+                        "priority": message.priority,
                     },
                 )
 
@@ -229,13 +235,14 @@ class TaskController(QObject):
     def on_mq_preview_requested(self, request_id: str) -> None:
         """Open MQ preview dialog for selected image task row."""
 
-        runtime_action, runtime_recipe_path, _ = self._view.current_runtime_settings()
+        runtime_action, runtime_recipe_path, _, runtime_priority = self._view.current_runtime_settings()
         preview = self._store.build_mq_preview(
             request_id=request_id,
             app_config=self._config,
             active_result_queue=self._active_result_queue,
             runtime_action=runtime_action,
             runtime_recipe_path=runtime_recipe_path,
+            runtime_priority=runtime_priority,
         )
         if preview is None:
             self._log(f"MQ 미리보기 대상을 찾지 못했습니다: {request_id}")
@@ -327,11 +334,7 @@ class TaskController(QObject):
         self._store.mark_task_sent(request_id)
         safe_payload = payload if isinstance(payload, dict) else {}
         safe_meta = meta if isinstance(meta, dict) else {}
-        self._store.set_task_published_message(
-            request_id=request_id,
-            payload=safe_payload,
-            meta={str(key): str(value) for key, value in safe_meta.items()},
-        )
+        self._store.set_task_published_message(request_id=request_id, payload=safe_payload, meta=dict(safe_meta))
         _ = index
         _ = total
         self._published_count += 1

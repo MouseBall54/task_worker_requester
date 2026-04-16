@@ -96,6 +96,7 @@ class RabbitMQClient(AbstractBrokerClient):
             correlation_id=task_message.request_id,
             reply_to=task_message.QUEUE_NAME,
             content_type="application/json",
+            priority=max(0, int(task_message.priority)),
             delivery_mode=2,
             timestamp=int(time.time()),
         )

@@ -71,6 +71,7 @@ class PublishWorker(QObject):
                             "message_id": message.request_id,
                             "correlation_id": message.request_id,
                             "content_type": "application/json",
+                            "priority": message.priority,
                         }
                         self.message_published.emit(
                             message.request_id,

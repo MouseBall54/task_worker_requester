@@ -102,6 +102,7 @@ class TaskStore(QObject):
         action: str,
         result_queue_name: str,
         recipe_path: str,
+        priority: int = 0,
     ) -> list[TaskMessage]:
         """Create outbound task messages for not-yet-sent requests."""
 
@@ -116,6 +117,7 @@ class TaskStore(QObject):
                     QUEUE_NAME=result_queue_name,
                     RECIPE_PATH=recipe_path,
                     IMG_LIST=[task.image_path],
+                    priority=priority,
                 )
             )
         return messages
@@ -125,6 +127,7 @@ class TaskStore(QObject):
         action: str,
         result_queue_name: str,
         recipe_path: str,
+        priority: int = 0,
     ) -> list[tuple[str, list[TaskMessage]]]:
         """Create outbound messages grouped by folder in stable folder order."""
 
@@ -146,6 +149,7 @@ class TaskStore(QObject):
                         QUEUE_NAME=result_queue_name,
                         RECIPE_PATH=recipe_path,
                         IMG_LIST=[task.image_path],
+                        priority=priority,
                     )
                 )
 
@@ -195,7 +199,7 @@ class TaskStore(QObject):
         self,
         request_id: str,
         payload: dict[str, Any],
-        meta: dict[str, str] | None = None,
+        meta: dict[str, Any] | None = None,
     ) -> None:
         """Store expected outbound message snapshot for preview UI."""
 
@@ -211,7 +215,7 @@ class TaskStore(QObject):
         self,
         request_id: str,
         payload: dict[str, Any],
-        meta: dict[str, str] | None = None,
+        meta: dict[str, Any] | None = None,
     ) -> None:
         """Store published message snapshot/metadata for preview UI."""
 
@@ -227,7 +231,7 @@ class TaskStore(QObject):
         self,
         request_id: str,
         payload: dict[str, Any],
-        meta: dict[str, str] | None = None,
+        meta: dict[str, Any] | None = None,
     ) -> None:
         """Store first-matched inbound raw message snapshot for preview UI."""
 
@@ -359,6 +363,7 @@ class TaskStore(QObject):
         active_result_queue: str | None,
         runtime_action: str | None = None,
         runtime_recipe_path: str | None = None,
+        runtime_priority: int | None = None,
     ) -> dict[str, Any] | None:
         """Build MQ preview payload for one request row."""
 
@@ -373,6 +378,9 @@ class TaskStore(QObject):
         predicted_queue = active_queue or rabbitmq.result_queue_base
         resolved_action = (runtime_action or "").strip() or app_config.publish.default_action
         resolved_recipe_path = (runtime_recipe_path or "").strip() or app_config.recipe_config.default_path
+        resolved_priority = self._normalize_priority(
+            runtime_priority if runtime_priority is not None else app_config.publish.default_priority
+        )
 
         dynamic_expected_payload = {
             "request_id": task.request_id,
@@ -393,6 +401,7 @@ class TaskStore(QObject):
             "message_id": task.request_id,
             "correlation_id": task.request_id,
             "content_type": "application/json",
+            "priority": resolved_priority,
         }
         publish_meta = {**dynamic_publish_meta, **dict(task.publish_meta)}
 
@@ -404,6 +413,7 @@ class TaskStore(QObject):
                 "request_exchange": rabbitmq.request_exchange,
                 "request_routing_key": rabbitmq.request_routing_key,
                 "request_queue": rabbitmq.request_queue,
+                "request_queue_max_priority": rabbitmq.request_queue_max_priority,
                 "result_queue_base": rabbitmq.result_queue_base,
                 "request_queue_declare": asdict(rabbitmq.request_queue_declare),
                 "result_queue_declare": asdict(rabbitmq.result_queue_declare),
@@ -416,6 +426,7 @@ class TaskStore(QObject):
                 "sent_at": self._datetime_to_str(task.sent_at),
                 "completed_at": self._datetime_to_str(task.completed_at),
                 "image_path": task.image_path,
+                "selected_priority": resolved_priority,
                 "publish_meta": publish_meta,
                 "received_meta": dict(task.received_meta),
             },
@@ -529,3 +540,13 @@ class TaskStore(QObject):
         if value.tzinfo is None or value.tzinfo.utcoffset(value) is None:
             return value.replace(tzinfo=timezone.utc)
         return value.astimezone(timezone.utc)
+
+    @staticmethod
+    def _normalize_priority(value: Any) -> int:
+        """Convert runtime/config priority values into safe non-negative integers."""
+
+        try:
+            priority = int(value)
+        except (TypeError, ValueError):
+            return 0
+        return max(0, priority)

@@ -101,6 +101,15 @@ class RabbitMQConfig:
     connection_attempts: int = 3
     retry_delay_seconds: float = 2.0
 
+    @property
+    def request_queue_max_priority(self) -> int | None:
+        """Return request queue max priority declared in RabbitMQ, if configured."""
+
+        raw_priority = self.request_queue_declare.arguments.get("x-max-priority")
+        if not isinstance(raw_priority, int) or isinstance(raw_priority, bool):
+            return None
+        return raw_priority if raw_priority >= 1 else None
+
 
 @dataclass(slots=True)
 class PublishConfig:
@@ -112,6 +121,7 @@ class PublishConfig:
     max_messages_per_poll: int = 50
     max_publish_retries: int = 3
     publish_retry_backoff_seconds: float = 1.5
+    default_priority: int = 0
     initial_open_folders: int = 2
     max_active_open_folders: int = 3
     image_extensions: list[str] = field(

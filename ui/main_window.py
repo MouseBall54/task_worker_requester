@@ -8,7 +8,7 @@ from pathlib import PureWindowsPath
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QDir, QModelIndex, Qt, QTimer, Signal
+from PySide6.QtCore import QDir, QItemSelectionModel, QModelIndex, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QDialog,
@@ -243,24 +243,38 @@ class MainWindow(QMainWindow):
         row_action_recipe.addLayout(recipe_col, stretch=1)
         layout.addLayout(row_action_recipe)
 
+        row_runtime = QHBoxLayout()
+
+        priority_col = QHBoxLayout()
+        priority_col.addWidget(QLabel("Priority"), stretch=0)
+        self.priority_combo = QComboBox()
+        self.priority_combo.setMinimumContentsLength(3)
+        self.priority_combo.setMinimumWidth(92)
+        priority_col.addWidget(self.priority_combo, stretch=0)
+        priority_col.addStretch(1)
+
+        polling_col = QHBoxLayout()
+        polling_col.addWidget(QLabel("Polling 간격"), stretch=0)
+        self.polling_combo = QComboBox()
+        self.polling_combo.addItems(["3", "5", "10", "15"])
+        self.polling_combo.setEditable(True)
+        self.polling_combo.setMinimumContentsLength(4)
+        self.polling_combo.setMinimumWidth(112)
+        polling_col.addWidget(self.polling_combo, stretch=0)
+        polling_col.addWidget(QLabel("초"), stretch=0)
+        polling_col.addStretch(1)
+
+        row_runtime.addLayout(priority_col, stretch=1)
+        row_runtime.addSpacing(12)
+        row_runtime.addLayout(polling_col, stretch=1)
+        layout.addLayout(row_runtime)
+
         recipe_path_row = QHBoxLayout()
         recipe_path_row.addWidget(QLabel("선택 경로"), stretch=0)
         self.recipe_path_preview = QLineEdit()
         self.recipe_path_preview.setReadOnly(True)
         recipe_path_row.addWidget(self.recipe_path_preview, stretch=1)
         layout.addLayout(recipe_path_row)
-
-        row_polling = QHBoxLayout()
-        row_polling.addWidget(QLabel("Polling 간격"), stretch=0)
-        self.polling_combo = QComboBox()
-        self.polling_combo.addItems(["3", "5", "10", "15"])
-        self.polling_combo.setEditable(True)
-        self.polling_combo.setMinimumContentsLength(4)
-        self.polling_combo.setMinimumWidth(96)
-        row_polling.addWidget(self.polling_combo, stretch=0)
-        row_polling.addWidget(QLabel("초"), stretch=0)
-        row_polling.addStretch(1)
-        layout.addLayout(row_polling)
 
         self.overall_progress = QProgressBar()
         self.overall_progress.setRange(0, 100)
@@ -407,6 +421,7 @@ class MainWindow(QMainWindow):
     def _apply_defaults(self) -> None:
         self.action_edit.setText(self._config.publish.default_action)
         self._populate_recipe_selector()
+        self._populate_priority_selector()
 
         idx = self.polling_combo.findText(str(self._config.publish.polling_interval_seconds))
         if idx >= 0:
@@ -437,16 +452,15 @@ class MainWindow(QMainWindow):
                 self._show_path_error(f"유효한 폴더 경로가 아닙니다: {target_path}")
             return False
 
-        if self._try_focus_tree_path(target_path):
-            self._clear_pending_jump()
-            if show_feedback:
-                self.append_log(f"[탐색] 경로 이동 완료: {target_path}")
-            return True
-
-        # First-click fallback: wait for QFileSystemModel async directory loading.
         self._pending_jump_target = target_path
         self._pending_jump_show_feedback = show_feedback
         self._pending_jump_attempts = 0
+
+        if self._try_focus_tree_path(target_path):
+            self._schedule_pending_jump_finalization()
+            return True
+
+        # First-click fallback: wait for QFileSystemModel async directory loading.
         self.file_system_model.setRootPath(target_path)
         parent_path = os.path.dirname(target_path)
         if parent_path and parent_path != target_path:
@@ -454,8 +468,8 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(80, self._retry_pending_jump)
         return True
 
-    def current_runtime_settings(self) -> tuple[str, str, int]:
-        """Return action, recipe path, polling interval from UI fields."""
+    def current_runtime_settings(self) -> tuple[str, str, int, int]:
+        """Return action, recipe path, polling interval, and priority from UI fields."""
 
         action = self.action_edit.text().strip()
         recipe_path = str(self.recipe_combo.currentData() or "").strip()
@@ -468,7 +482,12 @@ class MainWindow(QMainWindow):
         except ValueError:
             polling_interval = 5
 
-        return action, recipe_path, polling_interval
+        try:
+            priority = max(0, int(self.priority_combo.currentText().strip() or "0"))
+        except ValueError:
+            priority = 0
+
+        return action, recipe_path, polling_interval, priority
 
     def selected_tree_folder(self) -> str | None:
         """Return currently selected folder path from left tree."""
@@ -744,6 +763,8 @@ class MainWindow(QMainWindow):
         selected_path = self.file_system_model.filePath(current)
         if not selected_path:
             return
+        if self._pending_jump_target and not self._paths_match(selected_path, self._pending_jump_target):
+            return
 
         self._is_syncing_navigation = True
         try:
@@ -799,6 +820,19 @@ class MainWindow(QMainWindow):
         self.recipe_path_preview.setText(recipe_path)
         self.recipe_path_preview.setToolTip(recipe_path)
 
+    def _populate_priority_selector(self) -> None:
+        """Populate request priority combo from queue declare max priority."""
+
+        max_priority = self._config.rabbitmq.request_queue_max_priority or 0
+        default_priority = max(0, min(self._config.publish.default_priority, max_priority))
+
+        self.priority_combo.blockSignals(True)
+        self.priority_combo.clear()
+        for priority in range(0, max_priority + 1):
+            self.priority_combo.addItem(str(priority), priority)
+        self.priority_combo.setCurrentText(str(default_priority))
+        self.priority_combo.blockSignals(False)
+
     def _retry_pending_jump(self) -> None:
         """Retry async path focus after QFileSystemModel has loaded indexes."""
 
@@ -807,9 +841,7 @@ class MainWindow(QMainWindow):
 
         target_path = self._pending_jump_target
         if self._try_focus_tree_path(target_path):
-            if self._pending_jump_show_feedback:
-                self.append_log(f"[탐색] 경로 이동 완료: {target_path}")
-            self._clear_pending_jump()
+            self._schedule_pending_jump_finalization()
             return
 
         self._pending_jump_attempts += 1
@@ -833,6 +865,15 @@ class MainWindow(QMainWindow):
             # Keep global root visible so all drives remain visible in the tree.
             self.folder_tree.setRootIndex(QModelIndex())
             self._expand_parent_chain(model_index)
+            selection_model = self.folder_tree.selectionModel()
+            if selection_model is not None:
+                selection_flags = (
+                    QItemSelectionModel.ClearAndSelect
+                    | QItemSelectionModel.Current
+                    | QItemSelectionModel.Rows
+                )
+                selection_model.setCurrentIndex(model_index, selection_flags)
+                selection_model.select(model_index, QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
             self.folder_tree.setCurrentIndex(model_index)
             self.folder_tree.scrollTo(model_index, QTreeView.PositionAtCenter)
             self.folder_tree.expand(model_index)
@@ -851,6 +892,45 @@ class MainWindow(QMainWindow):
         self._pending_jump_show_feedback = False
         self._pending_jump_attempts = 0
 
+    def _schedule_pending_jump_finalization(self) -> None:
+        """Re-assert exact current index after async model/view updates settle."""
+
+        if not self._pending_jump_target:
+            return
+        QTimer.singleShot(0, self._finalize_pending_jump)
+
+    def _finalize_pending_jump(self) -> None:
+        """Ensure current tree index, highlight, and input path all match the target path."""
+
+        target_path = self._pending_jump_target
+        if not target_path:
+            return
+
+        if not self._try_focus_tree_path(target_path):
+            self._pending_jump_attempts += 1
+            if self._pending_jump_attempts >= self._max_pending_jump_attempts:
+                if self._pending_jump_show_feedback:
+                    self._show_path_error(f"트리에서 경로를 찾을 수 없습니다: {target_path}")
+                self._clear_pending_jump()
+                return
+            QTimer.singleShot(100, self._retry_pending_jump)
+            return
+
+        current_path = self.file_system_model.filePath(self.folder_tree.currentIndex())
+        if not self._paths_match(current_path, target_path):
+            self._pending_jump_attempts += 1
+            if self._pending_jump_attempts >= self._max_pending_jump_attempts:
+                if self._pending_jump_show_feedback:
+                    self._show_path_error(f"경로 선택을 확정하지 못했습니다: {target_path}")
+                self._clear_pending_jump()
+                return
+            QTimer.singleShot(80, self._finalize_pending_jump)
+            return
+
+        if self._pending_jump_show_feedback:
+            self.append_log(f"[탐색] 경로 이동 완료: {target_path}")
+        self._clear_pending_jump()
+
     @staticmethod
     def _normalize_navigation_path(path: str) -> str:
         """Normalize user-entered navigation path without resolving network aliases.
@@ -868,6 +948,14 @@ class MainWindow(QMainWindow):
             return normalized
 
         return os.path.abspath(os.path.join(os.getcwd(), normalized))
+
+    @staticmethod
+    def _paths_match(left: str, right: str) -> bool:
+        """Compare filesystem paths using normalized Windows-friendly semantics."""
+
+        if not left or not right:
+            return False
+        return os.path.normcase(os.path.normpath(left)) == os.path.normcase(os.path.normpath(right))
 
     @staticmethod
     def _format_duration(seconds: float) -> str:

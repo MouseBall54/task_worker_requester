@@ -213,6 +213,117 @@ class ConfigLoaderTest(unittest.TestCase):
 
         self.assertIn("initial_open_folders", str(ctx.exception))
 
+    def test_default_priority_loads_when_within_queue_max_priority(self) -> None:
+        main_content = textwrap.dedent(
+            """
+            recipe_config_path: "recipe_config.yaml"
+            rabbitmq:
+              host: "127.0.0.1"
+              port: 5672
+              username: "guest"
+              password: "guest"
+              request_queue_declare:
+                arguments:
+                  x-max-priority: 7
+            publish:
+              default_priority: 4
+            """
+        ).strip()
+        recipe_content = textwrap.dedent(
+            """
+            default_alias: "Default Recipe"
+            recipes:
+              - alias: "Default Recipe"
+                path: "recipes/default.json"
+            """
+        ).strip()
+
+        with TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            config_path = temp_path / "app.yaml"
+            recipe_path = temp_path / "recipe_config.yaml"
+            config_path.write_text(main_content, encoding="utf-8")
+            recipe_path.write_text(recipe_content, encoding="utf-8")
+
+            config = ConfigLoader.load(config_path)
+
+        self.assertEqual(config.publish.default_priority, 4)
+        self.assertEqual(config.rabbitmq.request_queue_max_priority, 7)
+
+    def test_default_priority_requires_request_queue_max_priority_when_non_zero(self) -> None:
+        main_content = textwrap.dedent(
+            """
+            recipe_config_path: "recipe_config.yaml"
+            rabbitmq:
+              host: "127.0.0.1"
+              port: 5672
+              username: "guest"
+              password: "guest"
+              request_queue_declare:
+                arguments:
+                  module_group: "IPDK_WORKER"
+            publish:
+              default_priority: 2
+            """
+        ).strip()
+        recipe_content = textwrap.dedent(
+            """
+            default_alias: "Default Recipe"
+            recipes:
+              - alias: "Default Recipe"
+                path: "recipes/default.json"
+            """
+        ).strip()
+
+        with TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            config_path = temp_path / "app.yaml"
+            recipe_path = temp_path / "recipe_config.yaml"
+            config_path.write_text(main_content, encoding="utf-8")
+            recipe_path.write_text(recipe_content, encoding="utf-8")
+
+            with self.assertRaises(ConfigError) as ctx:
+                ConfigLoader.load(config_path)
+
+        self.assertIn("default_priority", str(ctx.exception))
+
+    def test_invalid_request_queue_max_priority_type_raises_error(self) -> None:
+        main_content = textwrap.dedent(
+            """
+            recipe_config_path: "recipe_config.yaml"
+            rabbitmq:
+              host: "127.0.0.1"
+              port: 5672
+              username: "guest"
+              password: "guest"
+              request_queue_declare:
+                arguments:
+                  x-max-priority: "high"
+            publish:
+              default_priority: 0
+            """
+        ).strip()
+        recipe_content = textwrap.dedent(
+            """
+            default_alias: "Default Recipe"
+            recipes:
+              - alias: "Default Recipe"
+                path: "recipes/default.json"
+            """
+        ).strip()
+
+        with TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            config_path = temp_path / "app.yaml"
+            recipe_path = temp_path / "recipe_config.yaml"
+            config_path.write_text(main_content, encoding="utf-8")
+            recipe_path.write_text(recipe_content, encoding="utf-8")
+
+            with self.assertRaises(ConfigError) as ctx:
+                ConfigLoader.load(config_path)
+
+        self.assertIn("x-max-priority", str(ctx.exception))
+
 
 if __name__ == "__main__":
     unittest.main()

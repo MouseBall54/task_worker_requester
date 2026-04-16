@@ -42,6 +42,7 @@ class TaskMessage:
     QUEUE_NAME: str
     RECIPE_PATH: str
     IMG_LIST: list[str]
+    priority: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize as dictionary for JSON body."""
@@ -88,8 +89,8 @@ class ImageTask:
     expected_message: dict[str, Any] | None = None
     published_message: dict[str, Any] | None = None
     received_message: dict[str, Any] | None = None
-    publish_meta: dict[str, str] = field(default_factory=dict)
-    received_meta: dict[str, str] = field(default_factory=dict)
+    publish_meta: dict[str, Any] = field(default_factory=dict)
+    received_meta: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True)

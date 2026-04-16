@@ -13,6 +13,7 @@ RabbitMQ로 이미지 단위 작업 요청을 전송하고(`IMG_LIST` 1건), 전
 - 별도 recipe 설정 파일의 레시피 별명(`alias`) 선택 지원
 - request/result queue별 `queue_declare` 옵션 설정 지원
 - 폴더 동시 전송 수 설정 지원
+- request queue `x-max-priority` 기반 MQ priority 선택 지원
 
 ## 실행
 
@@ -38,6 +39,8 @@ uv run python main.py config/app_config.yaml
 - 별도 recipe 파일의 `recipes`에 `alias/path`를 등록하면 UI에는 별명이 표시되고 전송에는 실제 path가 사용됩니다.
 - `rabbitmq.request_queue_declare`, `rabbitmq.result_queue_declare`로 queue declare 옵션을 각각 설정할 수 있습니다.
 - `publish.initial_open_folders`, `publish.max_active_open_folders`로 폴더 개방 정책을 조정할 수 있습니다.
+- `publish.default_priority`는 기본 request MQ priority 입니다.
+- UI의 `Priority` 드롭다운 범위는 `rabbitmq.request_queue_declare.arguments.x-max-priority` 값을 기준으로 `0..max`로 생성됩니다.
 
 ### Recipe 설정 분리
 
@@ -58,6 +61,7 @@ uv run python main.py config/app_config.yaml
   - 이 경우 routing key도 항상 `request_queue`로 강제됩니다.
 - `request_queue_declare`
   - request queue 선언 시 사용할 `durable`, `exclusive`, `auto_delete`, `arguments` 설정입니다.
+  - `arguments.x-max-priority`가 있으면 request publish 시 사용할 수 있는 priority 범위를 결정합니다.
 - `request_routing_key`
   - custom exchange(`request_exchange != ""`) 사용 시 우선 routing key로 사용됩니다.
   - 비어 있으면 `request_queue`를 fallback routing key로 사용합니다.
@@ -83,6 +87,7 @@ uv run python main.py config/app_config.yaml
 
 - 이미지 1건당 메시지 1건으로 전송되며 `IMG_LIST` 길이는 항상 `1`입니다.
 - `message_id`, `correlation_id`, `reply_to`는 각각 `request_id`, `request_id`, `QUEUE_NAME`으로 설정됩니다.
+- `priority`는 JSON payload에 추가되지 않고, AMQP `BasicProperties.priority` 속성으로만 전송됩니다.
 - `sent_at`는 앱 내부 상태 추적용이며 네트워크 payload에는 포함하지 않습니다.
 
 ## 테스트

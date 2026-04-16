@@ -82,8 +82,8 @@ class DummyView(QObject if PYSIDE_AVAILABLE else object):
     def show_mq_preview(self, _preview) -> None:  # noqa: ANN001
         return
 
-    def current_runtime_settings(self) -> tuple[str, str, int]:
-        return ("RUN_RECIPE", "recipe.json", 1)
+    def current_runtime_settings(self) -> tuple[str, str, int, int]:
+        return ("RUN_RECIPE", "recipe.json", 1, 0)
 
 
 @unittest.skipUnless(PYSIDE_AVAILABLE, "PySide6 is required for controller tests.")

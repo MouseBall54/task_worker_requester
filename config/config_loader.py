@@ -130,12 +130,26 @@ class ConfigLoader:
             raise ConfigError("max_messages_per_poll 는 1 이상이어야 합니다.")
         if config.publish.max_publish_retries <= 0:
             raise ConfigError("max_publish_retries 는 1 이상이어야 합니다.")
+        if config.publish.default_priority < 0:
+            raise ConfigError("default_priority 는 0 이상이어야 합니다.")
         if config.publish.initial_open_folders <= 0:
             raise ConfigError("initial_open_folders 는 1 이상이어야 합니다.")
         if config.publish.max_active_open_folders <= 0:
             raise ConfigError("max_active_open_folders 는 1 이상이어야 합니다.")
         if config.publish.initial_open_folders > config.publish.max_active_open_folders:
             raise ConfigError("initial_open_folders 는 max_active_open_folders 보다 클 수 없습니다.")
+
+        max_priority = ConfigLoader._read_request_queue_max_priority(config.rabbitmq)
+        if max_priority is None:
+            if config.publish.default_priority != 0:
+                raise ConfigError(
+                    "request queue 에 x-max-priority 가 없으면 default_priority 는 0이어야 합니다."
+                )
+        elif config.publish.default_priority > max_priority:
+            raise ConfigError(
+                "default_priority 는 rabbitmq.request_queue_declare.arguments.x-max-priority "
+                "범위를 초과할 수 없습니다."
+            )
 
         normalized_ext = []
         for ext in config.publish.image_extensions:
@@ -176,6 +190,23 @@ class ConfigLoader:
             config.recipe_config.default_alias = selected_alias
         else:
             config.recipe_config.default_alias = recipes[0].alias
+
+    @staticmethod
+    def _read_request_queue_max_priority(rabbitmq_config: RabbitMQConfig) -> int | None:
+        """Validate request queue max priority and return normalized value."""
+
+        raw_priority = rabbitmq_config.request_queue_declare.arguments.get("x-max-priority")
+        if raw_priority is None:
+            return None
+        if not isinstance(raw_priority, int) or isinstance(raw_priority, bool):
+            raise ConfigError(
+                "rabbitmq.request_queue_declare.arguments.x-max-priority 는 정수여야 합니다."
+            )
+        if raw_priority < 1:
+            raise ConfigError(
+                "rabbitmq.request_queue_declare.arguments.x-max-priority 는 1 이상이어야 합니다."
+            )
+        return raw_priority
 
     @staticmethod
     def _ensure_legacy_recipe_keys_removed(publish_raw: Mapping[str, Any]) -> None:
