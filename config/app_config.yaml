@@ -31,7 +31,7 @@ rabbitmq:
   connection_attempts: 3
   retry_delay_seconds: 2.0
 publish:
-  default_action: "RUN_EXECUTE"
+  default_action: "RCP_EXECUTE"
   default_priority: 0
   polling_interval_seconds: 5
   timeout_seconds: 86400
