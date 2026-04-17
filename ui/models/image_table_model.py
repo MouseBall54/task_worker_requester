@@ -13,7 +13,7 @@ from models.task_models import ImageTask
 class ImageTableModel(QAbstractTableModel):
     """Model for per-image detailed task status."""
 
-    HEADERS = ["MQ", "이미지", "Request ID", "상태", "전송 시각", "완료 시각", "결과", "에러"]
+    HEADERS = ["MQ", "이미지", "상태", "전송 시각", "완료 시각", "결과", "에러"]
 
     def __init__(self) -> None:
         super().__init__()
@@ -43,16 +43,14 @@ class ImageTableModel(QAbstractTableModel):
             if column == 1:
                 return os.path.basename(task.image_path) or task.image_path
             if column == 2:
-                return task.request_id
-            if column == 3:
                 return task.status.value
-            if column == 4:
+            if column == 3:
                 return self._format_datetime(task.sent_at)
-            if column == 5:
+            if column == 4:
                 return self._format_datetime(task.completed_at)
-            if column == 6:
+            if column == 5:
                 return ", ".join(task.result)
-            if column == 7:
+            if column == 6:
                 return task.error_message or ""
 
         if role == Qt.UserRole:

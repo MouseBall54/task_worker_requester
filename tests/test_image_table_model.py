@@ -35,11 +35,12 @@ class ImageTableModelTest(unittest.TestCase):
 
         mq_index = model.index(0, 0)
         image_index = model.index(0, 1)
-        request_id_index = model.index(0, 2)
+        status_index = model.index(0, 2)
 
         self.assertEqual(model.data(mq_index, Qt.DisplayRole), "보기")
         self.assertEqual(model.data(image_index, Qt.DisplayRole), "sample_01.jpg")
-        self.assertEqual(model.data(request_id_index, Qt.DisplayRole), "req-1")
+        self.assertEqual(model.data(status_index, Qt.DisplayRole), "PENDING")
+        self.assertEqual(model.columnCount(), 7)
 
 
 if __name__ == "__main__":

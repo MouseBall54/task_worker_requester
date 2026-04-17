@@ -549,66 +549,48 @@ class TaskController(QObject):
         return selected_messages, opened_folders
 
     def _maybe_dispatch_next_folder_batch(self) -> None:
-        """Open one more folder batch when active folders pass threshold."""
+        """Dispatch next folder batches using refill-first, threshold-second policy."""
 
         self._refresh_active_folder_paths()
         remaining_batches = len(self._folder_message_batches) - self._next_folder_batch_index
         if self._next_folder_batch_index >= len(self._folder_message_batches):
             self._last_dispatch_skip_reason = None
             return
-        if self._publish_thread is not None:
-            try:
-                if self._publish_thread.isRunning():
-                    self._log_dispatch_skip(
-                        reason="publish worker running",
-                        remaining_batches=remaining_batches,
-                    )
-                    return
-            except RuntimeError:
-                pass
+        if self._is_publish_worker_running():
+            self._log_dispatch_skip(
+                reason="publish worker running",
+                remaining_batches=remaining_batches,
+                available_slots=self._available_open_slots(),
+            )
+            return
 
-        active_count = len(self._active_folder_paths)
-        if active_count >= self._max_active_open_folders:
+        available_slots = self._available_open_slots()
+        if available_slots <= 0:
             self._log_dispatch_skip(
                 reason=f"active cap reached({self._max_active_open_folders})",
                 remaining_batches=remaining_batches,
+                available_slots=available_slots,
             )
             return
 
-        should_open_next = False
-        for folder_path in self._active_folder_paths:
-            summary = self._store.get_folder_summary(folder_path)
-            if summary is None:
-                continue
-            if summary.progress >= self._next_open_threshold:
-                should_open_next = True
-                break
+        if self._should_backfill_slots():
+            self._dispatch_folder_batches(
+                folder_count=available_slots,
+                trigger="slot refill",
+            )
+            return
 
-        if not should_open_next:
+        if not self._should_expand_by_threshold():
             self._log_dispatch_skip(
                 reason="threshold unmet",
                 remaining_batches=remaining_batches,
+                available_slots=available_slots,
             )
             return
 
-        next_messages, opened_folders = self._take_next_folder_batches(1)
-        if not next_messages:
-            return
-
-        self._last_dispatch_skip_reason = None
-        self._publish_finished = False
-        self._start_publish_worker(
-            messages=next_messages,
-            publish_exchange=self._publish_exchange,
-            publish_routing_key=self._publish_routing_key,
-        )
-        self._log(
-            f"밸런싱 개방 - 다음 폴더 {len(opened_folders)}개 추가 전송 시작 "
-            f"(조건: {self._next_open_threshold:.0f}% 도달, "
-            f"{self._next_folder_batch_index}/{len(self._folder_message_batches)}, "
-            f"active_count={len(self._active_folder_paths)}, "
-            f"opened_count={len(self._opened_folder_paths)}, "
-            f"remaining_batches={len(self._folder_message_batches) - self._next_folder_batch_index})"
+        self._dispatch_folder_batches(
+            folder_count=1,
+            trigger=f"threshold met({self._next_open_threshold:.0f}%)",
         )
 
     def _refresh_active_folder_paths(self) -> None:
@@ -626,15 +608,80 @@ class TaskController(QObject):
         for folder_path in stale_paths:
             self._active_folder_paths.discard(folder_path)
 
-    def _log_dispatch_skip(self, reason: str, remaining_batches: int) -> None:
+    def _is_publish_worker_running(self) -> bool:
+        """Return whether one publish worker thread is still active."""
+
+        if self._publish_thread is None:
+            return False
+        try:
+            return self._publish_thread.isRunning()
+        except RuntimeError:
+            return False
+
+    def _available_open_slots(self) -> int:
+        """Return how many additional active folders can be opened right now."""
+
+        return max(0, self._max_active_open_folders - len(self._active_folder_paths))
+
+    def _should_backfill_slots(self) -> bool:
+        """Return whether completed folders freed slots that should be refilled immediately."""
+
+        return len(self._opened_folder_paths) > len(self._active_folder_paths)
+
+    def _should_expand_by_threshold(self) -> bool:
+        """Return whether ramp-up should open one more folder via progress threshold."""
+
+        if self._max_initial_open_folders >= self._max_active_open_folders:
+            return False
+        if len(self._opened_folder_paths) != len(self._active_folder_paths):
+            return False
+
+        for folder_path in self._active_folder_paths:
+            summary = self._store.get_folder_summary(folder_path)
+            if summary is None:
+                continue
+            if summary.progress >= self._next_open_threshold:
+                return True
+        return False
+
+    def _dispatch_folder_batches(self, folder_count: int, trigger: str) -> None:
+        """Open the next N folder batches and start one publish worker for them."""
+
+        next_messages, opened_folders = self._take_next_folder_batches(folder_count)
+        if not next_messages:
+            self._last_dispatch_skip_reason = None
+            return
+
+        self._last_dispatch_skip_reason = None
+        self._publish_finished = False
+        self._start_publish_worker(
+            messages=next_messages,
+            publish_exchange=self._publish_exchange,
+            publish_routing_key=self._publish_routing_key,
+        )
+        self._log(
+            f"밸런싱 개방 - {trigger} "
+            f"(opened_now={len(opened_folders)}, "
+            f"active_count={len(self._active_folder_paths)}, "
+            f"opened_count={len(self._opened_folder_paths)}, "
+            f"remaining_batches={len(self._folder_message_batches) - self._next_folder_batch_index}, "
+            f"available_slots={self._available_open_slots()})"
+        )
+
+    def _log_dispatch_skip(self, reason: str, remaining_batches: int, available_slots: int) -> None:
         """Log dispatch skip reason with deduplication to avoid noisy logs."""
 
-        if reason == self._last_dispatch_skip_reason:
+        dedupe_key = (
+            f"{reason}|active={len(self._active_folder_paths)}|opened={len(self._opened_folder_paths)}"
+            f"|remaining={remaining_batches}|slots={available_slots}"
+        )
+        if dedupe_key == self._last_dispatch_skip_reason:
             return
-        self._last_dispatch_skip_reason = reason
+        self._last_dispatch_skip_reason = dedupe_key
         self._log(
             "밸런싱 대기 - "
             f"{reason} (active_count={len(self._active_folder_paths)}, "
             f"opened_count={len(self._opened_folder_paths)}, "
-            f"remaining_batches={remaining_batches})"
+            f"remaining_batches={remaining_batches}, "
+            f"available_slots={available_slots})"
         )

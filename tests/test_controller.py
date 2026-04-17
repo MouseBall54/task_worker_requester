@@ -277,6 +277,223 @@ class TaskControllerTest(unittest.TestCase):
         self.assertGreater(controller._next_folder_batch_index, before_index)
         self.assertLessEqual(len(controller._active_folder_paths), 3)
 
+    def test_dispatch_backfills_slots_when_active_folder_finishes_without_threshold(self) -> None:
+        config = AppConfig(
+            rabbitmq=RabbitMQConfig(host="127.0.0.1", port=5672, username="guest", password="guest"),
+            publish=PublishConfig(image_extensions=[".jpg"], initial_open_folders=2, max_active_open_folders=3),
+            ui=UiConfig(),
+            mock_mode=True,
+        )
+        view = DummyView()
+        store = TaskStore()
+        logger = logging.getLogger("controller_dispatch_refill_test")
+        logger.handlers.clear()
+        logger.addHandler(logging.NullHandler())
+
+        store.register_folder_map(
+            {
+                "f1": ["f1/a.jpg", "f1/b.jpg"],
+                "f2": ["f2/a.jpg", "f2/b.jpg", "f2/c.jpg", "f2/d.jpg"],
+                "f3": ["f3/a.jpg"],
+                "f4": ["f4/a.jpg"],
+            }
+        )
+
+        controller = TaskController(
+            config=config,
+            view=view,  # type: ignore[arg-type]
+            store=store,
+            broker_provider=build_broker_provider(config),
+            logger=logger,
+        )
+
+        controller._reset_publish_schedule_state()
+        controller._folder_message_batches = store.build_pending_messages_by_folder("RUN", "result.q", "recipe.json")
+        controller._publish_exchange = ""
+        controller._publish_routing_key = "task.request"
+        _, opened = controller._take_next_folder_batches(2)
+
+        for task in store.get_image_tasks(opened[0]):
+            task.status = TaskStatus.FAIL
+
+        dispatched: list = []
+
+        def _fake_start_publish_worker(messages, publish_exchange, publish_routing_key):  # noqa: ANN001
+            _ = publish_exchange
+            _ = publish_routing_key
+            dispatched.extend(messages)
+
+        controller._start_publish_worker = _fake_start_publish_worker  # type: ignore[method-assign]
+        controller._maybe_dispatch_next_folder_batch()
+
+        self.assertEqual(controller._next_folder_batch_index, 4)
+        self.assertEqual(len(controller._active_folder_paths), 3)
+        self.assertEqual(len(dispatched), 2)
+        self.assertTrue(any("slot refill" in log for log in view.logs))
+
+    def test_dispatch_backfills_multiple_vacant_slots_in_single_cycle(self) -> None:
+        config = AppConfig(
+            rabbitmq=RabbitMQConfig(host="127.0.0.1", port=5672, username="guest", password="guest"),
+            publish=PublishConfig(image_extensions=[".jpg"], initial_open_folders=2, max_active_open_folders=4),
+            ui=UiConfig(),
+            mock_mode=True,
+        )
+        view = DummyView()
+        store = TaskStore()
+        logger = logging.getLogger("controller_dispatch_multi_refill_test")
+        logger.handlers.clear()
+        logger.addHandler(logging.NullHandler())
+
+        store.register_folder_map(
+            {
+                "f1": ["f1/a.jpg"],
+                "f2": ["f2/a.jpg"],
+                "f3": ["f3/a.jpg"],
+                "f4": ["f4/a.jpg"],
+                "f5": ["f5/a.jpg"],
+                "f6": ["f6/a.jpg"],
+            }
+        )
+
+        controller = TaskController(
+            config=config,
+            view=view,  # type: ignore[arg-type]
+            store=store,
+            broker_provider=build_broker_provider(config),
+            logger=logger,
+        )
+
+        controller._reset_publish_schedule_state()
+        controller._folder_message_batches = store.build_pending_messages_by_folder("RUN", "result.q", "recipe.json")
+        controller._publish_exchange = ""
+        controller._publish_routing_key = "task.request"
+        _, opened = controller._take_next_folder_batches(4)
+
+        for task in store.get_image_tasks(opened[0]):
+            task.status = TaskStatus.SUCCESS
+        for task in store.get_image_tasks(opened[1]):
+            task.status = TaskStatus.FAIL
+
+        dispatched: list = []
+
+        def _fake_start_publish_worker(messages, publish_exchange, publish_routing_key):  # noqa: ANN001
+            _ = publish_exchange
+            _ = publish_routing_key
+            dispatched.extend(messages)
+
+        controller._start_publish_worker = _fake_start_publish_worker  # type: ignore[method-assign]
+        controller._maybe_dispatch_next_folder_batch()
+
+        self.assertEqual(controller._next_folder_batch_index, 6)
+        self.assertEqual(len(controller._active_folder_paths), 4)
+        self.assertEqual(len(dispatched), 2)
+
+    def test_dispatch_does_not_expand_without_threshold_when_no_slots_were_freed(self) -> None:
+        config = AppConfig(
+            rabbitmq=RabbitMQConfig(host="127.0.0.1", port=5672, username="guest", password="guest"),
+            publish=PublishConfig(image_extensions=[".jpg"], initial_open_folders=2, max_active_open_folders=3),
+            ui=UiConfig(),
+            mock_mode=True,
+        )
+        view = DummyView()
+        store = TaskStore()
+        logger = logging.getLogger("controller_dispatch_threshold_guard_test")
+        logger.handlers.clear()
+        logger.addHandler(logging.NullHandler())
+
+        store.register_folder_map(
+            {
+                "f1": ["f1/a.jpg", "f1/b.jpg", "f1/c.jpg"],
+                "f2": ["f2/a.jpg", "f2/b.jpg", "f2/c.jpg"],
+                "f3": ["f3/a.jpg"],
+            }
+        )
+
+        controller = TaskController(
+            config=config,
+            view=view,  # type: ignore[arg-type]
+            store=store,
+            broker_provider=build_broker_provider(config),
+            logger=logger,
+        )
+
+        controller._reset_publish_schedule_state()
+        controller._folder_message_batches = store.build_pending_messages_by_folder("RUN", "result.q", "recipe.json")
+        controller._publish_exchange = ""
+        controller._publish_routing_key = "task.request"
+        controller._take_next_folder_batches(2)
+
+        dispatched: list = []
+
+        def _fake_start_publish_worker(messages, publish_exchange, publish_routing_key):  # noqa: ANN001
+            _ = publish_exchange
+            _ = publish_routing_key
+            dispatched.extend(messages)
+
+        controller._start_publish_worker = _fake_start_publish_worker  # type: ignore[method-assign]
+        before_index = controller._next_folder_batch_index
+        controller._maybe_dispatch_next_folder_batch()
+
+        self.assertEqual(controller._next_folder_batch_index, before_index)
+        self.assertEqual(len(dispatched), 0)
+        self.assertTrue(any("threshold unmet" in log for log in view.logs))
+
+    def test_dispatch_uses_only_refill_when_initial_equals_active_cap(self) -> None:
+        config = AppConfig(
+            rabbitmq=RabbitMQConfig(host="127.0.0.1", port=5672, username="guest", password="guest"),
+            publish=PublishConfig(image_extensions=[".jpg"], initial_open_folders=3, max_active_open_folders=3),
+            ui=UiConfig(),
+            mock_mode=True,
+        )
+        view = DummyView()
+        store = TaskStore()
+        logger = logging.getLogger("controller_dispatch_equal_cap_test")
+        logger.handlers.clear()
+        logger.addHandler(logging.NullHandler())
+
+        store.register_folder_map(
+            {
+                "f1": ["f1/a.jpg"],
+                "f2": ["f2/a.jpg"],
+                "f3": ["f3/a.jpg"],
+                "f4": ["f4/a.jpg"],
+            }
+        )
+
+        controller = TaskController(
+            config=config,
+            view=view,  # type: ignore[arg-type]
+            store=store,
+            broker_provider=build_broker_provider(config),
+            logger=logger,
+        )
+
+        controller._reset_publish_schedule_state()
+        controller._folder_message_batches = store.build_pending_messages_by_folder("RUN", "result.q", "recipe.json")
+        controller._publish_exchange = ""
+        controller._publish_routing_key = "task.request"
+        opened_messages, opened_folders = controller._take_next_folder_batches(3)
+        self.assertEqual(len(opened_messages), 3)
+        self.assertEqual(len(opened_folders), 3)
+
+        dispatched: list = []
+
+        def _fake_start_publish_worker(messages, publish_exchange, publish_routing_key):  # noqa: ANN001
+            _ = publish_exchange
+            _ = publish_routing_key
+            dispatched.extend(messages)
+
+        controller._start_publish_worker = _fake_start_publish_worker  # type: ignore[method-assign]
+        controller._maybe_dispatch_next_folder_batch()
+        self.assertEqual(len(dispatched), 0)
+
+        for task in store.get_image_tasks(opened_folders[0]):
+            task.status = TaskStatus.TIMEOUT
+
+        controller._maybe_dispatch_next_folder_batch()
+        self.assertEqual(len(dispatched), 1)
+        self.assertEqual(controller._next_folder_batch_index, 4)
+
 
 if __name__ == "__main__":
     unittest.main()

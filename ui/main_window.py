@@ -130,11 +130,14 @@ class MainWindow(QMainWindow):
         main_layout.setSpacing(16)
 
         left_panel = self._build_left_panel()
-        right_panel = self._build_right_panel()
+        center_panel = self._build_center_panel()
+        status_sidebar = self._build_status_sidebar()
 
         left_panel.setFixedWidth(360)
+        status_sidebar.setMinimumWidth(420)
         main_layout.addWidget(left_panel)
-        main_layout.addWidget(right_panel, stretch=1)
+        main_layout.addWidget(center_panel, stretch=12)
+        main_layout.addWidget(status_sidebar, stretch=7)
 
     def _build_left_panel(self) -> QWidget:
         panel = QFrame()
@@ -200,17 +203,26 @@ class MainWindow(QMainWindow):
 
         return panel
 
-    def _build_right_panel(self) -> QWidget:
+    def _build_center_panel(self) -> QWidget:
         panel = QWidget()
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
 
         layout.addWidget(self._build_control_panel())
-        # Keep body area around 65:35 (folder progress : detail/log).
-        layout.addWidget(self._build_folder_progress_panel(), stretch=13)
-        layout.addWidget(self._build_bottom_panel(), stretch=7)
+        layout.addWidget(self._build_folder_progress_panel(), stretch=1)
 
+        return panel
+
+    def _build_status_sidebar(self) -> QWidget:
+        """Build right-side status/log sidebar that spans full window height."""
+
+        panel = QFrame()
+        panel.setObjectName("statusSidebar")
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        layout.addWidget(self._build_bottom_panel())
         return panel
 
     def _build_control_panel(self) -> QWidget:
@@ -364,7 +376,7 @@ class MainWindow(QMainWindow):
         return table
 
     def _build_bottom_panel(self) -> QWidget:
-        panel = QGroupBox("상세 상태 및 로그")
+        panel = QGroupBox("상태 및 로그")
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(8)
@@ -395,7 +407,7 @@ class MainWindow(QMainWindow):
         self._mq_button_delegate = MQButtonDelegate(self.image_table)
         self._mq_button_delegate.clicked.connect(self._on_mq_button_clicked)
         self.image_table.setItemDelegateForColumn(0, self._mq_button_delegate)
-        self.image_table.setItemDelegateForColumn(3, StatusBadgeDelegate(self.image_table))
+        self.image_table.setItemDelegateForColumn(2, StatusBadgeDelegate(self.image_table))
 
         detail_tab = QWidget()
         detail_layout = QVBoxLayout(detail_tab)
