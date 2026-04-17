@@ -1,8 +1,8 @@
-#define MyAppName "TaskWorkerRequester"
-#define MyAppVersion "0.1.0"
-#define MyAppPublisher "youngmoon"
-#define MyAppExeName "TaskWorkerRequester.exe"
-#define MyDistDir "..\\dist\\TaskWorkerRequester"
+#define MyAppName "IPDK_plus"
+#define MyAppVersion "26.04.17"
+#define MyAppPublisher "박영문"
+#define MyAppExeName "IPDK_plus.exe"
+#define MyDistDir "..\\dist\\IPDK_plus"
 #define MyIconFile "..\\assets\\task_worker_requester.ico"
 
 [Setup]
@@ -17,7 +17,7 @@ WizardStyle=modern
 Compression=lzma
 SolidCompression=yes
 OutputDir=..\dist\installer
-OutputBaseFilename=TaskWorkerRequesterSetup
+OutputBaseFilename=IPDK_plusSetup
 SetupIconFile={#MyIconFile}
 UninstallDisplayIcon={app}\{#MyAppExeName}
 ArchitecturesAllowed=x64compatible

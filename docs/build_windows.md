@@ -4,10 +4,10 @@
 
 이 프로젝트는 Windows에서 아래 두 단계로 배포합니다.
 
-1. `PyInstaller` 로 `TaskWorkerRequester.exe` onedir 산출물 생성
+1. `PyInstaller` 로 `IPDK_plus.exe` onedir 산출물 생성
 2. `Inno Setup` 으로 설치형 패키지 생성
 
-기본 아이콘은 [assets/task_worker_requester.ico](D:\GIT\task_worker_requester\assets\task_worker_requester.ico) 를 사용합니다.
+기본 아이콘은 [assets/task_worker_requester.ico](.\assets\task_worker_requester.ico) 를 사용합니다.
 
 ### Prerequisites
 
@@ -32,33 +32,33 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build_windows.ps1
 직접 실행:
 
 ```powershell
-uv run --group build pyinstaller .\packaging\TaskWorkerRequester.spec --clean --noconfirm
+uv run --group build pyinstaller .\packaging\IPDK_plus.spec --clean --noconfirm
 ```
 
 성공하면 아래 폴더가 생성됩니다.
 
-- `dist\TaskWorkerRequester\TaskWorkerRequester.exe`
+- `dist\IPDK_plus\IPDK_plus.exe`
 
 ### 3. Build Installer
 
 ```powershell
-ISCC .\packaging\TaskWorkerRequester.iss
+ISCC .\packaging\IPDK_plus.iss
 ```
 
-성공하면 `dist\installer\TaskWorkerRequesterSetup.exe` 가 생성됩니다.
+성공하면 `dist\installer\IPDK_plusSetup.exe` 가 생성됩니다.
 
 ### Runtime Config Location
 
 설치 후 사용자가 수정할 기본 설정은 설치 폴더가 아니라 아래 위치를 우선 사용합니다.
 
 ```text
-%APPDATA%\TaskWorkerRequester\
+%APPDATA%\IPDK_plus\
 ```
 
 주요 파일:
 
-- `%APPDATA%\TaskWorkerRequester\app_config.yaml`
-- `%APPDATA%\TaskWorkerRequester\recipe_config.yaml`
+- `%APPDATA%\IPDK_plus\app_config.yaml`
+- `%APPDATA%\IPDK_plus\recipe_config.yaml`
 
 앱 첫 실행 시 위 파일이 없으면 번들된 seed 템플릿을 자동 복사합니다.
 
@@ -67,7 +67,7 @@ ISCC .\packaging\TaskWorkerRequester.iss
 기본 AppData 설정 대신 다른 YAML 을 직접 지정하려면:
 
 ```powershell
-.\TaskWorkerRequester.exe --config "D:\custom\app_config.yaml"
+.\IPDK_plus.exe --config "D:\custom\app_config.yaml"
 ```
 
 ### Recipe Notes

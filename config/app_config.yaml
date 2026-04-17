@@ -44,7 +44,7 @@ publish:
   scan_mode: "direct"
 
 ui:
-  app_name: "RabbitMQ Task Tracker"
+  app_name: "IPDK_plus"
   window_width: 1480
   window_height: 900
   theme: "dark"

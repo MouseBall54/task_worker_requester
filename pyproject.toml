@@ -1,7 +1,7 @@
 [project]
-name = "task-worker-requester"
+name = "IPDK_plus"
 version = "0.1.0"
-description = "PySide6 RabbitMQ image task requester and tracker"
+description = "IPDK_plus PySide6 RabbitMQ image task requester and tracker"
 readme = "README.md"
 requires-python = ">=3.11,<3.12"
 dependencies = [

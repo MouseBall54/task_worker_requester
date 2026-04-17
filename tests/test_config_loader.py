@@ -324,6 +324,39 @@ class ConfigLoaderTest(unittest.TestCase):
 
         self.assertIn("x-max-priority", str(ctx.exception))
 
+    def test_legacy_ui_app_name_is_normalized_to_ipdk_plus(self) -> None:
+        main_content = textwrap.dedent(
+            """
+            recipe_config_path: "recipe_config.yaml"
+            rabbitmq:
+              host: "127.0.0.1"
+              port: 5672
+              username: "guest"
+              password: "guest"
+            ui:
+              app_name: "IPDK+"
+            """
+        ).strip()
+        recipe_content = textwrap.dedent(
+            """
+            default_alias: "Default Recipe"
+            recipes:
+              - alias: "Default Recipe"
+                path: "recipes/default.json"
+            """
+        ).strip()
+
+        with TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            config_path = temp_path / "app.yaml"
+            recipe_path = temp_path / "recipe_config.yaml"
+            config_path.write_text(main_content, encoding="utf-8")
+            recipe_path.write_text(recipe_content, encoding="utf-8")
+
+            config = ConfigLoader.load(config_path)
+
+        self.assertEqual(config.ui.app_name, "IPDK_plus")
+
 
 if __name__ == "__main__":
     unittest.main()

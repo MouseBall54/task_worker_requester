@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller spec for TaskWorkerRequester Windows GUI packaging."""
+"""PyInstaller spec for IPDK_plus Windows GUI packaging."""
 
 from __future__ import annotations
 
@@ -36,7 +36,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="TaskWorkerRequester",
+    name="IPDK_plus",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -52,5 +52,5 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name="TaskWorkerRequester",
+    name="IPDK_plus",
 )

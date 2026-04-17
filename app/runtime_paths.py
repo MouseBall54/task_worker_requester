@@ -9,7 +9,8 @@ import shutil
 import sys
 
 
-APPDATA_DIR_NAME = "TaskWorkerRequester"
+APPDATA_DIR_NAME = "IPDK_plus"
+LEGACY_APPDATA_DIR_NAME = "TaskWorkerRequester"
 CONFIG_FILE_NAME = "app_config.yaml"
 RECIPE_CONFIG_FILE_NAME = "recipe_config.yaml"
 
@@ -66,10 +67,13 @@ def resolve_install_dir() -> Path:
 def resolve_user_appdata_dir() -> Path:
     """Return the AppData directory used for editable user config files."""
 
-    appdata_root = str(os.environ.get("APPDATA", "")).strip()
-    if appdata_root:
-        return Path(appdata_root) / APPDATA_DIR_NAME
-    return Path.home() / "AppData" / "Roaming" / APPDATA_DIR_NAME
+    return _resolve_appdata_dir(APPDATA_DIR_NAME)
+
+
+def resolve_legacy_user_appdata_dir() -> Path:
+    """Return the legacy AppData directory used before the IPDK_plus rename."""
+
+    return _resolve_appdata_dir(LEGACY_APPDATA_DIR_NAME)
 
 
 def resolve_stylesheet_path() -> Path | None:
@@ -81,6 +85,7 @@ def resolve_stylesheet_path() -> Path | None:
 def ensure_user_config_seeded() -> RuntimeConfigPaths:
     """Create AppData config files from bundled templates when missing."""
 
+    migrate_legacy_appdata_dir()
     appdata_dir = resolve_user_appdata_dir()
     appdata_dir.mkdir(parents=True, exist_ok=True)
 
@@ -106,6 +111,35 @@ def ensure_user_config_seeded() -> RuntimeConfigPaths:
         seed_config_source=seed_config_source,
         seed_recipe_source=seed_recipe_source,
     )
+
+
+def migrate_legacy_appdata_dir() -> Path | None:
+    """Copy the old TaskWorkerRequester AppData payload into IPDK_plus once.
+
+    Migration is intentionally conservative:
+    - If the new directory already exists and contains files, it wins.
+    - If the legacy directory is missing, nothing happens.
+    - Otherwise legacy contents are copied into the new location.
+    """
+
+    target_dir = resolve_user_appdata_dir()
+    legacy_dir = resolve_legacy_user_appdata_dir()
+
+    if not legacy_dir.exists():
+        return None
+    if _directory_has_entries(target_dir):
+        return None
+
+    target_dir.mkdir(parents=True, exist_ok=True)
+    for source in legacy_dir.iterdir():
+        destination = target_dir / source.name
+        if destination.exists():
+            continue
+        if source.is_dir():
+            shutil.copytree(source, destination)
+        else:
+            shutil.copy2(source, destination)
+    return target_dir
 
 
 def resolve_default_config_path(explicit_config_path: str | Path | None = None) -> Path:
@@ -181,3 +215,24 @@ def _development_root() -> Path:
     """Return the repository root during source execution."""
 
     return Path(__file__).resolve().parents[1]
+
+
+def _resolve_appdata_dir(dir_name: str) -> Path:
+    """Build an AppData path for the given application directory name."""
+
+    appdata_root = str(os.environ.get("APPDATA", "")).strip()
+    if appdata_root:
+        return Path(appdata_root) / dir_name
+    return Path.home() / "AppData" / "Roaming" / dir_name
+
+
+def _directory_has_entries(path: Path) -> bool:
+    """Return whether a directory exists and contains at least one entry."""
+
+    if not path.exists() or not path.is_dir():
+        return False
+    try:
+        next(path.iterdir())
+    except StopIteration:
+        return False
+    return True

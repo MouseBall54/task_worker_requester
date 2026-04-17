@@ -9,7 +9,7 @@ from collections.abc import Sequence
 def build_arg_parser() -> argparse.ArgumentParser:
     """Create the CLI parser used by source and packaged execution."""
 
-    parser = argparse.ArgumentParser(description="RabbitMQ Task Worker Requester")
+    parser = argparse.ArgumentParser(description="IPDK_plus")
     parser.add_argument(
         "legacy_config",
         nargs="?",

@@ -191,6 +191,8 @@ class ConfigLoader:
         else:
             config.recipe_config.default_alias = recipes[0].alias
 
+        config.ui.app_name = ConfigLoader._normalize_app_name(config.ui.app_name)
+
     @staticmethod
     def _read_request_queue_max_priority(rabbitmq_config: RabbitMQConfig) -> int | None:
         """Validate request queue max priority and return normalized value."""
@@ -327,3 +329,20 @@ class ConfigLoader:
         if isinstance(value, bool):
             return value
         raise ConfigError(f"{label} 는 true/false 여야 합니다.")
+
+    @staticmethod
+    def _normalize_app_name(raw_name: str) -> str:
+        """Keep user-facing branding consistent across legacy configs."""
+
+        normalized = str(raw_name or "").strip()
+        if not normalized:
+            return "IPDK_plus"
+
+        if normalized.lower() in {
+            "taskworkerrequester",
+            "task worker requester",
+            "ipdk+",
+            "ipdk_plus",
+        }:
+            return "IPDK_plus"
+        return normalized

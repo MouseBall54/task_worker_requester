@@ -42,6 +42,16 @@ class MainWindowTest(unittest.TestCase):
         finally:
             window.close()
 
+    def test_window_uses_ipdk_branding_and_removes_drive_combo(self) -> None:
+        window = self._make_window()
+        try:
+            self.assertEqual(window.windowTitle(), "IPDK_plus")
+            self.assertFalse(hasattr(window, "brand_icon_label"))
+            self.assertFalse(hasattr(window, "drive_combo"))
+            self.assertFalse(window.folder_tree.rootIndex().isValid())
+        finally:
+            window.close()
+
     def test_active_folder_single_selection_switches_to_detail_tab(self) -> None:
         window = self._make_window()
         selected_paths: list[str] = []

@@ -4,7 +4,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$specPath = Join-Path $ProjectRoot "packaging\TaskWorkerRequester.spec"
+$specPath = Join-Path $ProjectRoot "packaging\IPDK_plus.spec"
 $iconPath = Join-Path $ProjectRoot "assets\task_worker_requester.ico"
 
 if (-not (Test-Path $specPath)) {
@@ -22,17 +22,17 @@ Write-Host "[build] Running PyInstaller..."
 Push-Location $ProjectRoot
 try {
     uv run --group build pyinstaller $specPath --clean --noconfirm
-    Write-Host "[build] PyInstaller build complete: dist\\TaskWorkerRequester"
+    Write-Host "[build] PyInstaller build complete: dist\\IPDK_plus"
 
     $iscc = Get-Command ISCC -ErrorAction SilentlyContinue
     if ($null -ne $iscc) {
         Write-Host "[build] Inno Setup detected. Building installer..."
-        & $iscc.Source (Join-Path $ProjectRoot "packaging\TaskWorkerRequester.iss")
+        & $iscc.Source (Join-Path $ProjectRoot "packaging\IPDK_plus.iss")
         Write-Host "[build] Installer build complete: dist\\installer"
     }
     else {
         Write-Warning "ISCC(Inno Setup)가 PATH에 없어 installer 빌드는 건너뛰었습니다."
-        Write-Warning "수동 빌드: ISCC .\\packaging\\TaskWorkerRequester.iss"
+        Write-Warning "수동 빌드: ISCC .\\packaging\\IPDK_plus.iss"
     }
 }
 finally {

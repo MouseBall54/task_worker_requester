@@ -13,12 +13,13 @@ from services.broker import build_broker_provider
 from state.task_store import TaskStore
 
 try:
-    from PySide6.QtCore import QCoreApplication, QObject, Signal
+    from PySide6.QtCore import QObject, Signal
+    from PySide6.QtWidgets import QApplication
     from app.controller import TaskController
 
     PYSIDE_AVAILABLE = True
 except ImportError:  # pragma: no cover
-    QCoreApplication = None  # type: ignore[assignment]
+    QApplication = None  # type: ignore[assignment]
     QObject = object  # type: ignore[assignment]
     Signal = None  # type: ignore[assignment]
     PYSIDE_AVAILABLE = False
@@ -93,7 +94,7 @@ class TaskControllerTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        cls._app = QCoreApplication.instance() or QCoreApplication([])
+        cls._app = QApplication.instance() or QApplication([])
 
     def test_add_folder_registers_tasks(self) -> None:
         config = AppConfig(
@@ -614,9 +615,14 @@ class TaskControllerTest(unittest.TestCase):
 
         captured: dict[str, object] = {}
 
-        def _fake_start_polling_worker(queue_name: str, polling_interval: int) -> None:
+        def _fake_start_polling_worker(
+            queue_name: str,
+            polling_interval: int,
+            tracked_request_ids: set[str] | None = None,
+        ) -> None:
             captured["queue_name"] = queue_name
             captured["polling_interval"] = polling_interval
+            captured["tracked_request_ids"] = tracked_request_ids or set()
 
         controller._start_polling_worker = _fake_start_polling_worker  # type: ignore[method-assign]
         controller._ensure_resolved_result_queue = (  # type: ignore[method-assign]
@@ -629,6 +635,7 @@ class TaskControllerTest(unittest.TestCase):
         self.assertTrue(controller._publish_finished)
         self.assertEqual(captured.get("queue_name"), "task.result.client_192.168.0.10")
         self.assertEqual(captured.get("polling_interval"), 1)
+        self.assertIn(task.request_id, captured.get("tracked_request_ids", set()))
         self.assertTrue(any("결과 모니터링만 재개" in log for log in view.logs))
 
     def test_dispatch_force_open_when_active_zero_and_remaining_batches_exist(self) -> None:

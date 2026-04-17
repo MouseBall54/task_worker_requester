@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 from app.runtime_paths import (
     ensure_user_config_seeded,
+    migrate_legacy_appdata_dir,
     resolve_default_config_path,
     resolve_stylesheet_path,
 )
@@ -90,8 +91,46 @@ class RuntimePathsTest(unittest.TestCase):
             ):
                 resolved = resolve_default_config_path()
 
-            self.assertEqual(resolved, Path(appdata_root) / "TaskWorkerRequester" / "app_config.yaml")
+            self.assertEqual(resolved, Path(appdata_root) / "IPDK_plus" / "app_config.yaml")
             self.assertIn("recipe_config_path", resolved.read_text(encoding="utf-8"))
+
+    def test_migrate_legacy_appdata_dir_copies_old_folder_when_new_one_is_empty(self) -> None:
+        with TemporaryDirectory() as appdata_root:
+            legacy_dir = Path(appdata_root) / "TaskWorkerRequester"
+            legacy_dir.mkdir(parents=True, exist_ok=True)
+            (legacy_dir / "app_config.yaml").write_text("ui:\n  app_name: IPDK+\n", encoding="utf-8")
+            (legacy_dir / "recipe_config.yaml").write_text(
+                "default_alias: Default Recipe\nrecipes:\n"
+                "  - alias: Default Recipe\n"
+                '    path: "recipes/default.json"\n',
+                encoding="utf-8",
+            )
+
+            with patch.dict(os.environ, {"APPDATA": appdata_root}, clear=False):
+                migrated_dir = migrate_legacy_appdata_dir()
+
+            self.assertEqual(migrated_dir, Path(appdata_root) / "IPDK_plus")
+            self.assertTrue((Path(appdata_root) / "IPDK_plus" / "app_config.yaml").exists())
+            self.assertTrue((Path(appdata_root) / "IPDK_plus" / "recipe_config.yaml").exists())
+
+    def test_migrate_legacy_appdata_dir_does_not_overwrite_existing_ipdk_plus_dir(self) -> None:
+        with TemporaryDirectory() as appdata_root:
+            legacy_dir = Path(appdata_root) / "TaskWorkerRequester"
+            legacy_dir.mkdir(parents=True, exist_ok=True)
+            (legacy_dir / "app_config.yaml").write_text("legacy: true\n", encoding="utf-8")
+
+            new_dir = Path(appdata_root) / "IPDK_plus"
+            new_dir.mkdir(parents=True, exist_ok=True)
+            (new_dir / "app_config.yaml").write_text("current: true\n", encoding="utf-8")
+
+            with patch.dict(os.environ, {"APPDATA": appdata_root}, clear=False):
+                migrated_dir = migrate_legacy_appdata_dir()
+
+            self.assertIsNone(migrated_dir)
+            self.assertEqual(
+                (new_dir / "app_config.yaml").read_text(encoding="utf-8"),
+                "current: true\n",
+            )
 
     def test_resolve_stylesheet_path_finds_bundled_qss(self) -> None:
         with TemporaryDirectory() as runtime_dir:

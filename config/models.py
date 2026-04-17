@@ -134,7 +134,7 @@ class PublishConfig:
 class UiConfig:
     """UI-specific settings."""
 
-    app_name: str = "RabbitMQ Task Tracker"
+    app_name: str = "IPDK_plus"
     window_width: int = 1480
     window_height: int = 900
     theme: str = "dark"

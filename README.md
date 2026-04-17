@@ -1,4 +1,4 @@
-# RabbitMQ Task Worker Requester (PySide6)
+# IPDK_plus (PySide6)
 
 RabbitMQ로 이미지 단위 작업 요청을 전송하고(`IMG_LIST` 1건), 전용 결과 큐를 polling 하여 `request_id` 기준으로 상태를 추적하는 데스크톱 GUI 도구입니다.
 
@@ -14,6 +14,7 @@ RabbitMQ로 이미지 단위 작업 요청을 전송하고(`IMG_LIST` 1건), 전
 - request/result queue별 `queue_declare` 옵션 설정 지원
 - 폴더 동시 전송 수 설정 지원
 - request queue `x-max-priority` 기반 MQ priority 선택 지원
+- 중복 실행 차단(같은 PC에서 1개 인스턴스만 허용)
 
 ## 실행
 
@@ -35,11 +36,17 @@ uv run python main.py --config config/app_config.yaml
 앱은 설정 파일을 아래 순서로 찾습니다.
 
 1. `--config <path>` 로 직접 지정한 파일
-2. `%APPDATA%\TaskWorkerRequester\app_config.yaml`
+2. `%APPDATA%\IPDK_plus\app_config.yaml`
 3. 실행파일 옆 `config\app_config.yaml` 또는 실행파일 옆 `app_config.yaml`
-4. 개발 실행 시 repo 기본값 [config/app_config.yaml](D:\GIT\task_worker_requester\config\app_config.yaml)
+4. 개발 실행 시 repo 기본값 [config/app_config.yaml](.\config\app_config.yaml)
 
-인자를 주지 않고 실행하면 `%APPDATA%\TaskWorkerRequester\` 를 우선 사용합니다. 첫 실행 시 AppData 아래에 `app_config.yaml`, `recipe_config.yaml` 이 없으면 번들된 기본 템플릿을 자동으로 복사합니다.
+인자를 주지 않고 실행하면 `%APPDATA%\IPDK_plus\` 를 우선 사용합니다. 첫 실행 시 기존 `%APPDATA%\TaskWorkerRequester\` 가 있고 새 위치가 비어 있으면 자동 마이그레이션한 뒤, 새 AppData 위치를 계속 사용합니다. `app_config.yaml`, `recipe_config.yaml` 이 모두 없으면 번들된 기본 템플릿을 자동으로 복사합니다.
+
+## 중복 실행 정책
+
+- `IPDK_plus` 는 같은 Windows 사용자 세션에서 한 번만 실행할 수 있습니다.
+- 이미 실행 중인 상태에서 다시 실행하면 경고창을 띄우고 새로 실행한 인스턴스는 즉시 종료합니다.
+- 이 정책은 결과 queue 충돌과 `request_id` 매칭 혼선을 방지하기 위한 것입니다.
 
 ## 기본 설정
 
@@ -48,19 +55,19 @@ uv run python main.py --config config/app_config.yaml
 - `mock_mode: true` 이면 실제 RabbitMQ 없이 시뮬레이션 결과를 생성합니다.
 - 실제 서버 사용 시 `mock_mode: false` 로 변경 후 `rabbitmq` 섹션을 설정하세요.
 - `recipe_config_path`는 별도 recipe 설정 YAML 파일 경로입니다.
-- 예제 기본 경로는 [config/app_config.yaml](D:\GIT\task_worker_requester\config\app_config.yaml) 기준 상대경로인 `recipe_config.yaml` 입니다.
+- 예제 기본 경로는 [config/app_config.yaml](.\config\app_config.yaml) 기준 상대경로인 `recipe_config.yaml` 입니다.
 - 별도 recipe 파일의 `recipes`에 `alias/path`를 등록하면 UI에는 별명이 표시되고 전송에는 실제 path가 사용됩니다.
 - `rabbitmq.request_queue_declare`, `rabbitmq.result_queue_declare`로 queue declare 옵션을 각각 설정할 수 있습니다.
 - `publish.initial_open_folders`, `publish.max_active_open_folders`로 폴더 개방 정책을 조정할 수 있습니다.
 - `publish.default_priority`는 기본 request MQ priority 입니다.
 - UI의 `Priority` 드롭다운 범위는 `rabbitmq.request_queue_declare.arguments.x-max-priority` 값을 기준으로 `0..max`로 생성됩니다.
-- 설치형 실행에서는 기본 편집 대상 설정 파일이 `%APPDATA%\TaskWorkerRequester\app_config.yaml` 입니다.
+- 설치형 실행에서는 기본 편집 대상 설정 파일이 `%APPDATA%\IPDK_plus\app_config.yaml` 입니다.
 
 ### Recipe 설정 분리
 
-- 메인 설정: [config/app_config.yaml](D:\GIT\task_worker_requester\config\app_config.yaml)
+- 메인 설정: [config/app_config.yaml](.\config\app_config.yaml)
   - `recipe_config_path: "recipe_config.yaml"`
-- 별도 recipe 설정: [config/recipe_config.yaml](D:\GIT\task_worker_requester\config\recipe_config.yaml)
+- 별도 recipe 설정: [config/recipe_config.yaml](.\config\recipe_config.yaml)
   - `default_alias`
   - `recipes`
   - `recipes[].alias`
@@ -131,12 +138,12 @@ PySide6 미설치 환경에서는 GUI 의존 테스트(`test_controller`)가 자
 ## Windows 배포
 
 - PyInstaller onedir GUI exe + Inno Setup 설치형 패키지 기준으로 구성했습니다.
-- 빌드 스크립트: [scripts/build_windows.ps1](D:\GIT\task_worker_requester\scripts\build_windows.ps1)
-- PyInstaller spec: [packaging/TaskWorkerRequester.spec](D:\GIT\task_worker_requester\packaging\TaskWorkerRequester.spec)
-- Inno Setup 스크립트: [packaging/TaskWorkerRequester.iss](D:\GIT\task_worker_requester\packaging\TaskWorkerRequester.iss)
-- 세부 절차 문서: [docs/build_windows.md](D:\GIT\task_worker_requester\docs\build_windows.md)
+- 빌드 스크립트: [scripts/build_windows.ps1](.\scripts\build_windows.ps1)
+- PyInstaller spec: [packaging/IPDK_plus.spec](.\packaging\IPDK_plus.spec)
+- Inno Setup 스크립트: [packaging/IPDK_plus.iss](.\packaging\IPDK_plus.iss)
+- 세부 절차 문서: [docs/build_windows.md](.\docs\build_windows.md)
 
-기본 아이콘은 사용자 제공 `C:\Users\youngmoon\Pictures\ICON.ico` 를 repo 자산으로 복사한 [assets/task_worker_requester.ico](D:\GIT\task_worker_requester\assets\task_worker_requester.ico) 를 사용합니다.
+기본 아이콘은 사용자 제공 `C:\Users\youngmoon\Pictures\ICON.ico` 를 repo 자산으로 복사한 [assets/task_worker_requester.ico](.\assets\task_worker_requester.ico) 를 사용합니다.
 
 ## 폴더 구조
 
