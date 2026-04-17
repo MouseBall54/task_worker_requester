@@ -1,0 +1,56 @@
+# -*- mode: python ; coding: utf-8 -*-
+"""PyInstaller spec for TaskWorkerRequester Windows GUI packaging."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+
+PROJECT_ROOT = Path.cwd().resolve()
+ICON_PATH = PROJECT_ROOT / "assets" / "task_worker_requester.ico"
+
+datas = [
+    (str(PROJECT_ROOT / "ui" / "styles.qss"), "ui"),
+    (str(PROJECT_ROOT / "config" / "app_config.yaml"), "config"),
+    (str(PROJECT_ROOT / "config" / "recipe_config.yaml"), "config"),
+]
+
+
+a = Analysis(
+    [str(PROJECT_ROOT / "main.py")],
+    pathex=[str(PROJECT_ROOT)],
+    binaries=[],
+    datas=datas,
+    hiddenimports=[],
+    hookspath=[],
+    hooksconfig={},
+    runtime_hooks=[],
+    excludes=[],
+    noarchive=False,
+    optimize=0,
+)
+pyz = PYZ(a.pure)
+
+exe = EXE(
+    pyz,
+    a.scripts,
+    [],
+    exclude_binaries=True,
+    name="TaskWorkerRequester",
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=True,
+    console=False,
+    icon=str(ICON_PATH),
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.datas,
+    strip=False,
+    upx=True,
+    upx_exclude=[],
+    name="TaskWorkerRequester",
+)

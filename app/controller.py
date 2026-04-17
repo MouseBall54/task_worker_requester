@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import datetime
 import logging
+from pathlib import Path
 
 from PySide6.QtCore import QObject, QThread, Slot
 
@@ -176,6 +177,7 @@ class TaskController(QObject):
         if not recipe_path:
             self._log("Recipe Path 값이 비어 있습니다.")
             return
+        self._warn_if_recipe_file_missing(recipe_path)
 
         try:
             queue_name = self._ensure_resolved_result_queue()
@@ -1079,4 +1081,29 @@ class TaskController(QObject):
             f"available_slots={available_slots}, "
             f"next_index={self._next_folder_batch_index}, "
             f"publish_running={publish_running})"
+        )
+
+    def _warn_if_recipe_file_missing(self, recipe_path: str) -> None:
+        """Warn when the selected recipe file is not visible on the local machine.
+
+        The MQ payload still uses the configured recipe path as-is because some
+        deployments intentionally reference recipe files on the worker side.
+        """
+
+        normalized_recipe_path = str(recipe_path or "").strip()
+        if not normalized_recipe_path:
+            return
+
+        candidate = Path(normalized_recipe_path)
+        if not candidate.is_absolute():
+            recipe_config_file = str(self._config.recipe_config_path or "").strip()
+            if recipe_config_file:
+                candidate = Path(recipe_config_file).expanduser().resolve().parent / candidate
+
+        if candidate.exists():
+            return
+
+        self._log(
+            "선택한 recipe 파일이 로컬에서 보이지 않습니다: "
+            f"{candidate} (전송 payload 에는 configured path '{normalized_recipe_path}' 그대로 사용)"
         )

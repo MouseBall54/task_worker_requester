@@ -25,8 +25,21 @@ uv run python main.py
 커스텀 설정 경로:
 
 ```bash
-uv run python main.py config/app_config.yaml
+uv run python main.py --config config/app_config.yaml
 ```
+
+기존 positional 인자(`uv run python main.py config/app_config.yaml`)도 호환용으로 계속 허용됩니다.
+
+## Config 탐색 우선순위
+
+앱은 설정 파일을 아래 순서로 찾습니다.
+
+1. `--config <path>` 로 직접 지정한 파일
+2. `%APPDATA%\TaskWorkerRequester\app_config.yaml`
+3. 실행파일 옆 `config\app_config.yaml` 또는 실행파일 옆 `app_config.yaml`
+4. 개발 실행 시 repo 기본값 [config/app_config.yaml](D:\GIT\task_worker_requester\config\app_config.yaml)
+
+인자를 주지 않고 실행하면 `%APPDATA%\TaskWorkerRequester\` 를 우선 사용합니다. 첫 실행 시 AppData 아래에 `app_config.yaml`, `recipe_config.yaml` 이 없으면 번들된 기본 템플릿을 자동으로 복사합니다.
 
 ## 기본 설정
 
@@ -41,6 +54,7 @@ uv run python main.py config/app_config.yaml
 - `publish.initial_open_folders`, `publish.max_active_open_folders`로 폴더 개방 정책을 조정할 수 있습니다.
 - `publish.default_priority`는 기본 request MQ priority 입니다.
 - UI의 `Priority` 드롭다운 범위는 `rabbitmq.request_queue_declare.arguments.x-max-priority` 값을 기준으로 `0..max`로 생성됩니다.
+- 설치형 실행에서는 기본 편집 대상 설정 파일이 `%APPDATA%\TaskWorkerRequester\app_config.yaml` 입니다.
 
 ### Recipe 설정 분리
 
@@ -53,6 +67,12 @@ uv run python main.py config/app_config.yaml
   - `recipes[].path`
 
 메인 설정 파일 안의 inline `recipe_config` 블록은 더 이상 지원하지 않습니다.
+
+### Recipe JSON 파일 주의사항
+
+- 기본 seed 설정에는 `recipes/default_recipe.json` 같은 예시 경로가 들어 있지만, 현재 repo에는 실제 `recipes/*.json` 파일이 포함되어 있지 않습니다.
+- 따라서 설치 후에는 사용 환경에 맞는 실제 recipe JSON 경로로 `recipe_config.yaml` 을 수정하는 것을 권장합니다.
+- 앱은 시작 시 선택한 recipe 경로가 로컬에서 보이지 않으면 경고 로그를 남기지만, MQ payload 에는 설정된 `RECIPE_PATH` 문자열을 그대로 사용합니다.
 
 ### RabbitMQ 라우팅 설정 의미
 
@@ -105,7 +125,18 @@ PySide6 미설치 환경에서는 GUI 의존 테스트(`test_controller`)가 자
 
 - 기본 Python 버전은 `3.11` (`.python-version`) 입니다.
 - `uv` 기준 의존성 소스는 `pyproject.toml` 입니다.
+- Windows exe 빌드 도구는 `pyproject.toml` 의 `build` dependency group(`pyinstaller`)로 관리합니다.
 - `requirements.txt`는 호환/참고용으로 유지됩니다.
+
+## Windows 배포
+
+- PyInstaller onedir GUI exe + Inno Setup 설치형 패키지 기준으로 구성했습니다.
+- 빌드 스크립트: [scripts/build_windows.ps1](D:\GIT\task_worker_requester\scripts\build_windows.ps1)
+- PyInstaller spec: [packaging/TaskWorkerRequester.spec](D:\GIT\task_worker_requester\packaging\TaskWorkerRequester.spec)
+- Inno Setup 스크립트: [packaging/TaskWorkerRequester.iss](D:\GIT\task_worker_requester\packaging\TaskWorkerRequester.iss)
+- 세부 절차 문서: [docs/build_windows.md](D:\GIT\task_worker_requester\docs\build_windows.md)
+
+기본 아이콘은 사용자 제공 `C:\Users\youngmoon\Pictures\ICON.ico` 를 repo 자산으로 복사한 [assets/task_worker_requester.ico](D:\GIT\task_worker_requester\assets\task_worker_requester.ico) 를 사용합니다.
 
 ## 폴더 구조
 

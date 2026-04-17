@@ -10,6 +10,11 @@ dependencies = [
   "PyYAML>=6.0.1",
 ]
 
+[dependency-groups]
+build = [
+  "pyinstaller>=6.13.0",
+]
+
 [build-system]
 requires = ["hatchling>=1.25.0"]
 build-backend = "hatchling.build"
