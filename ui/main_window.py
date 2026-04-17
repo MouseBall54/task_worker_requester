@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import PureWindowsPath
 from pathlib import Path
 from typing import Any
 
@@ -129,8 +128,12 @@ class MainWindow(QMainWindow):
         root = QWidget(self)
         self.setCentralWidget(root)
 
-        main_layout = QHBoxLayout(root)
-        main_layout.setContentsMargins(16, 16, 16, 16)
+        root_layout = QVBoxLayout(root)
+        root_layout.setContentsMargins(16, 16, 16, 16)
+        root_layout.setSpacing(14)
+
+        main_layout = QHBoxLayout()
+        main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(16)
 
         left_panel = self._build_left_panel()
@@ -142,24 +145,18 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(left_panel)
         main_layout.addWidget(center_panel, stretch=12)
         main_layout.addWidget(status_sidebar, stretch=7)
+        root_layout.addLayout(main_layout, stretch=1)
 
     def _build_left_panel(self) -> QWidget:
         panel = QFrame()
         panel.setObjectName("leftPanel")
         layout = QVBoxLayout(panel)
-        layout.setContentsMargins(14, 14, 14, 14)
-        layout.setSpacing(12)
+        layout.setContentsMargins(14, 12, 14, 14)
+        layout.setSpacing(10)
 
-        title = QLabel("폴더 선택")
+        title = QLabel("폴더 탐색")
         title.setObjectName("panelTitle")
         layout.addWidget(title)
-
-        drive_row = QHBoxLayout()
-        drive_row.addWidget(QLabel("드라이브"), stretch=0)
-        self.drive_combo = QComboBox()
-        self.drive_combo.currentIndexChanged.connect(self._on_drive_changed)
-        drive_row.addWidget(self.drive_combo, stretch=1)
-        layout.addLayout(drive_row)
 
         jump_row = QHBoxLayout()
         self.path_jump_edit = QLineEdit()
@@ -191,7 +188,6 @@ class MainWindow(QMainWindow):
             self.folder_tree.selectionModel().currentChanged.connect(self._on_tree_current_changed)
 
         self.folder_tree.setRootIndex(QModelIndex())
-        self._populate_drive_combo()
         self.jump_to_path(str(Path.home()), show_feedback=False)
 
         layout.addWidget(self.folder_tree, stretch=1)
@@ -761,59 +757,6 @@ class MainWindow(QMainWindow):
         if hasattr(self, "status_tabs") and self.status_tabs is not None:
             self.status_tabs.setCurrentIndex(self.STATUS_TAB_DETAIL)
 
-    def _populate_drive_combo(self) -> None:
-        """Populate drive selector from OS drive list."""
-
-        self.drive_combo.blockSignals(True)
-        self.drive_combo.clear()
-
-        seen: set[str] = set()
-        drives = QDir.drives()
-        for drive_info in drives:
-            drive_path = drive_info.absoluteFilePath()
-            normalized_key = drive_path.lower()
-            if normalized_key in seen:
-                continue
-            seen.add(normalized_key)
-
-            label = self._drive_label(drive_path)
-            self.drive_combo.addItem(label, drive_path)
-
-        if self.drive_combo.count() == 0:
-            # Non-Windows fallback: keep at least one root entry.
-            self.drive_combo.addItem(QDir.rootPath(), QDir.rootPath())
-
-        self.drive_combo.blockSignals(False)
-        self._sync_drive_combo_for_path(Path.home())
-
-    def _on_drive_changed(self, index: int) -> None:
-        """Jump tree focus when user picks a drive from combo box."""
-
-        if index < 0 or self._is_syncing_navigation:
-            return
-        drive_path = str(self.drive_combo.itemData(index) or "").strip()
-        if not drive_path:
-            return
-
-        drive_index = self.file_system_model.index(drive_path)
-        if not drive_index.isValid():
-            self._show_path_error(f"드라이브를 트리에서 찾을 수 없습니다: {drive_path}")
-            return
-
-        self._is_syncing_navigation = True
-        try:
-            # Always show the global drive list in the tree.
-            self.folder_tree.setRootIndex(QModelIndex())
-            self.folder_tree.setCurrentIndex(drive_index)
-            self.folder_tree.scrollTo(drive_index, QTreeView.PositionAtCenter)
-            self.folder_tree.expand(drive_index)
-            self.folder_tree.setFocus(Qt.OtherFocusReason)
-            self.path_jump_edit.setText(str(Path(drive_path)))
-        finally:
-            self._is_syncing_navigation = False
-
-        self.append_log(f"[탐색] 드라이브 선택: {drive_path}")
-
     def _on_path_jump_requested(self) -> None:
         """Handle explicit path jump request from left panel."""
 
@@ -834,26 +777,8 @@ class MainWindow(QMainWindow):
             self.folder_tree.expand(parent)
             parent = parent.parent()
 
-    def _sync_drive_combo_for_path(self, target_path: str | Path) -> None:
-        """Sync drive combo selection to the current path."""
-
-        target = Path(target_path)
-        drive = PureWindowsPath(str(target)).drive
-        if not drive:
-            return
-
-        target_drive = drive.lower().rstrip("\\/")
-        for idx in range(self.drive_combo.count()):
-            data = str(self.drive_combo.itemData(idx) or "")
-            combo_drive = PureWindowsPath(data).drive.lower().rstrip("\\/")
-            if combo_drive == target_drive:
-                self.drive_combo.blockSignals(True)
-                self.drive_combo.setCurrentIndex(idx)
-                self.drive_combo.blockSignals(False)
-                return
-
     def _on_tree_current_changed(self, current: QModelIndex, _previous: QModelIndex) -> None:
-        """Reflect current tree selection immediately into path input and drive combo."""
+        """Reflect current tree selection immediately into the path input."""
 
         if self._is_syncing_navigation or not current.isValid():
             return
@@ -867,7 +792,6 @@ class MainWindow(QMainWindow):
         self._is_syncing_navigation = True
         try:
             self.path_jump_edit.setText(selected_path)
-            self._sync_drive_combo_for_path(selected_path)
         finally:
             self._is_syncing_navigation = False
 
@@ -877,15 +801,6 @@ class MainWindow(QMainWindow):
         if not self._pending_jump_target:
             return
         QTimer.singleShot(0, self._retry_pending_jump)
-
-    @staticmethod
-    def _drive_label(drive_path: str) -> str:
-        """Return user-friendly label for drive combo entries."""
-
-        drive = PureWindowsPath(drive_path).drive
-        if drive:
-            return f"{drive}\\"
-        return drive_path
 
     def _populate_recipe_selector(self) -> None:
         """Populate recipe alias combo from top-level recipe config."""
@@ -977,7 +892,6 @@ class MainWindow(QMainWindow):
             self.folder_tree.expand(model_index)
             self.folder_tree.setFocus(Qt.OtherFocusReason)
             self.path_jump_edit.setText(target_path)
-            self._sync_drive_combo_for_path(target_path)
         finally:
             self._is_syncing_navigation = False
 

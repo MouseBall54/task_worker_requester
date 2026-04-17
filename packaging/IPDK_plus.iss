@@ -3,7 +3,7 @@
 #define MyAppPublisher "박영문"
 #define MyAppExeName "IPDK_plus.exe"
 #define MyDistDir "..\\dist\\IPDK_plus"
-#define MyIconFile "..\\assets\\task_worker_requester.ico"
+#define MyIconFile "..\\assets\\IPDK_plus.ico"
 
 [Setup]
 AppId={{E2C1A58A-67B0-44B1-8AF6-3D2FD375B271}

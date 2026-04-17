@@ -7,7 +7,7 @@
 1. `PyInstaller` 로 `IPDK_plus.exe` onedir 산출물 생성
 2. `Inno Setup` 으로 설치형 패키지 생성
 
-기본 아이콘은 [assets/task_worker_requester.ico](.\assets\task_worker_requester.ico) 를 사용합니다.
+기본 아이콘은 [assets/IPDK_plus.ico](.\assets\IPDK_plus.ico) 를 사용합니다.
 
 ### Prerequisites
 

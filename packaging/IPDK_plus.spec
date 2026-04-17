@@ -7,7 +7,7 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path.cwd().resolve()
-ICON_PATH = PROJECT_ROOT / "assets" / "task_worker_requester.ico"
+ICON_PATH = PROJECT_ROOT / "assets" / "IPDK_plus.ico"
 
 datas = [
     (str(PROJECT_ROOT / "ui" / "styles.qss"), "ui"),

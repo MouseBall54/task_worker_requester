@@ -143,7 +143,7 @@ PySide6 미설치 환경에서는 GUI 의존 테스트(`test_controller`)가 자
 - Inno Setup 스크립트: [packaging/IPDK_plus.iss](.\packaging\IPDK_plus.iss)
 - 세부 절차 문서: [docs/build_windows.md](.\docs\build_windows.md)
 
-기본 아이콘은 사용자 제공 `C:\Users\youngmoon\Pictures\ICON.ico` 를 repo 자산으로 복사한 [assets/task_worker_requester.ico](.\assets\task_worker_requester.ico) 를 사용합니다.
+기본 아이콘은 사용자 제공 `C:\Users\youngmoon\Pictures\ICON.ico` 를 repo 자산으로 복사한 [assets/IPDK_plus.ico](.\assets\IPDK_plus.ico) 를 사용합니다.
 
 ## 폴더 구조
 

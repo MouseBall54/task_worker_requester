@@ -5,7 +5,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 $specPath = Join-Path $ProjectRoot "packaging\IPDK_plus.spec"
-$iconPath = Join-Path $ProjectRoot "assets\task_worker_requester.ico"
+$iconPath = Join-Path $ProjectRoot "assets\IPDK_plus.ico"
 
 if (-not (Test-Path $specPath)) {
     throw "PyInstaller spec 파일을 찾지 못했습니다: $specPath"
