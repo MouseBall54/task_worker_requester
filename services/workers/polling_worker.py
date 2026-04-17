@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import threading
 import time
 from collections.abc import Callable
 
 from PySide6.QtCore import QObject, Signal, Slot
 
-from services.broker.base import AbstractBrokerClient, BrokerResultEnvelope
+from services.broker.base import (
+    AbstractBrokerClient,
+    BrokerConsumeDecision,
+    BrokerResultEnvelope,
+)
+from services.result_parser import extract_request_id
 
 
 class PollingWorker(QObject):
@@ -24,6 +30,7 @@ class PollingWorker(QObject):
         queue_name: str,
         polling_interval_seconds: int,
         max_messages_per_poll: int,
+        tracked_request_ids: set[str] | None = None,
     ) -> None:
         super().__init__()
         self._broker_provider = broker_provider
@@ -31,6 +38,11 @@ class PollingWorker(QObject):
         self._polling_interval_seconds = polling_interval_seconds
         self._max_messages_per_poll = max_messages_per_poll
         self._stop_requested = False
+        self._tracked_request_ids = set(tracked_request_ids or set())
+        self._tracked_ids_lock = threading.Lock()
+        self._consumer_paused = False
+        self._consumer_pause_reason = ""
+        self._consumer_resume_at = 0.0
 
     @Slot()
     def run(self) -> None:
@@ -43,26 +55,60 @@ class PollingWorker(QObject):
             self.log.emit(f"결과 consumer 등록 시작: {self._queue_name}")
 
             received_since_tick = 0
+            interval_seconds = max(0.1, float(self._polling_interval_seconds))
 
-            def _on_envelope(envelope: BrokerResultEnvelope) -> None:
+            def _on_envelope(envelope: BrokerResultEnvelope) -> BrokerConsumeDecision:
                 nonlocal received_since_tick
+                matched_request_id = extract_request_id(
+                    payload=envelope.payload,
+                    correlation_id=envelope.correlation_id,
+                    message_id=envelope.message_id,
+                )
+                if not matched_request_id:
+                    self._pause_consumer("request_id 누락")
+                    return BrokerConsumeDecision.REQUEUE_AND_PAUSE
+
+                with self._tracked_ids_lock:
+                    is_tracked = matched_request_id in self._tracked_request_ids
+
+                if not is_tracked:
+                    self._pause_consumer(f"request_id mismatch: {matched_request_id}")
+                    return BrokerConsumeDecision.REQUEUE_AND_PAUSE
+
                 received_since_tick += 1
                 self.result_received.emit(envelope)
+                return BrokerConsumeDecision.ACK
 
-            broker.start_result_consumer(
-                queue_name=self._queue_name,
-                on_envelope=_on_envelope,
-                prefetch_count=self._max_messages_per_poll,
-            )
+            def _start_consumer() -> None:
+                broker.start_result_consumer(
+                    queue_name=self._queue_name,
+                    on_envelope=_on_envelope,
+                    prefetch_count=self._max_messages_per_poll,
+                )
+                self._consumer_paused = False
+                self._consumer_pause_reason = ""
+                self._consumer_resume_at = 0.0
+
+            _start_consumer()
             self.log.emit(f"결과 consumer active: {self._queue_name}")
 
-            interval_seconds = max(0.1, float(self._polling_interval_seconds))
             next_tick_at = time.monotonic() + interval_seconds
             while not self._stop_requested:
-                try:
-                    broker.pump_events(time_limit_seconds=0.2)
-                except Exception as exc:  # pylint: disable=broad-except
-                    self.log.emit(f"consumer 이벤트 처리 중 오류: {exc}")
+                if self._consumer_paused:
+                    if time.monotonic() >= self._consumer_resume_at:
+                        try:
+                            _start_consumer()
+                            self.log.emit(f"결과 consumer 재개: {self._queue_name}")
+                        except Exception as exc:  # pylint: disable=broad-except
+                            self._pause_consumer(f"재개 실패: {exc}")
+                            self.log.emit(f"결과 consumer 재개 실패: {exc}")
+                    else:
+                        time.sleep(0.05)
+                else:
+                    try:
+                        broker.pump_events(time_limit_seconds=0.2)
+                    except Exception as exc:  # pylint: disable=broad-except
+                        self.log.emit(f"consumer 이벤트 처리 중 오류: {exc}")
 
                 now = time.monotonic()
                 if now < next_tick_at:
@@ -93,3 +139,29 @@ class PollingWorker(QObject):
         """Request graceful stop for polling loop."""
 
         self._stop_requested = True
+
+    def add_tracked_request_ids(self, request_ids: list[str] | set[str]) -> None:
+        """Add request IDs that should be considered safe to consume."""
+
+        with self._tracked_ids_lock:
+            self._tracked_request_ids.update(str(request_id) for request_id in request_ids if request_id)
+
+    def remove_tracked_request_ids(self, request_ids: list[str] | set[str]) -> None:
+        """Remove request IDs from tracked consume targets."""
+
+        with self._tracked_ids_lock:
+            for request_id in request_ids:
+                normalized = str(request_id).strip()
+                if not normalized:
+                    continue
+                self._tracked_request_ids.discard(normalized)
+
+    def _pause_consumer(self, reason: str) -> None:
+        """Pause consumer temporarily after requeueing an unsafe message."""
+
+        if self._consumer_paused and self._consumer_pause_reason == reason:
+            return
+        self._consumer_paused = True
+        self._consumer_pause_reason = reason
+        self._consumer_resume_at = time.monotonic() + max(0.5, float(self._polling_interval_seconds))
+        self.log.emit(f"consumer pause - {reason}")

@@ -24,7 +24,7 @@ class PublishWorker(QObject):
         self,
         broker_provider: Callable[[], AbstractBrokerClient],
         messages: list[TaskMessage],
-        result_queue_base: str,
+        result_queue_name: str,
         publish_exchange: str,
         publish_routing_key: str,
         max_retries: int,
@@ -33,7 +33,7 @@ class PublishWorker(QObject):
         super().__init__()
         self._broker_provider = broker_provider
         self._messages = messages
-        self._result_queue_base = result_queue_base
+        self._result_queue_name = result_queue_name
         self._publish_exchange = publish_exchange
         self._publish_routing_key = publish_routing_key
         self._max_retries = max_retries
@@ -49,7 +49,7 @@ class PublishWorker(QObject):
 
         try:
             broker.connect()
-            queue_name = broker.declare_result_queue(self._result_queue_base)
+            queue_name = broker.declare_result_queue(self._result_queue_name)
             self.queue_ready.emit(queue_name)
             self.log.emit(f"브로커 연결 성공, 결과 큐 준비: {queue_name}")
 

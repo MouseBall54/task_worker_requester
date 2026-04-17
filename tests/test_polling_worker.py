@@ -6,7 +6,12 @@ import threading
 import time
 import unittest
 
-from services.broker.base import AbstractBrokerClient, BrokerConsumeCallback, BrokerResultEnvelope
+from services.broker.base import (
+    AbstractBrokerClient,
+    BrokerConsumeCallback,
+    BrokerConsumeDecision,
+    BrokerResultEnvelope,
+)
 
 try:
     from PySide6.QtCore import QCoreApplication
@@ -28,6 +33,7 @@ class FakeConsumerBroker(AbstractBrokerClient):
         self.callback: BrokerConsumeCallback | None = None
         self.prefetch_count = 0
         self.consumer_stopped = False
+        self.requeued: list[BrokerResultEnvelope] = []
         self.envelopes = [
             BrokerResultEnvelope(payload={"request_id": "req-1"}, message_id="req-1", correlation_id="req-1")
         ]
@@ -61,7 +67,12 @@ class FakeConsumerBroker(AbstractBrokerClient):
             return 0
 
         envelope = self.envelopes.pop(0)
-        self.callback(envelope)
+        decision = self.callback(envelope)
+        if decision == BrokerConsumeDecision.REQUEUE_AND_PAUSE:
+            self.requeued.append(envelope)
+            self.stop_result_consumer()
+        elif decision == BrokerConsumeDecision.REQUEUE:
+            self.requeued.append(envelope)
         return 1
 
     def stop_result_consumer(self) -> None:
@@ -87,6 +98,7 @@ class PollingWorkerTest(unittest.TestCase):
             queue_name="result.q",
             polling_interval_seconds=1,
             max_messages_per_poll=5,
+            tracked_request_ids={"req-1"},
         )
 
         received_payloads: list[dict] = []
@@ -109,6 +121,40 @@ class PollingWorkerTest(unittest.TestCase):
         self.assertEqual(received_payloads, [{"request_id": "req-1"}])
         self.assertTrue(any(count >= 1 for count in tick_counts))
         self.assertTrue(any("consumer active" in line for line in logs))
+
+    def test_worker_requeues_and_pauses_on_request_id_mismatch(self) -> None:
+        broker = FakeConsumerBroker()
+        broker.envelopes = [
+            BrokerResultEnvelope(
+                payload={"request_id": "foreign-1"},
+                message_id="foreign-1",
+                correlation_id="foreign-1",
+            )
+        ]
+        worker = PollingWorker(
+            broker_provider=lambda: broker,
+            queue_name="result.q",
+            polling_interval_seconds=1,
+            max_messages_per_poll=5,
+            tracked_request_ids={"req-1"},
+        )
+
+        received_payloads: list[dict] = []
+        logs: list[str] = []
+        worker.result_received.connect(lambda envelope: received_payloads.append(envelope.payload))
+        worker.log.connect(logs.append)
+
+        stopper = threading.Timer(0.4, worker.stop)
+        stopper.start()
+        try:
+            worker.run()
+        finally:
+            stopper.cancel()
+
+        self.assertEqual(received_payloads, [])
+        self.assertTrue(broker.consumer_stopped)
+        self.assertEqual([item.payload["request_id"] for item in broker.requeued], ["foreign-1"])
+        self.assertTrue(any("consumer pause - request_id mismatch: foreign-1" in line for line in logs))
 
 
 if __name__ == "__main__":

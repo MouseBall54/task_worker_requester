@@ -8,7 +8,12 @@ from typing import Any
 
 from config.models import RabbitMQConfig
 from models.task_models import TaskMessage
-from services.broker.base import AbstractBrokerClient, BrokerConsumeCallback, BrokerResultEnvelope
+from services.broker.base import (
+    AbstractBrokerClient,
+    BrokerConsumeCallback,
+    BrokerConsumeDecision,
+    BrokerResultEnvelope,
+)
 from services.broker.routing import resolve_publish_route
 
 try:
@@ -29,6 +34,7 @@ class RabbitMQClient(AbstractBrokerClient):
         self._consumer_tag: str | None = None
         self._consumer_callback: BrokerConsumeCallback | None = None
         self._delivered_since_pump = 0
+        self._cancel_requested_after_delivery = False
 
     def connect(self) -> None:
         """Connect to RabbitMQ and prepare base request queue."""
@@ -125,6 +131,7 @@ class RabbitMQClient(AbstractBrokerClient):
         self._channel.basic_qos(prefetch_count=max(1, int(prefetch_count)))
         self._consumer_callback = on_envelope
         self._delivered_since_pump = 0
+        self._cancel_requested_after_delivery = False
 
         def _handle_message(channel, method_frame, properties, body: bytes) -> None:  # type: ignore[no-untyped-def]
             payload = self._decode_payload(body)
@@ -133,12 +140,24 @@ class RabbitMQClient(AbstractBrokerClient):
                 message_id=getattr(properties, "message_id", None),
                 correlation_id=getattr(properties, "correlation_id", None),
             )
-            try:
-                if self._consumer_callback is not None:
-                    self._consumer_callback(envelope)
-            finally:
+            decision = BrokerConsumeDecision.ACK
+            if self._consumer_callback is not None:
+                try:
+                    callback_result = self._consumer_callback(envelope)
+                except Exception:
+                    callback_result = BrokerConsumeDecision.REQUEUE_AND_PAUSE
+                if isinstance(callback_result, BrokerConsumeDecision):
+                    decision = callback_result
+
+            if decision == BrokerConsumeDecision.ACK:
                 channel.basic_ack(delivery_tag=method_frame.delivery_tag)
                 self._delivered_since_pump += 1
+                return
+
+            channel.basic_nack(delivery_tag=method_frame.delivery_tag, requeue=True)
+            self._delivered_since_pump += 1
+            if decision == BrokerConsumeDecision.REQUEUE_AND_PAUSE:
+                self._cancel_requested_after_delivery = True
 
         self._consumer_tag = self._channel.basic_consume(
             queue=queue_name,
@@ -154,6 +173,8 @@ class RabbitMQClient(AbstractBrokerClient):
 
         self._delivered_since_pump = 0
         self._connection.process_data_events(time_limit=max(0.0, float(time_limit_seconds)))
+        if self._cancel_requested_after_delivery and self._consumer_tag is not None:
+            self.stop_result_consumer()
         delivered = self._delivered_since_pump
         self._delivered_since_pump = 0
         return delivered
@@ -173,6 +194,7 @@ class RabbitMQClient(AbstractBrokerClient):
         self._consumer_tag = None
         self._consumer_callback = None
         self._delivered_since_pump = 0
+        self._cancel_requested_after_delivery = False
 
     def ping(self) -> bool:
         """Return whether current connection appears healthy."""

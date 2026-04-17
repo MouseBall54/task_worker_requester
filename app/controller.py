@@ -11,6 +11,7 @@ from PySide6.QtCore import QObject, QThread, Slot
 from config.models import AppConfig
 from models.task_models import TaskMessage, TaskStatus
 from services.broker import AbstractBrokerClient, BrokerResultEnvelope
+from services.broker.result_queue import resolve_local_ipv4, resolve_result_queue_name
 from services.broker.routing import resolve_publish_route
 from services.folder_scanner import FolderScanner
 from services.result_parser import parse_task_result
@@ -50,6 +51,8 @@ class TaskController(QObject):
         self._active_timeout_seconds = config.publish.timeout_seconds
         self._pending_polling_interval = config.publish.polling_interval_seconds
         self._active_result_queue: str | None = None
+        self._resolved_local_ipv4: str | None = None
+        self._resolved_result_queue: str | None = None
         self._publish_exchange = ""
         self._publish_routing_key = ""
 
@@ -126,6 +129,7 @@ class TaskController(QObject):
                 removed_folder_paths=removed_folders,
                 removed_request_ids=set(removed_request_ids),
             )
+            self._safe_update_poll_tracked_ids(remove_request_ids=removed_request_ids)
             if self._selected_folder and self._selected_folder in removed_folders:
                 self._selected_folder = None
                 self._view.set_image_tasks([])
@@ -173,7 +177,13 @@ class TaskController(QObject):
             self._log("Recipe Path 값이 비어 있습니다.")
             return
 
-        queue_name = self._config.rabbitmq.result_queue_base
+        try:
+            queue_name = self._ensure_resolved_result_queue()
+        except RuntimeError as exc:
+            self._view.set_connection_status(False, "결과 큐 결정 실패")
+            self._log(f"결과 큐 이름 결정 실패: {exc}")
+            return
+
         grouped_messages = self._store.build_pending_messages_by_folder(
             action,
             queue_name,
@@ -207,6 +217,11 @@ class TaskController(QObject):
         self._active_result_queue = queue_name
         self._view.set_active_result_queue(queue_name)
         self._view.set_running_state(True)
+        if self._resolved_local_ipv4:
+            self._log(
+                f"결과 큐 결정 - base={self._config.rabbitmq.result_queue_base}, "
+                f"local_ipv4={self._resolved_local_ipv4}, resolved={queue_name}"
+            )
 
         self._publish_exchange, self._publish_routing_key = resolve_publish_route(self._config.rabbitmq)
         self._set_expected_messages_for_groups(grouped_messages)
@@ -247,6 +262,7 @@ class TaskController(QObject):
         self._start_polling_worker(
             queue_name=queue_name,
             polling_interval=polling_interval,
+            tracked_request_ids=self._store.get_known_request_ids(),
         )
         self._log(
             "전송 대기 작업은 없고 SENT/RUNNING 작업이 있어 결과 모니터링만 재개합니다."
@@ -284,6 +300,7 @@ class TaskController(QObject):
         """Open MQ preview dialog for selected image task row."""
 
         runtime_action, runtime_recipe_path, _, runtime_priority = self._view.current_runtime_settings()
+        resolved_local_ipv4 = self._resolve_local_ipv4_for_preview()
         preview = self._store.build_mq_preview(
             request_id=request_id,
             app_config=self._config,
@@ -291,6 +308,7 @@ class TaskController(QObject):
             runtime_action=runtime_action,
             runtime_recipe_path=runtime_recipe_path,
             runtime_priority=runtime_priority,
+            resolved_local_ipv4=resolved_local_ipv4,
         )
         if preview is None:
             self._log(f"MQ 미리보기 대상을 찾지 못했습니다: {request_id}")
@@ -314,7 +332,7 @@ class TaskController(QObject):
         self._publish_worker = PublishWorker(
             broker_provider=self._broker_provider,
             messages=messages,
-            result_queue_base=self._config.rabbitmq.result_queue_base,
+            result_queue_name=self._active_result_queue or self._ensure_resolved_result_queue(),
             publish_exchange=publish_exchange,
             publish_routing_key=publish_routing_key,
             max_retries=self._config.publish.max_publish_retries,
@@ -334,7 +352,12 @@ class TaskController(QObject):
         self._publish_thread.finished.connect(self._publish_thread.deleteLater)
         self._publish_thread.start()
 
-    def _start_polling_worker(self, queue_name: str, polling_interval: int) -> None:
+    def _start_polling_worker(
+        self,
+        queue_name: str,
+        polling_interval: int,
+        tracked_request_ids: set[str] | None = None,
+    ) -> None:
         """Spin up polling worker that tracks request results."""
 
         self._poll_thread = QThread(self)
@@ -343,6 +366,7 @@ class TaskController(QObject):
             queue_name=queue_name,
             polling_interval_seconds=polling_interval,
             max_messages_per_poll=self._config.publish.max_messages_per_poll,
+            tracked_request_ids=tracked_request_ids,
         )
         self._poll_worker.moveToThread(self._poll_thread)
 
@@ -365,6 +389,7 @@ class TaskController(QObject):
             self._start_polling_worker(
                 queue_name=queue_name,
                 polling_interval=self._pending_polling_interval,
+                tracked_request_ids=self._store.get_known_request_ids(),
             )
         self._active_result_queue = queue_name
         self._view.set_active_result_queue(queue_name)
@@ -551,6 +576,57 @@ class TaskController(QObject):
         except RuntimeError:
             return
 
+    def _ensure_resolved_result_queue(self) -> str:
+        """Resolve and cache the final result queue name for this app session."""
+
+        if self._resolved_result_queue:
+            return self._resolved_result_queue
+
+        if self._config.mock_mode:
+            try:
+                local_ipv4 = resolve_local_ipv4(self._config.rabbitmq)
+            except RuntimeError:
+                local_ipv4 = "127.0.0.1"
+        else:
+            local_ipv4 = resolve_local_ipv4(self._config.rabbitmq)
+
+        resolved_queue = resolve_result_queue_name(
+            result_queue_base=self._config.rabbitmq.result_queue_base,
+            local_ipv4=local_ipv4,
+        )
+        self._resolved_local_ipv4 = local_ipv4
+        self._resolved_result_queue = resolved_queue
+        return resolved_queue
+
+    def _resolve_local_ipv4_for_preview(self) -> str | None:
+        """Best-effort local IPv4 lookup for MQ preview before a session starts."""
+
+        if self._resolved_local_ipv4:
+            return self._resolved_local_ipv4
+
+        try:
+            self._ensure_resolved_result_queue()
+        except RuntimeError:
+            return "127.0.0.1" if self._config.mock_mode else None
+        return self._resolved_local_ipv4
+
+    def _safe_update_poll_tracked_ids(
+        self,
+        add_request_ids: list[str] | None = None,
+        remove_request_ids: list[str] | None = None,
+    ) -> None:
+        """Safely synchronize tracked request IDs with the polling worker if it exists."""
+
+        if self._poll_worker is None:
+            return
+        try:
+            if add_request_ids:
+                self._poll_worker.add_tracked_request_ids(add_request_ids)
+            if remove_request_ids:
+                self._poll_worker.remove_tracked_request_ids(remove_request_ids)
+        except RuntimeError:
+            return
+
     def _check_connection_once(self) -> None:
         """Best-effort broker connectivity check for initial status badge."""
 
@@ -609,7 +685,13 @@ class TaskController(QObject):
         runtime_action, runtime_recipe_path, _, runtime_priority = self._view.current_runtime_settings()
         runtime_action = runtime_action or self._config.publish.default_action
         runtime_recipe_path = runtime_recipe_path or self._config.recipe_config.default_path
-        runtime_queue = self._active_result_queue or self._config.rabbitmq.result_queue_base
+        runtime_queue = self._active_result_queue or self._resolved_result_queue
+        if not runtime_queue:
+            try:
+                runtime_queue = self._ensure_resolved_result_queue()
+            except RuntimeError as exc:
+                self._log(f"실행 중 추가를 위한 결과 큐 이름 결정 실패: {exc}")
+                return
         grouped_messages = self._store.build_pending_messages_for_folders(
             action=runtime_action,
             result_queue_name=runtime_queue,
@@ -630,6 +712,13 @@ class TaskController(QObject):
         for _, messages in grouped_messages:
             for message in messages:
                 self._scheduled_request_ids.add(message.request_id)
+        self._safe_update_poll_tracked_ids(
+            add_request_ids=[
+                message.request_id
+                for _, messages in grouped_messages
+                for message in messages
+            ]
+        )
 
         self._log(
             f"실행 중 추가 편입 - 폴더 {len(grouped_messages)}개, 메시지 {added_messages}건 "

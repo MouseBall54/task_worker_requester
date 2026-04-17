@@ -7,6 +7,16 @@ from typing import Any
 from models.task_models import TaskResult
 
 
+def extract_request_id(
+    payload: dict[str, Any],
+    correlation_id: str | None = None,
+    message_id: str | None = None,
+) -> str:
+    """Extract request_id from payload or AMQP metadata in priority order."""
+
+    return str(payload.get("request_id") or correlation_id or message_id or "").strip()
+
+
 def parse_task_result(
     payload: dict[str, Any],
     correlation_id: str | None = None,
@@ -17,7 +27,11 @@ def parse_task_result(
     The parser tolerates partially malformed payloads and normalizes fields.
     """
 
-    request_id = str(payload.get("request_id") or correlation_id or message_id or "").strip()
+    request_id = extract_request_id(
+        payload=payload,
+        correlation_id=correlation_id,
+        message_id=message_id,
+    )
     if not request_id:
         raise ValueError("request_id 를 찾을 수 없습니다.")
 

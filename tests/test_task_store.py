@@ -208,6 +208,39 @@ class TaskStoreTest(unittest.TestCase):
         self.assertEqual(preview["message"]["selected_priority"], 3)
         self.assertEqual(preview["message"]["publish_meta"]["priority"], 3)
 
+    def test_build_mq_preview_uses_resolved_ipv4_queue_name_when_active_queue_missing(self) -> None:
+        message = self.store.build_pending_messages("RUN", "result.q", "r.json")[0]
+        config = AppConfig(
+            rabbitmq=RabbitMQConfig(
+                host="127.0.0.1",
+                port=5672,
+                username="guest",
+                password="guest",
+                result_queue_base="task.result.client",
+            )
+        )
+
+        preview = self.store.build_mq_preview(
+            request_id=message.request_id,
+            app_config=config,
+            active_result_queue=None,
+            runtime_action="RUN_PREVIEW",
+            runtime_recipe_path="recipes/preview.json",
+            resolved_local_ipv4="192.168.0.10",
+        )
+
+        self.assertIsNotNone(preview)
+        assert preview is not None
+        self.assertEqual(
+            preview["payload"]["expected"]["QUEUE_NAME"],
+            "task.result.client_192.168.0.10",
+        )
+        self.assertEqual(preview["connection"]["resolved_local_ipv4"], "192.168.0.10")
+        self.assertEqual(
+            preview["connection"]["resolved_result_queue"],
+            "task.result.client_192.168.0.10",
+        )
+
     def test_build_mq_preview_uses_active_result_queue_when_present(self) -> None:
         message = self.store.build_pending_messages("RUN", "result.q", "r.json")[0]
         config = AppConfig(
@@ -339,6 +372,11 @@ class TaskStoreTest(unittest.TestCase):
             runtime_recipe_path="recipes/preview.json",
         )
         self.assertIsNone(preview_after)
+
+    def test_get_known_request_ids_returns_all_tracked_tasks(self) -> None:
+        request_ids = self.store.get_known_request_ids()
+        self.assertEqual(len(request_ids), 3)
+        self.assertTrue(all(isinstance(request_id, str) for request_id in request_ids))
 
     def test_mark_inflight_running_promotes_sent_tasks(self) -> None:
         messages = self.store.build_pending_messages("RUN", "result.q", "r.json")

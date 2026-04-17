@@ -66,8 +66,9 @@ uv run python main.py config/app_config.yaml
   - custom exchange(`request_exchange != ""`) 사용 시 우선 routing key로 사용됩니다.
   - 비어 있으면 `request_queue`를 fallback routing key로 사용합니다.
 - `result_queue_base`
-  - 결과 수신에 사용하는 고정 queue 이름입니다.
-  - 실행 중에도 동일한 queue 이름(`result_queue_base`)으로 polling 합니다.
+  - 결과 수신 queue 이름의 접두어(prefix)입니다.
+  - 실제 결과 queue 이름은 실행 PC의 대표 IPv4를 붙인 `result_queue_base_ipv4` 형식으로 결정됩니다.
+  - 예: `IPDK_WORKER_INTERFACE_RESULT_192.168.0.10`
 - `result_queue_declare`
   - result queue 선언 시 사용할 `durable`, `exclusive`, `auto_delete`, `arguments` 설정입니다.
 
@@ -79,7 +80,7 @@ uv run python main.py config/app_config.yaml
 {
   "request_id": "3dc7831b-7c4b-45f1-b5cb-f00e6952f6d5",
   "action": "RUN_RECIPE",
-  "QUEUE_NAME": "task.result.client",
+  "QUEUE_NAME": "task.result.client_192.168.0.10",
   "RECIPE_PATH": "recipes/default_recipe.json",
   "IMG_LIST": ["D:/data/folder_a/img001.jpg"]
 }
@@ -89,6 +90,8 @@ uv run python main.py config/app_config.yaml
 - `message_id`, `correlation_id`, `reply_to`는 각각 `request_id`, `request_id`, `QUEUE_NAME`으로 설정됩니다.
 - `priority`는 JSON payload에 추가되지 않고, AMQP `BasicProperties.priority` 속성으로만 전송됩니다.
 - `sent_at`는 앱 내부 상태 추적용이며 네트워크 payload에는 포함하지 않습니다.
+- 결과 consumer는 `QUEUE_NAME`과 동일한 resolved queue를 consume 하고, `request_id`가 현재 세션에 등록된 요청과 매칭될 때만 ack 처리합니다.
+- 매칭되지 않는 결과 메시지는 `basic_nack(requeue=True)` 후 consumer를 잠시 중지하여 다른 클라이언트 메시지를 오소비하지 않도록 보호합니다.
 
 ## 테스트
 

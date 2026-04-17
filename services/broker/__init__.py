@@ -5,7 +5,11 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from config.models import AppConfig
-from services.broker.base import AbstractBrokerClient, BrokerResultEnvelope
+from services.broker.base import (
+    AbstractBrokerClient,
+    BrokerConsumeDecision,
+    BrokerResultEnvelope,
+)
 from services.broker.mock_broker import MockBrokerClient
 from services.broker.rabbitmq_client import RabbitMQClient
 
@@ -20,6 +24,7 @@ def build_broker_provider(config: AppConfig) -> Callable[[], AbstractBrokerClien
 
 __all__ = [
     "AbstractBrokerClient",
+    "BrokerConsumeDecision",
     "BrokerResultEnvelope",
     "MockBrokerClient",
     "RabbitMQClient",

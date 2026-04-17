@@ -619,11 +619,15 @@ class TaskControllerTest(unittest.TestCase):
             captured["polling_interval"] = polling_interval
 
         controller._start_polling_worker = _fake_start_polling_worker  # type: ignore[method-assign]
+        controller._ensure_resolved_result_queue = (  # type: ignore[method-assign]
+            lambda: "task.result.client_192.168.0.10"
+        )
+        controller._resolved_local_ipv4 = "192.168.0.10"
         controller.on_start_requested()
 
         self.assertTrue(controller._active)
         self.assertTrue(controller._publish_finished)
-        self.assertEqual(captured.get("queue_name"), config.rabbitmq.result_queue_base)
+        self.assertEqual(captured.get("queue_name"), "task.result.client_192.168.0.10")
         self.assertEqual(captured.get("polling_interval"), 1)
         self.assertTrue(any("결과 모니터링만 재개" in log for log in view.logs))
 

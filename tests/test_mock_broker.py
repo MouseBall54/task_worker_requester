@@ -6,6 +6,7 @@ import time
 import unittest
 
 from models.task_models import TaskMessage
+from services.broker.base import BrokerConsumeDecision
 from services.broker.mock_broker import MockBrokerClient, _MockBackend
 
 
@@ -81,6 +82,30 @@ class MockBrokerClientTest(unittest.TestCase):
         self.assertEqual(first_delivered, 1)
         self.assertEqual(second_delivered, 1)
         self.assertEqual([item.payload["request_id"] for item in received], ["req-3", "req-4"])
+
+    def test_requeue_and_pause_keeps_message_available(self) -> None:
+        broker = MockBrokerClient()
+        broker.connect()
+        broker.declare_result_queue("result.q")
+
+        decisions: list[str] = []
+
+        def _callback(envelope):  # noqa: ANN001
+            decisions.append(envelope.payload["request_id"])
+            return BrokerConsumeDecision.REQUEUE_AND_PAUSE
+
+        broker.start_result_consumer("result.q", _callback, prefetch_count=5)
+        broker.publish_task(self._make_message("req-pause"))
+        self._force_all_scheduled_due()
+
+        delivered = broker.pump_events(0.0)
+
+        self.assertEqual(delivered, 1)
+        self.assertEqual(decisions, ["req-pause"])
+        self.assertIsNone(broker._consumer_queue_name)
+        queued = _MockBackend.collect_results("result.q", max_messages=5)
+        self.assertEqual(len(queued), 1)
+        self.assertEqual(queued[0].payload["request_id"], "req-pause")
 
 
 if __name__ == "__main__":

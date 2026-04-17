@@ -5,6 +5,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any
 
 from models.task_models import TaskMessage
@@ -19,7 +20,15 @@ class BrokerResultEnvelope:
     correlation_id: str | None = None
 
 
-BrokerConsumeCallback = Callable[[BrokerResultEnvelope], None]
+class BrokerConsumeDecision(StrEnum):
+    """Ack/nack policy returned by result-consumer callbacks."""
+
+    ACK = "ACK"
+    REQUEUE = "REQUEUE"
+    REQUEUE_AND_PAUSE = "REQUEUE_AND_PAUSE"
+
+
+BrokerConsumeCallback = Callable[[BrokerResultEnvelope], BrokerConsumeDecision]
 
 
 class AbstractBrokerClient(ABC):

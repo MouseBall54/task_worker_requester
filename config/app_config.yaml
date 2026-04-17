@@ -11,7 +11,7 @@ rabbitmq:
   request_exchange: ""
   request_routing_key: "task.request"
   request_queue: "IPDK_WORKER_INTERFACE" #목표 큐 이름
-  result_queue_base: "IPDK_WORKER_INTERFACE_RESULT" #받아올 큐 이름, 요청 보낼때 보내면 해당 큐이름으로 받아옴 
+  result_queue_base: "IPDK_WORKER_INTERFACE_RESULT" #결과 큐 접두어. 실제 consume 큐는 {base}_{실행PC IPv4} 형식으로 결정됨
   request_queue_declare:
     durable: true
     exclusive: false

@@ -9,7 +9,12 @@ import threading
 import time
 
 from models.task_models import TaskMessage
-from services.broker.base import AbstractBrokerClient, BrokerConsumeCallback, BrokerResultEnvelope
+from services.broker.base import (
+    AbstractBrokerClient,
+    BrokerConsumeCallback,
+    BrokerConsumeDecision,
+    BrokerResultEnvelope,
+)
 
 
 @dataclass(slots=True)
@@ -81,6 +86,13 @@ class _MockBackend:
                 messages.append(queue.popleft())
         return messages
 
+    @classmethod
+    def requeue_front(cls, queue_name: str, envelope: BrokerResultEnvelope) -> None:
+        """Requeue one envelope to the front of the named mock queue."""
+
+        with cls._lock:
+            cls._result_queues[queue_name].appendleft(envelope)
+
 
 class MockBrokerClient(AbstractBrokerClient):
     """Mock broker implementing same behavior contract as RabbitMQ client."""
@@ -129,7 +141,18 @@ class MockBrokerClient(AbstractBrokerClient):
             max_messages=self._prefetch_count,
         )
         for envelope in envelopes:
-            self._consumer_callback(envelope)
+            try:
+                decision = self._consumer_callback(envelope)
+            except Exception:
+                decision = BrokerConsumeDecision.REQUEUE_AND_PAUSE
+            if not isinstance(decision, BrokerConsumeDecision):
+                decision = BrokerConsumeDecision.ACK
+            if decision == BrokerConsumeDecision.ACK:
+                continue
+            _MockBackend.requeue_front(self._consumer_queue_name, envelope)
+            if decision == BrokerConsumeDecision.REQUEUE_AND_PAUSE:
+                self.stop_result_consumer()
+                break
         return len(envelopes)
 
     def stop_result_consumer(self) -> None:

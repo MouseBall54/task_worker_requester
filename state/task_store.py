@@ -16,6 +16,7 @@ from models.task_models import (
     TaskResult,
     TaskStatus,
 )
+from services.broker.result_queue import resolve_result_queue_name
 from services.broker.routing import resolve_publish_route
 from utils.qt_compat import QObject, Signal
 
@@ -467,6 +468,7 @@ class TaskStore(QObject):
         runtime_action: str | None = None,
         runtime_recipe_path: str | None = None,
         runtime_priority: int | None = None,
+        resolved_local_ipv4: str | None = None,
     ) -> dict[str, Any] | None:
         """Build MQ preview payload for one request row."""
 
@@ -478,7 +480,13 @@ class TaskStore(QObject):
         publish_exchange, publish_routing_key = resolve_publish_route(rabbitmq)
 
         active_queue = (active_result_queue or "").strip()
-        predicted_queue = active_queue or rabbitmq.result_queue_base
+        preview_ipv4 = (resolved_local_ipv4 or "").strip()
+        if active_queue:
+            predicted_queue = active_queue
+        elif preview_ipv4:
+            predicted_queue = resolve_result_queue_name(rabbitmq.result_queue_base, preview_ipv4)
+        else:
+            predicted_queue = rabbitmq.result_queue_base
         resolved_action = (runtime_action or "").strip() or app_config.publish.default_action
         resolved_recipe_path = (runtime_recipe_path or "").strip() or app_config.recipe_config.default_path
         resolved_priority = self._normalize_priority(
@@ -520,6 +528,8 @@ class TaskStore(QObject):
                 "result_queue_base": rabbitmq.result_queue_base,
                 "request_queue_declare": asdict(rabbitmq.request_queue_declare),
                 "result_queue_declare": asdict(rabbitmq.result_queue_declare),
+                "resolved_local_ipv4": preview_ipv4,
+                "resolved_result_queue": predicted_queue,
                 "active_result_queue": active_queue,
                 "predicted_result_queue": predicted_queue,
             },
@@ -544,6 +554,11 @@ class TaskStore(QObject):
         """Return all tracked folder paths."""
 
         return list(self._folder_order)
+
+    def get_known_request_ids(self) -> set[str]:
+        """Return every request_id currently tracked in this runtime store."""
+
+        return set(self._tasks.keys())
 
     def has_pending_tasks(self) -> bool:
         """Return whether there are tasks not yet published."""
