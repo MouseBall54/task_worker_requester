@@ -90,8 +90,8 @@ uv run python main.py config/app_config.yaml
 - `message_id`, `correlation_id`, `reply_to`는 각각 `request_id`, `request_id`, `QUEUE_NAME`으로 설정됩니다.
 - `priority`는 JSON payload에 추가되지 않고, AMQP `BasicProperties.priority` 속성으로만 전송됩니다.
 - `sent_at`는 앱 내부 상태 추적용이며 네트워크 payload에는 포함하지 않습니다.
-- 결과 consumer는 `QUEUE_NAME`과 동일한 resolved queue를 consume 하고, `request_id`가 현재 세션에 등록된 요청과 매칭될 때만 ack 처리합니다.
-- 매칭되지 않는 결과 메시지는 `basic_nack(requeue=True)` 후 consumer를 잠시 중지하여 다른 클라이언트 메시지를 오소비하지 않도록 보호합니다.
+- 결과 consumer는 `QUEUE_NAME`과 동일한 resolved queue를 consume 하고, `request_id`가 현재 세션에 등록된 요청과 매칭될 때만 상태 반영을 수행합니다.
+- 매칭되지 않는 결과 메시지는 소비(ack)한 뒤 경고 로그만 남기고 무시합니다.
 
 ## 테스트
 

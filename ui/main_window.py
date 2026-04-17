@@ -96,6 +96,9 @@ class MQPreviewDialog(QDialog):
 class MainWindow(QMainWindow):
     """Main application window with modern, operator-friendly layout."""
 
+    STATUS_TAB_DETAIL = 0
+    STATUS_TAB_LOG = 1
+
     add_folder_requested = Signal(list)
     add_subfolders_requested = Signal(list)
     delete_folders_requested = Signal(list)
@@ -400,8 +403,8 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(8)
 
-        tabs = QTabWidget()
-        tabs.setObjectName("bottomTabs")
+        self.status_tabs = QTabWidget()
+        self.status_tabs.setObjectName("bottomTabs")
 
         self.image_table_model = ImageTableModel()
         self.image_table = QTableView()
@@ -444,9 +447,10 @@ class MainWindow(QMainWindow):
         log_layout.setContentsMargins(0, 0, 0, 0)
         log_layout.addWidget(self.log_text)
 
-        tabs.addTab(detail_tab, "상세 상태")
-        tabs.addTab(log_tab, "로그")
-        layout.addWidget(tabs)
+        self.status_tabs.addTab(detail_tab, "상세 상태")
+        self.status_tabs.addTab(log_tab, "로그")
+        self.status_tabs.setCurrentIndex(self.STATUS_TAB_LOG)
+        layout.addWidget(self.status_tabs)
         return panel
 
     def _apply_defaults(self) -> None:
@@ -714,6 +718,7 @@ class MainWindow(QMainWindow):
             self.btn_delete_active_folders.setEnabled(bool(selected_paths))
             if len(selected_paths) == 1:
                 self.folder_row_selected.emit(selected_paths[0])
+                self._show_detail_status_tab()
             elif len(selected_paths) > 1:
                 self.set_image_tasks([])
             else:
@@ -749,6 +754,12 @@ class MainWindow(QMainWindow):
             seen.add(folder_path)
             paths.append(folder_path)
         return paths
+
+    def _show_detail_status_tab(self) -> None:
+        """Switch the right sidebar to the detail tab when appropriate."""
+
+        if hasattr(self, "status_tabs") and self.status_tabs is not None:
+            self.status_tabs.setCurrentIndex(self.STATUS_TAB_DETAIL)
 
     def _populate_drive_combo(self) -> None:
         """Populate drive selector from OS drive list."""

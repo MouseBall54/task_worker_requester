@@ -122,7 +122,7 @@ class PollingWorkerTest(unittest.TestCase):
         self.assertTrue(any(count >= 1 for count in tick_counts))
         self.assertTrue(any("consumer active" in line for line in logs))
 
-    def test_worker_requeues_and_pauses_on_request_id_mismatch(self) -> None:
+    def test_worker_consumes_and_ignores_request_id_mismatch(self) -> None:
         broker = FakeConsumerBroker()
         broker.envelopes = [
             BrokerResultEnvelope(
@@ -153,8 +153,39 @@ class PollingWorkerTest(unittest.TestCase):
 
         self.assertEqual(received_payloads, [])
         self.assertTrue(broker.consumer_stopped)
-        self.assertEqual([item.payload["request_id"] for item in broker.requeued], ["foreign-1"])
-        self.assertTrue(any("consumer pause - request_id mismatch: foreign-1" in line for line in logs))
+        self.assertEqual(broker.requeued, [])
+        self.assertTrue(
+            any("request_id mismatch - consumed and ignored: foreign-1" in line for line in logs)
+        )
+
+    def test_worker_consumes_and_ignores_missing_request_id(self) -> None:
+        broker = FakeConsumerBroker()
+        broker.envelopes = [BrokerResultEnvelope(payload={"status": "DONE"})]
+        worker = PollingWorker(
+            broker_provider=lambda: broker,
+            queue_name="result.q",
+            polling_interval_seconds=1,
+            max_messages_per_poll=5,
+            tracked_request_ids={"req-1"},
+        )
+
+        received_payloads: list[dict] = []
+        logs: list[str] = []
+        worker.result_received.connect(lambda envelope: received_payloads.append(envelope.payload))
+        worker.log.connect(logs.append)
+
+        stopper = threading.Timer(0.4, worker.stop)
+        stopper.start()
+        try:
+            worker.run()
+        finally:
+            stopper.cancel()
+
+        self.assertEqual(received_payloads, [])
+        self.assertEqual(broker.requeued, [])
+        self.assertTrue(
+            any("request_id mismatch - consumed and ignored: <missing>" in line for line in logs)
+        )
 
 
 if __name__ == "__main__":

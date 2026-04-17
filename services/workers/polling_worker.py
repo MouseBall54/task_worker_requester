@@ -40,9 +40,6 @@ class PollingWorker(QObject):
         self._stop_requested = False
         self._tracked_request_ids = set(tracked_request_ids or set())
         self._tracked_ids_lock = threading.Lock()
-        self._consumer_paused = False
-        self._consumer_pause_reason = ""
-        self._consumer_resume_at = 0.0
 
     @Slot()
     def run(self) -> None:
@@ -65,50 +62,35 @@ class PollingWorker(QObject):
                     message_id=envelope.message_id,
                 )
                 if not matched_request_id:
-                    self._pause_consumer("request_id 누락")
-                    return BrokerConsumeDecision.REQUEUE_AND_PAUSE
+                    self.log.emit("request_id mismatch - consumed and ignored: <missing>")
+                    return BrokerConsumeDecision.ACK
 
                 with self._tracked_ids_lock:
                     is_tracked = matched_request_id in self._tracked_request_ids
 
                 if not is_tracked:
-                    self._pause_consumer(f"request_id mismatch: {matched_request_id}")
-                    return BrokerConsumeDecision.REQUEUE_AND_PAUSE
+                    self.log.emit(
+                        f"request_id mismatch - consumed and ignored: {matched_request_id}"
+                    )
+                    return BrokerConsumeDecision.ACK
 
                 received_since_tick += 1
                 self.result_received.emit(envelope)
                 return BrokerConsumeDecision.ACK
 
-            def _start_consumer() -> None:
-                broker.start_result_consumer(
-                    queue_name=self._queue_name,
-                    on_envelope=_on_envelope,
-                    prefetch_count=self._max_messages_per_poll,
-                )
-                self._consumer_paused = False
-                self._consumer_pause_reason = ""
-                self._consumer_resume_at = 0.0
-
-            _start_consumer()
+            broker.start_result_consumer(
+                queue_name=self._queue_name,
+                on_envelope=_on_envelope,
+                prefetch_count=self._max_messages_per_poll,
+            )
             self.log.emit(f"결과 consumer active: {self._queue_name}")
 
             next_tick_at = time.monotonic() + interval_seconds
             while not self._stop_requested:
-                if self._consumer_paused:
-                    if time.monotonic() >= self._consumer_resume_at:
-                        try:
-                            _start_consumer()
-                            self.log.emit(f"결과 consumer 재개: {self._queue_name}")
-                        except Exception as exc:  # pylint: disable=broad-except
-                            self._pause_consumer(f"재개 실패: {exc}")
-                            self.log.emit(f"결과 consumer 재개 실패: {exc}")
-                    else:
-                        time.sleep(0.05)
-                else:
-                    try:
-                        broker.pump_events(time_limit_seconds=0.2)
-                    except Exception as exc:  # pylint: disable=broad-except
-                        self.log.emit(f"consumer 이벤트 처리 중 오류: {exc}")
+                try:
+                    broker.pump_events(time_limit_seconds=0.2)
+                except Exception as exc:  # pylint: disable=broad-except
+                    self.log.emit(f"consumer 이벤트 처리 중 오류: {exc}")
 
                 now = time.monotonic()
                 if now < next_tick_at:
@@ -155,13 +137,3 @@ class PollingWorker(QObject):
                 if not normalized:
                     continue
                 self._tracked_request_ids.discard(normalized)
-
-    def _pause_consumer(self, reason: str) -> None:
-        """Pause consumer temporarily after requeueing an unsafe message."""
-
-        if self._consumer_paused and self._consumer_pause_reason == reason:
-            return
-        self._consumer_paused = True
-        self._consumer_pause_reason = reason
-        self._consumer_resume_at = time.monotonic() + max(0.5, float(self._polling_interval_seconds))
-        self.log.emit(f"consumer pause - {reason}")
