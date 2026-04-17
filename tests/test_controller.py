@@ -627,6 +627,129 @@ class TaskControllerTest(unittest.TestCase):
         self.assertEqual(captured.get("polling_interval"), 1)
         self.assertTrue(any("결과 모니터링만 재개" in log for log in view.logs))
 
+    def test_dispatch_force_open_when_active_zero_and_remaining_batches_exist(self) -> None:
+        config = AppConfig(
+            rabbitmq=RabbitMQConfig(host="127.0.0.1", port=5672, username="guest", password="guest"),
+            publish=PublishConfig(image_extensions=[".jpg"], initial_open_folders=2, max_active_open_folders=3),
+            ui=UiConfig(),
+            mock_mode=True,
+        )
+        view = DummyView()
+        store = TaskStore()
+        logger = logging.getLogger("controller_dispatch_force_open_test")
+        logger.handlers.clear()
+        logger.addHandler(logging.NullHandler())
+
+        store.register_folder_map(
+            {
+                "f1": ["f1/a.jpg"],
+                "f2": ["f2/a.jpg"],
+                "f3": ["f3/a.jpg"],
+                "f4": ["f4/a.jpg"],
+            }
+        )
+
+        controller = TaskController(
+            config=config,
+            view=view,  # type: ignore[arg-type]
+            store=store,
+            broker_provider=build_broker_provider(config),
+            logger=logger,
+        )
+
+        controller._reset_publish_schedule_state()
+        controller._folder_message_batches = store.build_pending_messages_by_folder("RUN", "result.q", "recipe.json")
+        controller._publish_exchange = ""
+        controller._publish_routing_key = "task.request"
+        controller._next_folder_batch_index = 2
+
+        for task in store.get_image_tasks("f1"):
+            task.status = TaskStatus.SUCCESS
+        for task in store.get_image_tasks("f2"):
+            task.status = TaskStatus.FAIL
+
+        dispatched: list = []
+
+        def _fake_start_publish_worker(messages, publish_exchange, publish_routing_key):  # noqa: ANN001
+            _ = publish_exchange
+            _ = publish_routing_key
+            dispatched.extend(messages)
+
+        controller._start_publish_worker = _fake_start_publish_worker  # type: ignore[method-assign]
+        controller._maybe_dispatch_next_folder_batch()
+
+        self.assertEqual(len(dispatched), 2)
+        self.assertEqual(controller._next_folder_batch_index, 4)
+        self.assertTrue(any("force-open (anti-stall)" in log for log in view.logs))
+
+    def test_synchronize_dispatch_state_recovers_running_folder_from_store(self) -> None:
+        config = AppConfig(
+            rabbitmq=RabbitMQConfig(host="127.0.0.1", port=5672, username="guest", password="guest"),
+            publish=PublishConfig(image_extensions=[".jpg"]),
+            ui=UiConfig(),
+            mock_mode=True,
+        )
+        view = DummyView()
+        store = TaskStore()
+        logger = logging.getLogger("controller_sync_state_test")
+        logger.handlers.clear()
+        logger.addHandler(logging.NullHandler())
+
+        store.register_folder_map({"f1": ["f1/a.jpg"], "f2": ["f2/a.jpg"]})
+        grouped = store.build_pending_messages_by_folder("RUN", "result.q", "recipe.json")
+
+        controller = TaskController(
+            config=config,
+            view=view,  # type: ignore[arg-type]
+            store=store,
+            broker_provider=build_broker_provider(config),
+            logger=logger,
+        )
+
+        controller._reset_publish_schedule_state()
+        controller._folder_message_batches = grouped
+        controller._next_folder_batch_index = 0
+        controller._opened_folder_paths.clear()
+        controller._active_folder_paths.clear()
+        running_task = store.get_image_tasks("f1")[0]
+        running_task.status = TaskStatus.RUNNING
+
+        remaining = controller._synchronize_dispatch_state()
+        self.assertEqual(remaining, 2)
+        self.assertIn("f1", controller._opened_folder_paths)
+        self.assertIn("f1", controller._active_folder_paths)
+
+    def test_is_publish_worker_running_clears_stale_runtime_error_reference(self) -> None:
+        class _BrokenThread:
+            def isRunning(self) -> bool:  # noqa: N802
+                raise RuntimeError("deleted")
+
+        config = AppConfig(
+            rabbitmq=RabbitMQConfig(host="127.0.0.1", port=5672, username="guest", password="guest"),
+            publish=PublishConfig(image_extensions=[".jpg"]),
+            ui=UiConfig(),
+            mock_mode=True,
+        )
+        view = DummyView()
+        store = TaskStore()
+        logger = logging.getLogger("controller_stale_publish_ref_test")
+        logger.handlers.clear()
+        logger.addHandler(logging.NullHandler())
+
+        controller = TaskController(
+            config=config,
+            view=view,  # type: ignore[arg-type]
+            store=store,
+            broker_provider=build_broker_provider(config),
+            logger=logger,
+        )
+        controller._publish_thread = _BrokenThread()  # type: ignore[assignment]
+        controller._publish_worker = object()  # type: ignore[assignment]
+
+        self.assertFalse(controller._is_publish_worker_running())
+        self.assertIsNone(controller._publish_thread)
+        self.assertIsNone(controller._publish_worker)
+
 
 if __name__ == "__main__":
     unittest.main()

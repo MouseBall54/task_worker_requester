@@ -9,7 +9,7 @@ import logging
 from PySide6.QtCore import QObject, QThread, Slot
 
 from config.models import AppConfig
-from models.task_models import TaskMessage
+from models.task_models import TaskMessage, TaskStatus
 from services.broker import AbstractBrokerClient, BrokerResultEnvelope
 from services.broker.routing import resolve_publish_route
 from services.folder_scanner import FolderScanner
@@ -456,6 +456,11 @@ class TaskController(QObject):
 
     @Slot()
     def _on_publish_finished(self) -> None:
+        sender_worker = self.sender()
+        if sender_worker is not None and sender_worker is not self._publish_worker:
+            # Ignore stale finish signals from previously replaced workers.
+            return
+
         self._publish_finished = True
         self._log("전송 워커 종료")
 
@@ -794,18 +799,19 @@ class TaskController(QObject):
         return selected_messages, opened_folders
 
     def _maybe_dispatch_next_folder_batch(self) -> None:
-        """Dispatch next folder batches using refill-first, threshold-second policy."""
+        """Dispatch next folder batches with anti-stall force-open and ramp-up policies."""
 
-        self._refresh_active_folder_paths()
-        remaining_batches = len(self._folder_message_batches) - self._next_folder_batch_index
-        if self._next_folder_batch_index >= len(self._folder_message_batches):
+        remaining_batches = self._synchronize_dispatch_state()
+        publish_running = self._is_publish_worker_running()
+        if remaining_batches <= 0:
             self._last_dispatch_skip_reason = None
             return
-        if self._is_publish_worker_running():
+        if publish_running:
             self._log_dispatch_skip(
                 reason="publish worker running",
                 remaining_batches=remaining_batches,
                 available_slots=self._available_open_slots(),
+                publish_running=publish_running,
             )
             return
 
@@ -815,6 +821,15 @@ class TaskController(QObject):
                 reason=f"active cap reached({self._max_active_open_folders})",
                 remaining_batches=remaining_batches,
                 available_slots=available_slots,
+                publish_running=publish_running,
+            )
+            return
+
+        if len(self._active_folder_paths) == 0:
+            self._dispatch_folder_batches(
+                folder_count=min(available_slots, remaining_batches),
+                trigger="force-open (anti-stall)",
+                publish_running=publish_running,
             )
             return
 
@@ -822,6 +837,7 @@ class TaskController(QObject):
             self._dispatch_folder_batches(
                 folder_count=available_slots,
                 trigger="slot refill",
+                publish_running=publish_running,
             )
             return
 
@@ -830,28 +846,56 @@ class TaskController(QObject):
                 reason="threshold unmet",
                 remaining_batches=remaining_batches,
                 available_slots=available_slots,
+                publish_running=publish_running,
             )
             return
 
         self._dispatch_folder_batches(
             folder_count=1,
             trigger=f"threshold met({self._next_open_threshold:.0f}%)",
+            publish_running=publish_running,
         )
 
-    def _refresh_active_folder_paths(self) -> None:
-        """Keep only non-terminal folders in active tracking set."""
+    def _synchronize_dispatch_state(self) -> int:
+        """Rebuild open/active tracking sets from scheduler index and store summaries."""
 
-        stale_paths: list[str] = []
-        for folder_path in self._active_folder_paths:
+        total_batches = len(self._folder_message_batches)
+        if total_batches == 0:
+            self._next_folder_batch_index = 0
+            self._opened_folder_paths.clear()
+            self._active_folder_paths.clear()
+            return 0
+
+        self._next_folder_batch_index = min(max(self._next_folder_batch_index, 0), total_batches)
+        batch_folder_paths = [folder_path for folder_path, _ in self._folder_message_batches]
+        batch_folder_set = set(batch_folder_paths)
+
+        opened_candidates = set(batch_folder_paths[: self._next_folder_batch_index])
+        opened_candidates.update(path for path in self._opened_folder_paths if path in batch_folder_set)
+
+        refreshed_opened: set[str] = set()
+        refreshed_active: set[str] = set()
+        for folder_path in opened_candidates:
             summary = self._store.get_folder_summary(folder_path)
-            if summary is None or summary.status.is_done:
-                stale_paths.append(folder_path)
+            if summary is None:
+                continue
+            refreshed_opened.add(folder_path)
+            if not summary.status.is_done:
+                refreshed_active.add(folder_path)
 
-        if not stale_paths:
-            return
+        # Recover from transient set loss by treating currently-running folders as opened+active.
+        for folder_path in batch_folder_set:
+            if folder_path in refreshed_active:
+                continue
+            summary = self._store.get_folder_summary(folder_path)
+            if summary is None or summary.status != TaskStatus.RUNNING:
+                continue
+            refreshed_opened.add(folder_path)
+            refreshed_active.add(folder_path)
 
-        for folder_path in stale_paths:
-            self._active_folder_paths.discard(folder_path)
+        self._opened_folder_paths = refreshed_opened
+        self._active_folder_paths = refreshed_active
+        return max(0, total_batches - self._next_folder_batch_index)
 
     def _is_publish_worker_running(self) -> bool:
         """Return whether one publish worker thread is still active."""
@@ -859,9 +903,15 @@ class TaskController(QObject):
         if self._publish_thread is None:
             return False
         try:
-            return self._publish_thread.isRunning()
+            running = self._publish_thread.isRunning()
         except RuntimeError:
+            self._publish_thread = None
+            self._publish_worker = None
             return False
+        if not running and self._publish_finished:
+            self._publish_thread = None
+            self._publish_worker = None
+        return running
 
     def _available_open_slots(self) -> int:
         """Return how many additional active folders can be opened right now."""
@@ -889,7 +939,7 @@ class TaskController(QObject):
                 return True
         return False
 
-    def _dispatch_folder_batches(self, folder_count: int, trigger: str) -> None:
+    def _dispatch_folder_batches(self, folder_count: int, trigger: str, publish_running: bool) -> None:
         """Open the next N folder batches and start one publish worker for them."""
 
         next_messages, opened_folders = self._take_next_folder_batches(folder_count)
@@ -910,15 +960,24 @@ class TaskController(QObject):
             f"active_count={len(self._active_folder_paths)}, "
             f"opened_count={len(self._opened_folder_paths)}, "
             f"remaining_batches={len(self._folder_message_batches) - self._next_folder_batch_index}, "
-            f"available_slots={self._available_open_slots()})"
+            f"available_slots={self._available_open_slots()}, "
+            f"next_index={self._next_folder_batch_index}, "
+            f"publish_running={publish_running})"
         )
 
-    def _log_dispatch_skip(self, reason: str, remaining_batches: int, available_slots: int) -> None:
+    def _log_dispatch_skip(
+        self,
+        reason: str,
+        remaining_batches: int,
+        available_slots: int,
+        publish_running: bool,
+    ) -> None:
         """Log dispatch skip reason with deduplication to avoid noisy logs."""
 
         dedupe_key = (
             f"{reason}|active={len(self._active_folder_paths)}|opened={len(self._opened_folder_paths)}"
-            f"|remaining={remaining_batches}|slots={available_slots}"
+            f"|remaining={remaining_batches}|slots={available_slots}|idx={self._next_folder_batch_index}"
+            f"|running={publish_running}"
         )
         if dedupe_key == self._last_dispatch_skip_reason:
             return
@@ -928,5 +987,7 @@ class TaskController(QObject):
             f"{reason} (active_count={len(self._active_folder_paths)}, "
             f"opened_count={len(self._opened_folder_paths)}, "
             f"remaining_batches={remaining_batches}, "
-            f"available_slots={available_slots})"
+            f"available_slots={available_slots}, "
+            f"next_index={self._next_folder_batch_index}, "
+            f"publish_running={publish_running})"
         )
