@@ -25,6 +25,7 @@ class TaskStore(QObject):
 
     folder_group_added = Signal(str)
     folder_group_updated = Signal(str)
+    folder_group_removed = Signal(str)
     task_updated = Signal(str)
     store_reset = Signal()
     overall_updated = Signal(dict)
@@ -157,6 +158,108 @@ class TaskStore(QObject):
                 grouped.append((folder_path, messages))
 
         return grouped
+
+    def build_pending_messages_for_folders(
+        self,
+        action: str,
+        result_queue_name: str,
+        recipe_path: str,
+        folder_paths: list[str],
+        priority: int = 0,
+        exclude_request_ids: set[str] | None = None,
+    ) -> list[tuple[str, list[TaskMessage]]]:
+        """Create pending outbound messages only for selected folders."""
+
+        target_folders = {path for path in folder_paths}
+        excluded = exclude_request_ids or set()
+        grouped: list[tuple[str, list[TaskMessage]]] = []
+
+        for folder_path in self._folder_order:
+            if folder_path not in target_folders:
+                continue
+            group = self._groups.get(folder_path)
+            if group is None:
+                continue
+
+            messages: list[TaskMessage] = []
+            for task_id in group.task_ids:
+                task = self._tasks.get(task_id)
+                if task is None or task.status != TaskStatus.PENDING:
+                    continue
+                if task.request_id in excluded:
+                    continue
+                messages.append(
+                    TaskMessage(
+                        request_id=task.request_id,
+                        action=action,
+                        QUEUE_NAME=result_queue_name,
+                        RECIPE_PATH=recipe_path,
+                        IMG_LIST=[task.image_path],
+                        priority=priority,
+                    )
+                )
+
+            if messages:
+                grouped.append((folder_path, messages))
+
+        return grouped
+
+    def remove_pending_only_folders(
+        self,
+        folder_paths: list[str],
+    ) -> tuple[list[str], list[str], list[str], int]:
+        """Remove folders only when all tasks are still PENDING.
+
+        Returns
+        -------
+        tuple[list[str], list[str], list[str], int]
+            Removed folder paths, blocked folder paths, removed request ids, removed task count.
+        """
+
+        removed_folders: list[str] = []
+        blocked_folders: list[str] = []
+        removed_request_ids: list[str] = []
+        removed_task_count = 0
+
+        requested_order: list[str] = []
+        seen: set[str] = set()
+        for folder_path in folder_paths:
+            if folder_path in seen:
+                continue
+            seen.add(folder_path)
+            requested_order.append(folder_path)
+
+        for folder_path in requested_order:
+            group = self._groups.get(folder_path)
+            if group is None:
+                continue
+
+            tasks = [self._tasks[task_id] for task_id in group.task_ids if task_id in self._tasks]
+            if not tasks:
+                blocked_folders.append(folder_path)
+                continue
+            if any(task.status != TaskStatus.PENDING for task in tasks):
+                blocked_folders.append(folder_path)
+                continue
+
+            for task in tasks:
+                self._tasks.pop(task.request_id, None)
+                self._processed_request_ids.discard(task.request_id)
+                removed_request_ids.append(task.request_id)
+                removed_task_count += 1
+
+            self._groups.pop(folder_path, None)
+            self._folder_image_index.pop(folder_path, None)
+            if folder_path in self._folder_order:
+                self._folder_order.remove(folder_path)
+
+            removed_folders.append(folder_path)
+            self.folder_group_removed.emit(folder_path)
+
+        if removed_folders:
+            self._emit_overall()
+
+        return removed_folders, blocked_folders, removed_request_ids, removed_task_count
 
     def mark_task_sent(self, request_id: str) -> None:
         """Update state when one request publish succeeds."""
@@ -446,6 +549,11 @@ class TaskStore(QObject):
         """Return whether there are tasks not yet published."""
 
         return any(task.status == TaskStatus.PENDING for task in self._tasks.values())
+
+    def has_inflight_tasks(self) -> bool:
+        """Return whether there are tasks already sent and waiting for completion."""
+
+        return any(task.status in {TaskStatus.SENT, TaskStatus.RUNNING} for task in self._tasks.values())
 
     def all_tasks_terminal(self) -> bool:
         """Return True when every tracked task is in terminal state."""

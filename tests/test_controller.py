@@ -28,8 +28,9 @@ class DummyView(QObject if PYSIDE_AVAILABLE else object):
     """Headless test double for MainWindow contract."""
 
     if PYSIDE_AVAILABLE:
-        add_folder_requested = Signal(str)
-        add_subfolders_requested = Signal(str)
+        add_folder_requested = Signal(list)
+        add_subfolders_requested = Signal(list)
+        delete_folders_requested = Signal(list)
         clear_requested = Signal()
         start_requested = Signal()
         stop_requested = Signal()
@@ -118,7 +119,7 @@ class TaskControllerTest(unittest.TestCase):
         with TemporaryDirectory() as temp_dir:
             folder = Path(temp_dir)
             (folder / "img.jpg").write_text("x", encoding="utf-8")
-            controller.on_add_folder_requested(str(folder))
+            controller.on_add_folder_requested([str(folder)])
 
         self.assertEqual(store.overall_stats()["total"], 1)
         self.assertTrue(len(view.logs) >= 1)
@@ -493,6 +494,138 @@ class TaskControllerTest(unittest.TestCase):
         controller._maybe_dispatch_next_folder_batch()
         self.assertEqual(len(dispatched), 1)
         self.assertEqual(controller._next_folder_batch_index, 4)
+
+    def test_running_addition_is_appended_to_current_session_schedule(self) -> None:
+        config = AppConfig(
+            rabbitmq=RabbitMQConfig(host="127.0.0.1", port=5672, username="guest", password="guest"),
+            publish=PublishConfig(image_extensions=[".jpg"]),
+            ui=UiConfig(),
+            mock_mode=True,
+        )
+        view = DummyView()
+        store = TaskStore()
+        logger = logging.getLogger("controller_running_add_test")
+        logger.handlers.clear()
+        logger.addHandler(logging.NullHandler())
+
+        controller = TaskController(
+            config=config,
+            view=view,  # type: ignore[arg-type]
+            store=store,
+            broker_provider=build_broker_provider(config),
+            logger=logger,
+        )
+
+        controller._active = True
+        controller._active_result_queue = config.rabbitmq.result_queue_base
+        controller._publish_exchange = ""
+        controller._publish_routing_key = config.rabbitmq.request_queue
+        controller._maybe_dispatch_next_folder_batch = lambda: None  # type: ignore[method-assign]
+
+        with TemporaryDirectory() as temp_dir:
+            folder = Path(temp_dir) / "folder_new"
+            folder.mkdir(parents=True, exist_ok=True)
+            (folder / "a.jpg").write_text("x", encoding="utf-8")
+            (folder / "b.jpg").write_text("x", encoding="utf-8")
+
+            controller.on_add_folder_requested([str(folder)])
+
+        self.assertEqual(len(controller._folder_message_batches), 1)
+        _, messages = controller._folder_message_batches[0]
+        self.assertEqual(len(messages), 2)
+        self.assertEqual(len(controller._scheduled_request_ids), 2)
+        for message in messages:
+            task = store.get_task(message.request_id)
+            self.assertIsNotNone(task)
+            assert task is not None
+            self.assertIsNotNone(task.expected_message)
+
+    def test_delete_folders_requested_removes_pending_only(self) -> None:
+        config = AppConfig(
+            rabbitmq=RabbitMQConfig(host="127.0.0.1", port=5672, username="guest", password="guest"),
+            publish=PublishConfig(image_extensions=[".jpg"]),
+            ui=UiConfig(),
+            mock_mode=True,
+        )
+        view = DummyView()
+        store = TaskStore()
+        logger = logging.getLogger("controller_delete_pending_test")
+        logger.handlers.clear()
+        logger.addHandler(logging.NullHandler())
+
+        store.register_folder_map(
+            {
+                "f_pending": ["f_pending/a.jpg", "f_pending/b.jpg"],
+                "f_running": ["f_running/a.jpg", "f_running/b.jpg"],
+            }
+        )
+        sent_request_id = store.get_image_tasks("f_running")[0].request_id
+        store.mark_task_sent(sent_request_id)
+
+        controller = TaskController(
+            config=config,
+            view=view,  # type: ignore[arg-type]
+            store=store,
+            broker_provider=build_broker_provider(config),
+            logger=logger,
+        )
+
+        controller._folder_message_batches = store.build_pending_messages_by_folder("RUN", "result.q", "recipe.json")
+        controller._next_folder_batch_index = 0
+        controller._scheduled_request_ids = {
+            message.request_id
+            for _, messages in controller._folder_message_batches
+            for message in messages
+        }
+
+        controller.on_delete_folders_requested(["f_pending", "f_running"])
+
+        self.assertIsNone(store.get_folder_summary("f_pending"))
+        self.assertIsNotNone(store.get_folder_summary("f_running"))
+        remaining_batch_paths = [folder_path for folder_path, _ in controller._folder_message_batches]
+        self.assertNotIn("f_pending", remaining_batch_paths)
+        self.assertIn("f_running", remaining_batch_paths)
+        self.assertTrue(any("삭제 차단" in log for log in view.logs))
+
+    def test_start_without_pending_but_with_inflight_resumes_polling_only(self) -> None:
+        config = AppConfig(
+            rabbitmq=RabbitMQConfig(host="127.0.0.1", port=5672, username="guest", password="guest"),
+            publish=PublishConfig(image_extensions=[".jpg"], polling_interval_seconds=5),
+            ui=UiConfig(),
+            mock_mode=True,
+        )
+        view = DummyView()
+        store = TaskStore()
+        logger = logging.getLogger("controller_polling_resume_test")
+        logger.handlers.clear()
+        logger.addHandler(logging.NullHandler())
+
+        store.register_folder_map({"f1": ["f1/a.jpg"]})
+        task = store.get_image_tasks("f1")[0]
+        store.mark_task_sent(task.request_id)
+
+        controller = TaskController(
+            config=config,
+            view=view,  # type: ignore[arg-type]
+            store=store,
+            broker_provider=build_broker_provider(config),
+            logger=logger,
+        )
+
+        captured: dict[str, object] = {}
+
+        def _fake_start_polling_worker(queue_name: str, polling_interval: int) -> None:
+            captured["queue_name"] = queue_name
+            captured["polling_interval"] = polling_interval
+
+        controller._start_polling_worker = _fake_start_polling_worker  # type: ignore[method-assign]
+        controller.on_start_requested()
+
+        self.assertTrue(controller._active)
+        self.assertTrue(controller._publish_finished)
+        self.assertEqual(captured.get("queue_name"), config.rabbitmq.result_queue_base)
+        self.assertEqual(captured.get("polling_interval"), 1)
+        self.assertTrue(any("결과 모니터링만 재개" in log for log in view.logs))
 
 
 if __name__ == "__main__":

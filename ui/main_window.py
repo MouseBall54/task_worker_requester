@@ -96,8 +96,9 @@ class MQPreviewDialog(QDialog):
 class MainWindow(QMainWindow):
     """Main application window with modern, operator-friendly layout."""
 
-    add_folder_requested = Signal(str)
-    add_subfolders_requested = Signal(str)
+    add_folder_requested = Signal(list)
+    add_subfolders_requested = Signal(list)
+    delete_folders_requested = Signal(list)
     clear_requested = Signal()
     start_requested = Signal()
     stop_requested = Signal()
@@ -171,6 +172,9 @@ class MainWindow(QMainWindow):
         self.folder_tree.setHeaderHidden(True)
         self.folder_tree.setAnimated(True)
         self.folder_tree.setIndentation(18)
+        self.folder_tree.setSelectionBehavior(QTreeView.SelectRows)
+        self.folder_tree.setSelectionMode(QTreeView.ExtendedSelection)
+        self.folder_tree.setDragDropMode(QTreeView.NoDragDrop)
 
         self.file_system_model = QFileSystemModel(self.folder_tree)
         self.file_system_model.setRootPath("")
@@ -324,13 +328,24 @@ class MainWindow(QMainWindow):
         active_label.setObjectName("subPanelTitle")
         layout.addWidget(active_label)
 
-        self.active_folder_table = self._create_folder_table(self.active_folder_table_model)
+        self.active_folder_table = self._create_folder_table(
+            self.active_folder_table_model,
+            selection_mode=QTableView.ExtendedSelection,
+        )
         # Keep active list visibly larger from first render as requested.
         self.active_folder_table.setMinimumHeight(190)
         self.active_folder_table.selectionModel().selectionChanged.connect(self._on_active_folder_selection_changed)
         # Keep backward-compatible attribute name.
         self.folder_table = self.active_folder_table
         layout.addWidget(self.active_folder_table, stretch=11)
+
+        action_row = QHBoxLayout()
+        action_row.addStretch(1)
+        self.btn_delete_active_folders = QPushButton("선택 삭제")
+        self.btn_delete_active_folders.setEnabled(False)
+        self.btn_delete_active_folders.clicked.connect(self._on_delete_active_folders_clicked)
+        action_row.addWidget(self.btn_delete_active_folders)
+        layout.addLayout(action_row)
 
         completed_label = QLabel("완료된 폴더")
         completed_label.setObjectName("subPanelTitle")
@@ -345,13 +360,17 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.completed_folder_table, stretch=9)
         return panel
 
-    def _create_folder_table(self, model: FolderTableModel) -> QTableView:
+    def _create_folder_table(
+        self,
+        model: FolderTableModel,
+        selection_mode: QAbstractItemView.SelectionMode = QTableView.SingleSelection,
+    ) -> QTableView:
         """Create one folder table with shared visual/column policy."""
 
         table = QTableView()
         table.setModel(model)
         table.setSelectionBehavior(QTableView.SelectRows)
-        table.setSelectionMode(QTableView.SingleSelection)
+        table.setSelectionMode(selection_mode)
         table.setAlternatingRowColors(True)
         table.verticalHeader().setVisible(False)
         table.verticalHeader().setDefaultSectionSize(34)
@@ -502,7 +521,7 @@ class MainWindow(QMainWindow):
         return action, recipe_path, polling_interval, priority
 
     def selected_tree_folder(self) -> str | None:
-        """Return currently selected folder path from left tree."""
+        """Return currently focused folder path from left tree."""
 
         index = self.folder_tree.currentIndex()
         if not index.isValid():
@@ -511,6 +530,27 @@ class MainWindow(QMainWindow):
         if not path:
             return None
         return path
+
+    def selected_tree_folders(self) -> list[str]:
+        """Return unique selected folder paths from left tree."""
+
+        selection_model = self.folder_tree.selectionModel()
+        if selection_model is None:
+            return []
+        indexes = selection_model.selectedRows(0)
+        if not indexes:
+            focused = self.selected_tree_folder()
+            return [focused] if focused else []
+
+        unique_paths: list[str] = []
+        seen: set[str] = set()
+        for index in indexes:
+            path = self.file_system_model.filePath(index)
+            if not path or path in seen:
+                continue
+            seen.add(path)
+            unique_paths.append(path)
+        return unique_paths
 
     def append_log(self, message: str) -> None:
         """Append one line to the log panel."""
@@ -557,8 +597,8 @@ class MainWindow(QMainWindow):
 
         self.btn_start.setEnabled(not running)
         self.btn_stop.setEnabled(running)
-        self.btn_add_folder.setEnabled(not running)
-        self.btn_add_subfolders.setEnabled(not running)
+        self.btn_add_folder.setEnabled(True)
+        self.btn_add_subfolders.setEnabled(True)
 
     def set_folder_rows(self, rows: list[FolderSummary]) -> None:
         """Replace folder table rows."""
@@ -602,6 +642,7 @@ class MainWindow(QMainWindow):
         self.active_folder_table.clearSelection()
         self.completed_folder_table.clearSelection()
         self.image_table.clearSelection()
+        self.btn_delete_active_folders.setEnabled(False)
 
     def set_active_result_queue(self, queue_name: str | None) -> None:
         """Track currently active result queue for MQ preview dialog."""
@@ -627,14 +668,14 @@ class MainWindow(QMainWindow):
         return result == QMessageBox.Yes
 
     def _on_add_folder_clicked(self) -> None:
-        folder = self.selected_tree_folder()
-        if folder:
-            self.add_folder_requested.emit(folder)
+        folders = self.selected_tree_folders()
+        if folders:
+            self.add_folder_requested.emit(folders)
 
     def _on_add_subfolders_clicked(self) -> None:
-        folder = self.selected_tree_folder()
-        if folder:
-            self.add_subfolders_requested.emit(folder)
+        folders = self.selected_tree_folders()
+        if folders:
+            self.add_subfolders_requested.emit(folders)
 
     def _on_clear_clicked(self) -> None:
         self.folder_tree.clearSelection()
@@ -644,6 +685,14 @@ class MainWindow(QMainWindow):
         """Forward selected request id to controller for preview generation."""
 
         self.mq_preview_requested.emit(request_id)
+
+    def _on_delete_active_folders_clicked(self) -> None:
+        """Emit selected active folder paths to delete from queue."""
+
+        folder_paths = self._selected_folder_paths_from_table(self.active_folder_table, self.active_folder_table_model)
+        if not folder_paths:
+            return
+        self.delete_folders_requested.emit(folder_paths)
 
     def _emit_folder_selection(self, table: QTableView, model: FolderTableModel) -> None:
         """Emit folder selection from one table and clear opposite table selection."""
@@ -661,7 +710,14 @@ class MainWindow(QMainWindow):
         self._is_syncing_folder_selection = True
         try:
             self.completed_folder_table.clearSelection()
-            self._emit_folder_selection(self.active_folder_table, self.active_folder_table_model)
+            selected_paths = self._selected_folder_paths_from_table(self.active_folder_table, self.active_folder_table_model)
+            self.btn_delete_active_folders.setEnabled(bool(selected_paths))
+            if len(selected_paths) == 1:
+                self.folder_row_selected.emit(selected_paths[0])
+            elif len(selected_paths) > 1:
+                self.set_image_tasks([])
+            else:
+                self.set_image_tasks([])
         finally:
             self._is_syncing_folder_selection = False
 
@@ -671,9 +727,28 @@ class MainWindow(QMainWindow):
         self._is_syncing_folder_selection = True
         try:
             self.active_folder_table.clearSelection()
+            self.btn_delete_active_folders.setEnabled(False)
             self._emit_folder_selection(self.completed_folder_table, self.completed_folder_table_model)
         finally:
             self._is_syncing_folder_selection = False
+
+    @staticmethod
+    def _selected_folder_paths_from_table(table: QTableView, model: FolderTableModel) -> list[str]:
+        """Collect selected folder paths from a folder table."""
+
+        selection_model = table.selectionModel()
+        if selection_model is None:
+            return []
+        selected_rows = selection_model.selectedRows()
+        paths: list[str] = []
+        seen: set[str] = set()
+        for index in selected_rows:
+            folder_path = model.folder_at(index.row())
+            if not folder_path or folder_path in seen:
+                continue
+            seen.add(folder_path)
+            paths.append(folder_path)
+        return paths
 
     def _populate_drive_combo(self) -> None:
         """Populate drive selector from OS drive list."""

@@ -52,6 +52,51 @@ class TaskStoreTest(unittest.TestCase):
         self.assertEqual(len(grouped[1][1]), 1)
         self.assertTrue(all(len(message.IMG_LIST) == 1 for _, messages in grouped for message in messages))
 
+    def test_build_pending_messages_for_folders_filters_targets_and_exclusions(self) -> None:
+        all_grouped = self.store.build_pending_messages_by_folder(
+            action="RUN_RECIPE",
+            result_queue_name="result.client.1",
+            recipe_path="recipe.json",
+        )
+        excluded_request_id = all_grouped[0][1][0].request_id
+        grouped = self.store.build_pending_messages_for_folders(
+            action="RUN_RECIPE",
+            result_queue_name="result.client.1",
+            recipe_path="recipe.json",
+            folder_paths=["folder_a"],
+            exclude_request_ids={excluded_request_id},
+        )
+
+        self.assertEqual(len(grouped), 1)
+        self.assertEqual(grouped[0][0], "folder_a")
+        self.assertEqual(len(grouped[0][1]), 1)
+        self.assertNotEqual(grouped[0][1][0].request_id, excluded_request_id)
+
+    def test_remove_pending_only_folders_blocks_non_pending_folders(self) -> None:
+        running_task = self.store.get_image_tasks("folder_b")[0]
+        self.store.mark_task_sent(running_task.request_id)
+
+        removed_folders, blocked_folders, removed_request_ids, removed_task_count = (
+            self.store.remove_pending_only_folders(["folder_a", "folder_b"])
+        )
+
+        self.assertEqual(removed_folders, ["folder_a"])
+        self.assertEqual(blocked_folders, ["folder_b"])
+        self.assertEqual(removed_task_count, 2)
+        self.assertEqual(len(removed_request_ids), 2)
+        self.assertIsNone(self.store.get_folder_summary("folder_a"))
+        self.assertIsNotNone(self.store.get_folder_summary("folder_b"))
+
+    def test_has_inflight_tasks_only_for_sent_or_running(self) -> None:
+        first_task = self.store.get_image_tasks("folder_a")[0]
+        self.assertFalse(self.store.has_inflight_tasks())
+
+        self.store.mark_task_sent(first_task.request_id)
+        self.assertTrue(self.store.has_inflight_tasks())
+
+        first_task.status = TaskStatus.SUCCESS
+        self.assertFalse(self.store.has_inflight_tasks())
+
     def test_apply_result_updates_summary(self) -> None:
         messages = self.store.build_pending_messages("RUN", "result.q", "r.json")
         target = messages[0]

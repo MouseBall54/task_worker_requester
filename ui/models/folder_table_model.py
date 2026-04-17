@@ -144,9 +144,9 @@ class ProgressBarDelegate(QStyledItemDelegate):
     def paint(self, painter: QPainter, option, index: QModelIndex) -> None:  # type: ignore[override]
         value = index.data(Qt.DisplayRole)
         try:
-            progress = max(0, min(100, int(float(value))))
+            progress = max(0.0, min(100.0, float(value)))
         except (TypeError, ValueError):
-            progress = 0
+            progress = 0.0
 
         painter.save()
         painter.setRenderHint(QPainter.Antialiasing)
@@ -162,22 +162,22 @@ class ProgressBarDelegate(QStyledItemDelegate):
 
         track_color = QColor("#1E293B")
         fill_color = QColor("#2563EB")
-        if progress >= 100:
+        if progress >= 99.95:
             fill_color = QColor("#16A34A")
-        elif progress >= 50:
+        elif progress >= 50.0:
             fill_color = QColor("#1D4ED8")
 
         painter.setPen(Qt.NoPen)
         painter.setBrush(track_color)
         painter.drawRoundedRect(bar_rect, 8, 8)
 
-        fill_width = int(bar_rect.width() * (progress / 100.0))
+        fill_width = int(round(bar_rect.width() * (progress / 100.0)))
         if fill_width > 0:
             fill_rect = bar_rect.adjusted(0, 0, -(bar_rect.width() - fill_width), 0)
             painter.setBrush(fill_color)
             painter.drawRoundedRect(fill_rect, 8, 8)
 
-        text = f"{progress}%"
+        text = f"{progress:.1f}%"
         if option.state & QStyle.State_Selected:
             text_color = QColor("#F8FAFC")
         else:

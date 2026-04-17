@@ -9,6 +9,7 @@ import logging
 from PySide6.QtCore import QObject, QThread, Slot
 
 from config.models import AppConfig
+from models.task_models import TaskMessage
 from services.broker import AbstractBrokerClient, BrokerResultEnvelope
 from services.broker.routing import resolve_publish_route
 from services.folder_scanner import FolderScanner
@@ -58,10 +59,11 @@ class TaskController(QObject):
             min(int(config.publish.initial_open_folders), self._max_active_open_folders),
         )
         self._next_open_threshold = 50.0
-        self._folder_message_batches: list[tuple[str, list]] = []
+        self._folder_message_batches: list[tuple[str, list[TaskMessage]]] = []
         self._next_folder_batch_index = 0
         self._opened_folder_paths: set[str] = set()
         self._active_folder_paths: set[str] = set()
+        self._scheduled_request_ids: set[str] = set()
         self._planned_publish_total = 0
         self._published_count = 0
         self._last_dispatch_skip_reason: str | None = None
@@ -73,6 +75,7 @@ class TaskController(QObject):
     def _wire_signals(self) -> None:
         self._view.add_folder_requested.connect(self.on_add_folder_requested)
         self._view.add_subfolders_requested.connect(self.on_add_subfolders_requested)
+        self._view.delete_folders_requested.connect(self.on_delete_folders_requested)
         self._view.clear_requested.connect(self.on_clear_requested)
         self._view.start_requested.connect(self.on_start_requested)
         self._view.stop_requested.connect(self.on_stop_requested)
@@ -82,35 +85,63 @@ class TaskController(QObject):
 
         self._store.folder_group_added.connect(self._on_folder_group_changed)
         self._store.folder_group_updated.connect(self._on_folder_group_changed)
+        self._store.folder_group_removed.connect(self._on_folder_group_removed)
         self._store.task_updated.connect(self._on_task_updated)
         self._store.store_reset.connect(self._on_store_reset)
         self._store.overall_updated.connect(self._view.set_overall_stats)
 
-    @Slot(str)
-    def on_add_folder_requested(self, folder_path: str) -> None:
-        """Scan one folder and register image tasks."""
+    @Slot(list)
+    def on_add_folder_requested(self, folder_paths: list[str]) -> None:
+        """Scan selected folders and register image tasks."""
 
-        folder_map = self._scanner.scan_single_folder(folder_path)
-        if not folder_map:
-            self._log(f"이미지 파일이 없습니다: {folder_path}")
+        self._register_selected_folders(folder_paths=folder_paths, include_subfolders=False)
+
+    @Slot(list)
+    def on_add_subfolders_requested(self, folder_paths: list[str]) -> None:
+        """Scan selected roots' subfolders (or recursive) and register tasks."""
+
+        self._register_selected_folders(folder_paths=folder_paths, include_subfolders=True)
+
+    @Slot(list)
+    def on_delete_folders_requested(self, folder_paths: list[str]) -> None:
+        """Delete selected folders only when every task is still PENDING."""
+
+        deduped_paths: list[str] = []
+        seen: set[str] = set()
+        for folder_path in folder_paths:
+            if folder_path in seen:
+                continue
+            seen.add(folder_path)
+            deduped_paths.append(folder_path)
+
+        if not deduped_paths:
             return
 
-        added_folders, added_images = self._store.register_folder_map(folder_map)
-        self._log(f"폴더 등록 완료 - 폴더 {added_folders}개, 이미지 {added_images}개")
-
-    @Slot(str)
-    def on_add_subfolders_requested(self, folder_path: str) -> None:
-        """Scan direct subfolders (or recursive if configured) and register tasks."""
-
-        folder_map = self._scanner.scan_subfolders(folder_path, mode=self._config.publish.scan_mode)
-        if not folder_map:
-            self._log(f"하위 폴더에서 이미지를 찾지 못했습니다: {folder_path}")
-            return
-
-        added_folders, added_images = self._store.register_folder_map(folder_map)
-        self._log(
-            f"sub_folder 등록 완료 - 대상 {len(folder_map)}개, 신규 폴더 {added_folders}개, 이미지 {added_images}개"
+        removed_folders, blocked_folders, removed_request_ids, removed_task_count = (
+            self._store.remove_pending_only_folders(deduped_paths)
         )
+
+        if removed_folders:
+            self._prune_scheduling_for_removed_folders(
+                removed_folder_paths=removed_folders,
+                removed_request_ids=set(removed_request_ids),
+            )
+            if self._selected_folder and self._selected_folder in removed_folders:
+                self._selected_folder = None
+                self._view.set_image_tasks([])
+            self._log(
+                f"선택 삭제 완료 - 폴더 {len(removed_folders)}개, 이미지 {removed_task_count}개"
+            )
+            if self._active:
+                self._maybe_dispatch_next_folder_batch()
+
+        if blocked_folders:
+            self._log(
+                "삭제 차단 - 전송 중이거나 처리된 폴더는 삭제할 수 없습니다: "
+                + ", ".join(blocked_folders)
+            )
+        if not removed_folders and not blocked_folders:
+            self._log("선택 삭제 대상이 없습니다.")
 
     @Slot()
     def on_clear_requested(self) -> None:
@@ -151,11 +182,22 @@ class TaskController(QObject):
         )
 
         if not grouped_messages:
-            self._log("전송할 PENDING 작업이 없습니다.")
+            if self._store.has_inflight_tasks():
+                self._start_polling_only_resume(
+                    queue_name=queue_name,
+                    polling_interval=polling_interval,
+                )
+            else:
+                self._log("전송할 PENDING 작업이 없습니다.")
             return
 
         self._reset_publish_schedule_state()
         self._folder_message_batches = grouped_messages
+        self._scheduled_request_ids = {
+            message.request_id
+            for _, messages in grouped_messages
+            for message in messages
+        }
         self._planned_publish_total = sum(len(messages) for _, messages in grouped_messages)
 
         self._active_timeout_seconds = self._config.publish.timeout_seconds
@@ -167,21 +209,7 @@ class TaskController(QObject):
         self._view.set_running_state(True)
 
         self._publish_exchange, self._publish_routing_key = resolve_publish_route(self._config.rabbitmq)
-        for _, messages in grouped_messages:
-            for message in messages:
-                self._store.set_task_expected_message(
-                    request_id=message.request_id,
-                    payload=message.to_dict(),
-                    meta={
-                        "exchange": self._publish_exchange,
-                        "routing_key": self._publish_routing_key,
-                        "reply_to": message.QUEUE_NAME,
-                        "message_id": message.request_id,
-                        "correlation_id": message.request_id,
-                        "content_type": "application/json",
-                        "priority": message.priority,
-                    },
-                )
+        self._set_expected_messages_for_groups(grouped_messages)
 
         initial_messages, opened_folders = self._take_next_folder_batches(self._max_initial_open_folders)
         if not initial_messages:
@@ -202,6 +230,26 @@ class TaskController(QObject):
         self._log(
             f"밸런싱 정책 - 개방 폴더 중 진행률 {self._next_open_threshold:.0f}% 도달 시 다음 폴더 1개 추가 개방 "
             f"(동시 active cap={self._max_active_open_folders})"
+        )
+
+    def _start_polling_only_resume(self, queue_name: str, polling_interval: int) -> None:
+        """Resume monitoring for already-sent tasks when no pending publish exists."""
+
+        self._reset_publish_schedule_state()
+        self._active_timeout_seconds = self._config.publish.timeout_seconds
+        self._pending_polling_interval = polling_interval
+        self._publish_finished = True
+        self._active = True
+        self._active_result_queue = queue_name
+        self._view.set_active_result_queue(queue_name)
+        self._view.set_running_state(True)
+        self._view.set_connection_status(True, f"결과 모니터링 재개 ({queue_name})")
+        self._start_polling_worker(
+            queue_name=queue_name,
+            polling_interval=polling_interval,
+        )
+        self._log(
+            "전송 대기 작업은 없고 SENT/RUNNING 작업이 있어 결과 모니터링만 재개합니다."
         )
 
     @Slot()
@@ -256,7 +304,7 @@ class TaskController(QObject):
 
     def _start_publish_worker(
         self,
-        messages: list,
+        messages: list[TaskMessage],
         publish_exchange: str,
         publish_routing_key: str,
     ) -> None:
@@ -429,6 +477,12 @@ class TaskController(QObject):
         self._view.upsert_folder_row(summary)
 
     @Slot(str)
+    def _on_folder_group_removed(self, _folder_path: str) -> None:
+        """Refresh folder tables after folder deletion events."""
+
+        self._view.set_folder_rows(self._store.get_folder_summaries())
+
+    @Slot(str)
     def _on_task_updated(self, request_id: str) -> None:
         task = self._store.get_task(request_id)
         if not task:
@@ -516,6 +570,193 @@ class TaskController(QObject):
         self._view.append_log(timestamped)
         self._logger.info(message)
 
+    def _register_selected_folders(self, folder_paths: list[str], include_subfolders: bool) -> None:
+        """Scan/register folders from multi-selection and optionally enqueue during run."""
+
+        normalized_paths = self._dedupe_paths(folder_paths)
+        if not normalized_paths:
+            self._log("선택된 폴더가 없습니다.")
+            return
+
+        folder_map = self._scan_selected_folder_map(
+            folder_paths=normalized_paths,
+            include_subfolders=include_subfolders,
+        )
+        if not folder_map:
+            if include_subfolders:
+                self._log(
+                    f"선택한 {len(normalized_paths)}개 경로의 하위 폴더에서 이미지를 찾지 못했습니다."
+                )
+            else:
+                self._log(f"선택한 {len(normalized_paths)}개 폴더에서 이미지를 찾지 못했습니다.")
+            return
+
+        added_folders, added_images = self._store.register_folder_map(folder_map)
+        mode_label = "sub_folder" if include_subfolders else "폴더"
+        self._log(
+            f"{mode_label} 등록 완료 - 스캔 대상 {len(normalized_paths)}개, "
+            f"신규 폴더 {added_folders}개, 신규 이미지 {added_images}개"
+        )
+
+        if not self._active or added_images <= 0:
+            return
+
+        runtime_action, runtime_recipe_path, _, runtime_priority = self._view.current_runtime_settings()
+        runtime_action = runtime_action or self._config.publish.default_action
+        runtime_recipe_path = runtime_recipe_path or self._config.recipe_config.default_path
+        runtime_queue = self._active_result_queue or self._config.rabbitmq.result_queue_base
+        grouped_messages = self._store.build_pending_messages_for_folders(
+            action=runtime_action,
+            result_queue_name=runtime_queue,
+            recipe_path=runtime_recipe_path,
+            folder_paths=list(folder_map.keys()),
+            priority=runtime_priority,
+            exclude_request_ids=self._scheduled_request_ids,
+        )
+        if not grouped_messages:
+            self._log("실행 중 추가 - 신규 전송 대상이 없어 스케줄 편입을 생략합니다.")
+            return
+
+        self._append_folder_batches(grouped_messages)
+        self._set_expected_messages_for_groups(grouped_messages)
+        added_messages = sum(len(messages) for _, messages in grouped_messages)
+        self._planned_publish_total += added_messages
+
+        for _, messages in grouped_messages:
+            for message in messages:
+                self._scheduled_request_ids.add(message.request_id)
+
+        self._log(
+            f"실행 중 추가 편입 - 폴더 {len(grouped_messages)}개, 메시지 {added_messages}건 "
+            f"(active={len(self._active_folder_paths)}, remaining_batches="
+            f"{len(self._folder_message_batches) - self._next_folder_batch_index})"
+        )
+        self._maybe_dispatch_next_folder_batch()
+
+    def _scan_selected_folder_map(
+        self,
+        folder_paths: list[str],
+        include_subfolders: bool,
+    ) -> dict[str, list[str]]:
+        """Scan all selected paths and merge image maps without duplicates."""
+
+        merged_map: dict[str, list[str]] = {}
+        merged_seen: dict[str, set[str]] = {}
+
+        for folder_path in folder_paths:
+            if include_subfolders:
+                scanned_map = self._scanner.scan_subfolders(
+                    folder_path,
+                    mode=self._config.publish.scan_mode,
+                )
+            else:
+                scanned_map = self._scanner.scan_single_folder(folder_path)
+
+            for group_path, image_paths in scanned_map.items():
+                if not image_paths:
+                    continue
+                bucket = merged_map.setdefault(group_path, [])
+                seen_images = merged_seen.setdefault(group_path, set())
+                for image_path in image_paths:
+                    if image_path in seen_images:
+                        continue
+                    seen_images.add(image_path)
+                    bucket.append(image_path)
+
+        return merged_map
+
+    @staticmethod
+    def _dedupe_paths(paths: list[str]) -> list[str]:
+        """Deduplicate selected paths while preserving original order."""
+
+        ordered: list[str] = []
+        seen: set[str] = set()
+        for path in paths:
+            normalized = path.strip()
+            if not normalized:
+                continue
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            ordered.append(normalized)
+        return ordered
+
+    def _set_expected_messages_for_groups(
+        self,
+        grouped_messages: list[tuple[str, list[TaskMessage]]],
+    ) -> None:
+        """Store expected publish payload/meta snapshots for MQ preview."""
+
+        for _, messages in grouped_messages:
+            for message in messages:
+                self._store.set_task_expected_message(
+                    request_id=message.request_id,
+                    payload=message.to_dict(),
+                    meta={
+                        "exchange": self._publish_exchange,
+                        "routing_key": self._publish_routing_key,
+                        "reply_to": message.QUEUE_NAME,
+                        "message_id": message.request_id,
+                        "correlation_id": message.request_id,
+                        "content_type": "application/json",
+                        "priority": message.priority,
+                    },
+                )
+
+    def _append_folder_batches(
+        self,
+        grouped_messages: list[tuple[str, list[TaskMessage]]],
+    ) -> None:
+        """Append new folder batches to dispatch queue, merging by folder path."""
+
+        batch_index_by_folder: dict[str, int] = {}
+        for idx in range(self._next_folder_batch_index, len(self._folder_message_batches)):
+            folder_path, _ = self._folder_message_batches[idx]
+            if folder_path not in batch_index_by_folder:
+                batch_index_by_folder[folder_path] = idx
+
+        for folder_path, messages in grouped_messages:
+            if not messages:
+                continue
+            existing_idx = batch_index_by_folder.get(folder_path)
+            if existing_idx is None:
+                self._folder_message_batches.append((folder_path, list(messages)))
+                batch_index_by_folder[folder_path] = len(self._folder_message_batches) - 1
+                continue
+            self._folder_message_batches[existing_idx][1].extend(messages)
+
+    def _prune_scheduling_for_removed_folders(
+        self,
+        removed_folder_paths: list[str],
+        removed_request_ids: set[str],
+    ) -> None:
+        """Prune removed folders from scheduling state and pending batches."""
+
+        removed_folder_set = set(removed_folder_paths)
+        old_batches = list(self._folder_message_batches)
+        old_next_index = self._next_folder_batch_index
+
+        new_batches: list[tuple[str, list[TaskMessage]]] = []
+        new_next_index = 0
+        for idx, (folder_path, messages) in enumerate(old_batches):
+            if folder_path in removed_folder_set:
+                continue
+            kept_messages = [m for m in messages if m.request_id not in removed_request_ids]
+            if not kept_messages:
+                continue
+            new_batches.append((folder_path, kept_messages))
+            if idx < old_next_index:
+                new_next_index += 1
+
+        self._folder_message_batches = new_batches
+        self._next_folder_batch_index = min(new_next_index, len(new_batches))
+        self._opened_folder_paths.difference_update(removed_folder_set)
+        self._active_folder_paths.difference_update(removed_folder_set)
+        self._scheduled_request_ids.difference_update(removed_request_ids)
+        if removed_request_ids:
+            self._planned_publish_total = max(0, self._planned_publish_total - len(removed_request_ids))
+        self._last_dispatch_skip_reason = None
+
     def _reset_publish_schedule_state(self) -> None:
         """Reset folder-based dispatch scheduling state."""
 
@@ -523,16 +764,20 @@ class TaskController(QObject):
         self._next_folder_batch_index = 0
         self._opened_folder_paths.clear()
         self._active_folder_paths.clear()
+        self._scheduled_request_ids.clear()
         self._planned_publish_total = 0
         self._published_count = 0
         self._publish_exchange = ""
         self._publish_routing_key = ""
         self._last_dispatch_skip_reason = None
 
-    def _take_next_folder_batches(self, max_folder_count: int) -> tuple[list, list[str]]:
+    def _take_next_folder_batches(
+        self,
+        max_folder_count: int,
+    ) -> tuple[list[TaskMessage], list[str]]:
         """Take next folder batches and flatten to one message list."""
 
-        selected_messages: list = []
+        selected_messages: list[TaskMessage] = []
         opened_folders: list[str] = []
 
         while (
