@@ -7,7 +7,7 @@
 1. `PyInstaller` 로 `IPDK_plus.exe` onedir 산출물 생성
 2. `Inno Setup` 으로 설치형 패키지 생성
 
-기본 아이콘은 [assets/IPDK_plus.ico](.\assets\IPDK_plus.ico) 를 사용합니다.
+기본 아이콘은 사용자 제공 `C:\Users\youngmoon\Pictures\IPDK_plus_02_layer_stack.ico` 를 반영한 [assets/IPDK_plus.ico](.\assets\IPDK_plus.ico) 를 사용합니다.
 
 ### Prerequisites
 
@@ -39,6 +39,12 @@ uv run --group build pyinstaller .\packaging\IPDK_plus.spec --clean --noconfirm
 
 - `dist\IPDK_plus\IPDK_plus.exe`
 
+제목 표시줄 아이콘까지 정상 표시되려면 아래 runtime asset도 함께 포함되어야 합니다.
+
+- `dist\IPDK_plus\_internal\assets\IPDK_plus.ico`
+
+작업표시줄 아이콘은 exe 내부 아이콘을 사용하고, 메인창 제목 표시줄 아이콘은 위 runtime asset을 읽어 설정합니다.
+
 ### 3. Build Installer
 
 ```powershell
@@ -59,8 +65,10 @@ ISCC .\packaging\IPDK_plus.iss
 
 - `%APPDATA%\IPDK_plus\app_config.yaml`
 - `%APPDATA%\IPDK_plus\recipe_config.yaml`
+- `%APPDATA%\IPDK_plus\logs\app.log`
 
 앱 첫 실행 시 위 파일이 없으면 번들된 seed 템플릿을 자동 복사합니다.
+로그도 동일한 AppData 루트 아래에 기록되며, 설치 폴더(`Program Files` 등) 아래에 `logs` 디렉터리를 만들지 않습니다.
 
 ### Config Override
 

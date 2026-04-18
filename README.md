@@ -62,6 +62,7 @@ uv run python main.py --config config/app_config.yaml
 - `publish.default_priority`는 기본 request MQ priority 입니다.
 - UI의 `Priority` 드롭다운 범위는 `rabbitmq.request_queue_declare.arguments.x-max-priority` 값을 기준으로 `0..max`로 생성됩니다.
 - 설치형 실행에서는 기본 편집 대상 설정 파일이 `%APPDATA%\IPDK_plus\app_config.yaml` 입니다.
+- 로그 파일은 `%APPDATA%\IPDK_plus\logs\app.log` 에 기록되며, 설치 폴더 아래에는 로그를 만들지 않습니다.
 
 ### Recipe 설정 분리
 
@@ -143,7 +144,11 @@ PySide6 미설치 환경에서는 GUI 의존 테스트(`test_controller`)가 자
 - Inno Setup 스크립트: [packaging/IPDK_plus.iss](.\packaging\IPDK_plus.iss)
 - 세부 절차 문서: [docs/build_windows.md](.\docs\build_windows.md)
 
-기본 아이콘은 사용자 제공 `C:\Users\youngmoon\Pictures\ICON.ico` 를 repo 자산으로 복사한 [assets/IPDK_plus.ico](.\assets\IPDK_plus.ico) 를 사용합니다.
+기본 아이콘은 사용자 제공 `C:\Users\youngmoon\Pictures\IPDK_plus_02_layer_stack.ico` 를 repo 자산으로 복사한 [assets/IPDK_plus.ico](.\assets\IPDK_plus.ico) 를 사용합니다.
+
+- 작업표시줄 아이콘은 exe 내부에 박힌 아이콘을 사용합니다.
+- 메인창 제목 표시줄 아이콘은 번들된 runtime asset `assets/IPDK_plus.ico`를 사용합니다.
+- 따라서 설치형 산출물에는 `_internal\assets\IPDK_plus.ico`가 포함되는 것이 정상입니다.
 
 ## 폴더 구조
 

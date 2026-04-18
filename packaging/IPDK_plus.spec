@@ -13,6 +13,7 @@ datas = [
     (str(PROJECT_ROOT / "ui" / "styles.qss"), "ui"),
     (str(PROJECT_ROOT / "config" / "app_config.yaml"), "config"),
     (str(PROJECT_ROOT / "config" / "recipe_config.yaml"), "config"),
+    (str(PROJECT_ROOT / "assets" / "IPDK_plus.ico"), "assets"),
 ]
 
 
