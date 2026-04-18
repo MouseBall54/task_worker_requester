@@ -4,10 +4,17 @@ from __future__ import annotations
 
 import sys
 
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from app.controller import TaskController
-from app.runtime_paths import RuntimePathError, resolve_default_config_path, resolve_stylesheet_path
+from app.runtime_paths import (
+    RuntimePathError,
+    resolve_app_icon_path,
+    resolve_default_config_path,
+    resolve_logs_dir,
+    resolve_stylesheet_path,
+)
 from app.single_instance import SingleInstanceGuard, ensure_single_instance
 from config.config_loader import ConfigError, ConfigLoader
 from services.broker import build_broker_provider
@@ -41,9 +48,13 @@ def run_app(config_path: str | None = None) -> int:
         _show_config_error_dialog(message)
         return 1
 
-    logger = setup_logging(app_config.log_level)
+    logger = setup_logging(app_config.log_level, logs_dir=resolve_logs_dir())
     logger.info("사용 설정 파일: %s", resolved_config_path)
     app.setApplicationName(app_config.ui.app_name)
+
+    icon = _resolve_runtime_window_icon(app)
+    if icon is not None:
+        app.setWindowIcon(icon)
 
     styles_path = resolve_stylesheet_path()
     if styles_path and styles_path.exists():
@@ -64,6 +75,9 @@ def run_app(config_path: str | None = None) -> int:
 
     app.aboutToQuit.connect(controller.shutdown)
     app.aboutToQuit.connect(guard.release)
+
+    if icon is not None:
+        window.setWindowIcon(icon)
 
     window.show()
     exit_code = app.exec()
@@ -113,3 +127,18 @@ def _release_guard(guard: SingleInstanceGuard | None) -> None:
         guard.release()
     except Exception:
         return
+
+
+def _resolve_runtime_window_icon(app: QApplication) -> QIcon | None:
+    """Resolve the best runtime window icon available for source and packaged runs."""
+
+    icon_path = resolve_app_icon_path()
+    if icon_path and icon_path.exists():
+        icon = QIcon(str(icon_path))
+        if not icon.isNull():
+            return icon
+
+    existing_icon = app.windowIcon()
+    if existing_icon is not None and not existing_icon.isNull():
+        return existing_icon
+    return None

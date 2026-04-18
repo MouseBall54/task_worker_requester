@@ -82,6 +82,18 @@ def resolve_stylesheet_path() -> Path | None:
     return find_bundled_resource(Path("ui") / "styles.qss")
 
 
+def resolve_app_icon_path() -> Path | None:
+    """Return the bundled application icon path for runtime UI usage."""
+
+    return find_bundled_resource(Path("assets") / "IPDK_plus.ico")
+
+
+def resolve_logs_dir() -> Path:
+    """Return the writable per-user log directory used by the application."""
+
+    return resolve_user_appdata_dir() / "logs"
+
+
 def ensure_user_config_seeded() -> RuntimeConfigPaths:
     """Create AppData config files from bundled templates when missing."""
 

@@ -11,7 +11,9 @@ from unittest.mock import patch
 from app.runtime_paths import (
     ensure_user_config_seeded,
     migrate_legacy_appdata_dir,
+    resolve_app_icon_path,
     resolve_default_config_path,
+    resolve_logs_dir,
     resolve_stylesheet_path,
 )
 
@@ -149,6 +151,31 @@ class RuntimePathsTest(unittest.TestCase):
             self.assertIsNotNone(resolved)
             assert resolved is not None
             self.assertEqual(resolved.resolve(), stylesheet.resolve())
+
+    def test_resolve_app_icon_path_finds_bundled_icon(self) -> None:
+        with TemporaryDirectory() as runtime_dir:
+            base = Path(runtime_dir)
+            (base / "assets").mkdir(parents=True, exist_ok=True)
+            icon_file = base / "assets" / "IPDK_plus.ico"
+            icon_file.write_bytes(b"ico")
+
+            with (
+                patch("app.runtime_paths.resolve_runtime_base_dir", return_value=base),
+                patch("app.runtime_paths.resolve_install_dir", return_value=base),
+                patch("app.runtime_paths._development_root", return_value=base),
+            ):
+                resolved = resolve_app_icon_path()
+
+            self.assertIsNotNone(resolved)
+            assert resolved is not None
+            self.assertEqual(resolved.resolve(), icon_file.resolve())
+
+    def test_resolve_logs_dir_points_to_user_appdata_logs(self) -> None:
+        with TemporaryDirectory() as appdata_root:
+            with patch.dict(os.environ, {"APPDATA": appdata_root}, clear=False):
+                resolved = resolve_logs_dir()
+
+            self.assertEqual(resolved, Path(appdata_root) / "IPDK_plus" / "logs")
 
 
 if __name__ == "__main__":
