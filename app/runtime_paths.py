@@ -88,6 +88,15 @@ def resolve_app_icon_path() -> Path | None:
     return find_bundled_resource(Path("assets") / "IPDK_plus.ico")
 
 
+def resolve_ui_icon_path(icon_filename: str) -> Path | None:
+    """Return one bundled UI icon from ``assets/icons`` by file name."""
+
+    safe_name = Path(str(icon_filename).strip()).name
+    if not safe_name:
+        return None
+    return find_bundled_resource(Path("assets") / "icons" / safe_name)
+
+
 def resolve_logs_dir() -> Path:
     """Return the writable per-user log directory used by the application."""
 

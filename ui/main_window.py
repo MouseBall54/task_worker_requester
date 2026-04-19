@@ -7,19 +7,25 @@ import os
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QDir, QItemSelectionModel, QModelIndex, Qt, QTimer, Signal
+from PySide6.QtCore import QDir, QItemSelectionModel, QModelIndex, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QIcon, QShowEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
+    QToolButton,
     QDialog,
     QFileSystemModel,
     QFrame,
     QGroupBox,
+    QHeaderView,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPushButton,
+    QSplitter,
     QTabWidget,
     QTableView,
     QTextEdit,
@@ -28,11 +34,11 @@ from PySide6.QtWidgets import (
     QWidget,
     QComboBox,
     QProgressBar,
-    QHeaderView,
     QDialogButtonBox,
     QPlainTextEdit,
 )
 
+from app.runtime_paths import resolve_ui_icon_path
 from config.models import AppConfig
 from models.task_models import FolderSummary, ImageTask
 from ui.models import FolderTableModel, ImageTableModel, ProgressBarDelegate
@@ -118,8 +124,16 @@ class MainWindow(QMainWindow):
         self._pending_jump_show_feedback = False
         self._pending_jump_attempts = 0
         self._max_pending_jump_attempts = 10
+        self._initial_scroll_alignment_done = False
+        self._last_status_sidebar_width = 420
         self._build_ui()
         self._apply_defaults()
+
+    def showEvent(self, event: QShowEvent) -> None:  # noqa: N802
+        """Align horizontal scroll positions once when the main window is first shown."""
+
+        super().showEvent(event)
+        self._apply_initial_scroll_alignment_once()
 
     def _build_ui(self) -> None:
         self.setWindowTitle(self._config.ui.app_name)
@@ -132,20 +146,30 @@ class MainWindow(QMainWindow):
         root_layout.setContentsMargins(16, 16, 16, 16)
         root_layout.setSpacing(14)
 
-        main_layout = QHBoxLayout()
-        main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(16)
-
         left_panel = self._build_left_panel()
         center_panel = self._build_center_panel()
         status_sidebar = self._build_status_sidebar()
 
-        left_panel.setFixedWidth(360)
-        status_sidebar.setMinimumWidth(420)
-        main_layout.addWidget(left_panel)
-        main_layout.addWidget(center_panel, stretch=12)
-        main_layout.addWidget(status_sidebar, stretch=7)
-        root_layout.addLayout(main_layout, stretch=1)
+        left_panel.setMinimumWidth(280)
+        center_panel.setMinimumWidth(560)
+        status_sidebar.setMinimumWidth(300)
+
+        self.main_splitter = QSplitter(Qt.Horizontal)
+        self.main_splitter.setObjectName("mainSplitter")
+        self.main_splitter.setChildrenCollapsible(False)
+        self.main_splitter.addWidget(left_panel)
+        self.main_splitter.addWidget(center_panel)
+        self.main_splitter.addWidget(status_sidebar)
+        self.main_splitter.setStretchFactor(0, 3)
+        self.main_splitter.setStretchFactor(1, 8)
+        self.main_splitter.setStretchFactor(2, 5)
+        self.main_splitter.setSizes([360, 900, self._last_status_sidebar_width])
+
+        self.left_panel = left_panel
+        self.center_panel = center_panel
+        self.status_sidebar_panel = status_sidebar
+
+        root_layout.addWidget(self.main_splitter, stretch=1)
 
     def _build_left_panel(self) -> QWidget:
         panel = QFrame()
@@ -169,12 +193,19 @@ class MainWindow(QMainWindow):
         layout.addLayout(jump_row)
 
         self.folder_tree = QTreeView()
+        self.folder_tree.setObjectName("folderTree")
         self.folder_tree.setHeaderHidden(True)
         self.folder_tree.setAnimated(True)
-        self.folder_tree.setIndentation(18)
+        self.folder_tree.setIndentation(22)
+        self.folder_tree.setUniformRowHeights(True)
+        self.folder_tree.setAllColumnsShowFocus(True)
+        self.folder_tree.setAlternatingRowColors(True)
         self.folder_tree.setSelectionBehavior(QTreeView.SelectRows)
         self.folder_tree.setSelectionMode(QTreeView.ExtendedSelection)
         self.folder_tree.setDragDropMode(QTreeView.NoDragDrop)
+        self.folder_tree.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.folder_tree.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self.folder_tree.setTextElideMode(Qt.ElideNone)
 
         self.file_system_model = QFileSystemModel(self.folder_tree)
         self.file_system_model.setRootPath("")
@@ -184,6 +215,7 @@ class MainWindow(QMainWindow):
         self.folder_tree.setModel(self.file_system_model)
         for col in range(1, 4):
             self.folder_tree.hideColumn(col)
+        self.folder_tree.setColumnWidth(0, 520)
         if self.folder_tree.selectionModel():
             self.folder_tree.selectionModel().currentChanged.connect(self._on_tree_current_changed)
 
@@ -234,9 +266,28 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(10)
 
+        connection_row = QHBoxLayout()
+        connection_row.setSpacing(10)
+
         self.connection_label = QLabel("연결 상태: 대기")
         self.connection_label.setObjectName("connectionStatus")
-        layout.addWidget(self.connection_label)
+        connection_row.addWidget(self.connection_label, stretch=1)
+
+        self.btn_toggle_sidebar = QToolButton(panel)
+        self.btn_toggle_sidebar.setObjectName("statusSidebarToggle")
+        self.btn_toggle_sidebar.setToolButtonStyle(Qt.ToolButtonIconOnly)
+        self.btn_toggle_sidebar.setAutoRaise(True)
+        self.btn_toggle_sidebar.setCheckable(True)
+        self.btn_toggle_sidebar.setIconSize(QSize(18, 18))
+        self.btn_toggle_sidebar.toggled.connect(self._on_toggle_status_sidebar)
+        self.btn_toggle_sidebar.setAccessibleName("상태/로그 사이드바 토글")
+        connection_row.addWidget(self.btn_toggle_sidebar, stretch=0, alignment=Qt.AlignRight)
+        self._update_status_sidebar_toggle_icon(collapsed=False)
+        layout.addLayout(connection_row)
+
+        self.queue_metrics_label = QLabel("Worker Count: -    Queued Messages: -")
+        self.queue_metrics_label.setObjectName("queueMetricsLabel")
+        layout.addWidget(self.queue_metrics_label)
 
         row_action_recipe = QHBoxLayout()
 
@@ -334,6 +385,8 @@ class MainWindow(QMainWindow):
         # Keep active list visibly larger from first render as requested.
         self.active_folder_table.setMinimumHeight(190)
         self.active_folder_table.selectionModel().selectionChanged.connect(self._on_active_folder_selection_changed)
+        self.active_folder_table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.active_folder_table.customContextMenuRequested.connect(self._on_active_folder_context_menu)
         # Keep backward-compatible attribute name.
         self.folder_table = self.active_folder_table
         layout.addWidget(self.active_folder_table, stretch=11)
@@ -356,6 +409,8 @@ class MainWindow(QMainWindow):
         self.completed_folder_table.selectionModel().selectionChanged.connect(
             self._on_completed_folder_selection_changed
         )
+        self.completed_folder_table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.completed_folder_table.customContextMenuRequested.connect(self._on_completed_folder_context_menu)
         layout.addWidget(self.completed_folder_table, stretch=9)
         return panel
 
@@ -453,12 +508,37 @@ class MainWindow(QMainWindow):
         self.action_edit.setText(self._config.publish.default_action)
         self._populate_recipe_selector()
         self._populate_priority_selector()
+        self.set_queue_metrics(None, None)
 
         idx = self.polling_combo.findText(str(self._config.publish.polling_interval_seconds))
         if idx >= 0:
             self.polling_combo.setCurrentIndex(idx)
         else:
             self.polling_combo.setCurrentText(str(self._config.publish.polling_interval_seconds))
+
+    def _apply_initial_scroll_alignment_once(self) -> None:
+        """Reset horizontal scrollbars to left once at startup."""
+
+        if self._initial_scroll_alignment_done:
+            return
+        self._initial_scroll_alignment_done = True
+        self._reset_horizontal_scrollbars_to_left()
+        # One extra pass handles async layout/model updates right after first paint.
+        QTimer.singleShot(80, self._reset_horizontal_scrollbars_to_left)
+
+    def _reset_horizontal_scrollbars_to_left(self) -> None:
+        """Move known horizontal scrollbars to their minimum position."""
+
+        for widget in (
+            self.folder_tree,
+            self.active_folder_table,
+            self.completed_folder_table,
+            self.image_table,
+            self.log_text,
+        ):
+            scrollbar = widget.horizontalScrollBar()
+            if scrollbar is not None:
+                scrollbar.setValue(scrollbar.minimum())
 
     def jump_to_path(self, path: str, show_feedback: bool = True) -> bool:
         """Move tree focus to a specific path without auto-registering tasks."""
@@ -565,6 +645,17 @@ class MainWindow(QMainWindow):
         self.connection_label.setText(f"연결 상태: {label}")
         self.connection_label.style().unpolish(self.connection_label)
         self.connection_label.style().polish(self.connection_label)
+
+    def set_queue_metrics(self, worker_count: int | None, queued_messages: int | None) -> None:
+        """Render queue consumer/message counters near connection status."""
+
+        workers_text = str(worker_count) if isinstance(worker_count, int) and worker_count >= 0 else "-"
+        queued_text = (
+            str(queued_messages) if isinstance(queued_messages, int) and queued_messages >= 0 else "-"
+        )
+        self.queue_metrics_label.setText(
+            f"Worker Count: {workers_text}    Queued Messages: {queued_text}"
+        )
 
     def set_overall_stats(self, stats: dict[str, float | int | None]) -> None:
         """Update overall progress widgets."""
@@ -694,6 +785,60 @@ class MainWindow(QMainWindow):
             return
         self.delete_folders_requested.emit(folder_paths)
 
+    def _load_sidebar_toggle_icon(self, filename: str) -> QIcon:
+        """Load sidebar toggle icon from bundled resources."""
+
+        icon_path = resolve_ui_icon_path(filename)
+        if icon_path is None or not icon_path.exists():
+            return QIcon()
+        icon = QIcon(str(icon_path))
+        return icon if not icon.isNull() else QIcon()
+
+    def _update_status_sidebar_toggle_icon(self, collapsed: bool) -> None:
+        """Render correct collapse/expand icon and accessibility text."""
+
+        icon_name = "status_sidebar_collapse.svg" if collapsed else "status_sidebar_expand.svg"
+        icon = self._load_sidebar_toggle_icon(icon_name)
+        if not icon.isNull():
+            self.btn_toggle_sidebar.setIcon(icon)
+            self.btn_toggle_sidebar.setArrowType(Qt.NoArrow)
+        else:
+            self.btn_toggle_sidebar.setIcon(QIcon())
+            self.btn_toggle_sidebar.setArrowType(Qt.LeftArrow if collapsed else Qt.RightArrow)
+
+        self.btn_toggle_sidebar.setToolTip("상태/로그 펼치기" if collapsed else "상태/로그 숨기기")
+
+    def _on_toggle_status_sidebar(self, collapsed: bool) -> None:
+        """Collapse/expand the right status sidebar for flexible workspace."""
+
+        if not hasattr(self, "main_splitter") or not hasattr(self, "status_sidebar_panel"):
+            return
+
+        self._update_status_sidebar_toggle_icon(collapsed)
+
+        sizes = self.main_splitter.sizes()
+        total_width = sum(max(0, size) for size in sizes) if sizes else 0
+        left_width = max(280, sizes[0] if len(sizes) >= 1 and sizes[0] > 0 else 360)
+
+        if collapsed:
+            if len(sizes) >= 3:
+                self._last_status_sidebar_width = max(260, int(sizes[2]))
+            self.status_sidebar_panel.hide()
+            center_width = max(560, total_width - left_width) if total_width > 0 else 900
+            self.main_splitter.setSizes([left_width, center_width, 0])
+            return
+
+        self.status_sidebar_panel.show()
+        self.status_sidebar_panel.setMaximumWidth(16777215)
+        self.status_sidebar_panel.setMinimumWidth(300)
+        if len(sizes) < 3 or total_width <= 0:
+            self.main_splitter.setSizes([360, 900, self._last_status_sidebar_width])
+            return
+
+        right_width = max(300, min(self._last_status_sidebar_width, total_width // 2))
+        center_width = max(560, total_width - left_width - right_width)
+        self.main_splitter.setSizes([left_width, center_width, right_width])
+
     def _emit_folder_selection(self, table: QTableView, model: FolderTableModel) -> None:
         """Emit folder selection from one table and clear opposite table selection."""
 
@@ -732,6 +877,58 @@ class MainWindow(QMainWindow):
             self._emit_folder_selection(self.completed_folder_table, self.completed_folder_table_model)
         finally:
             self._is_syncing_folder_selection = False
+
+    def _on_active_folder_context_menu(self, position) -> None:  # noqa: ANN001
+        """Open context menu for active/pending folder rows."""
+
+        self._show_folder_context_menu(
+            table=self.active_folder_table,
+            model=self.active_folder_table_model,
+            position=position,
+        )
+
+    def _on_completed_folder_context_menu(self, position) -> None:  # noqa: ANN001
+        """Open context menu for completed folder rows."""
+
+        self._show_folder_context_menu(
+            table=self.completed_folder_table,
+            model=self.completed_folder_table_model,
+            position=position,
+        )
+
+    def _show_folder_context_menu(
+        self,
+        table: QTableView,
+        model: FolderTableModel,
+        position,
+    ) -> None:  # noqa: ANN001
+        """Render a right-click menu for copying selected folder paths."""
+
+        index = table.indexAt(position)
+        if index.isValid():
+            selection_model = table.selectionModel()
+            if selection_model is not None and not selection_model.isSelected(index):
+                selection_flags = QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows
+                selection_model.setCurrentIndex(index, selection_flags | QItemSelectionModel.Current)
+                selection_model.select(index, selection_flags)
+
+        selected_paths = self._selected_folder_paths_from_table(table, model)
+        if not selected_paths:
+            return
+
+        menu = QMenu(table)
+        copy_action = menu.addAction("경로 복사")
+        chosen = menu.exec(table.viewport().mapToGlobal(position))
+        if chosen is copy_action:
+            self._copy_folder_paths_to_clipboard(selected_paths)
+
+    def _copy_folder_paths_to_clipboard(self, folder_paths: list[str]) -> None:
+        """Copy one or more folder paths to clipboard and append UI log."""
+
+        if not folder_paths:
+            return
+        QApplication.clipboard().setText("\n".join(folder_paths))
+        self.append_log(f"[클립보드] 폴더 경로 {len(folder_paths)}건 복사")
 
     @staticmethod
     def _selected_folder_paths_from_table(table: QTableView, model: FolderTableModel) -> list[str]:
@@ -938,6 +1135,10 @@ class MainWindow(QMainWindow):
                 return
             QTimer.singleShot(80, self._finalize_pending_jump)
             return
+
+        tree_scrollbar = self.folder_tree.horizontalScrollBar()
+        if tree_scrollbar is not None:
+            tree_scrollbar.setValue(tree_scrollbar.minimum())
 
         if self._pending_jump_show_feedback:
             self.append_log(f"[탐색] 경로 이동 완료: {target_path}")

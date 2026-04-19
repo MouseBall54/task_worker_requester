@@ -8,11 +8,13 @@ from config.models import AppConfig, PublishConfig, RabbitMQConfig, UiConfig
 from models.task_models import FolderSummary, TaskStatus
 
 try:
+    from PySide6.QtCore import Qt
     from PySide6.QtWidgets import QApplication
     from ui.main_window import MainWindow
 
     PYSIDE_AVAILABLE = True
 except ImportError:  # pragma: no cover
+    Qt = None  # type: ignore[assignment]
     QApplication = None  # type: ignore[assignment]
     MainWindow = None  # type: ignore[assignment]
     PYSIDE_AVAILABLE = False
@@ -49,6 +51,10 @@ class MainWindowTest(unittest.TestCase):
             self.assertFalse(hasattr(window, "brand_icon_label"))
             self.assertFalse(hasattr(window, "drive_combo"))
             self.assertFalse(window.folder_tree.rootIndex().isValid())
+            self.assertTrue(window.folder_tree.isHeaderHidden())
+            self.assertTrue(hasattr(window, "main_splitter"))
+            self.assertEqual(window.folder_tree.horizontalScrollBarPolicy(), Qt.ScrollBarAsNeeded)
+            self.assertEqual(window.folder_tree.textElideMode(), Qt.ElideNone)
         finally:
             window.close()
 
@@ -79,6 +85,57 @@ class MainWindowTest(unittest.TestCase):
 
             self.assertEqual(window.status_tabs.currentIndex(), window.STATUS_TAB_DETAIL)
             self.assertEqual(selected_paths, ["folder_a"])
+        finally:
+            window.close()
+
+    def test_status_sidebar_toggle_button_collapses_and_expands_panel(self) -> None:
+        window = self._make_window()
+        try:
+            self.assertTrue(window.status_sidebar_panel.isVisible())
+            self.assertTrue(window.status_tabs.isVisible())
+            self.assertEqual(window.btn_toggle_sidebar.text(), "")
+            self.assertTrue(window.btn_toggle_sidebar.autoRaise())
+            self.assertFalse(window.status_sidebar_panel.isAncestorOf(window.btn_toggle_sidebar))
+            self.assertTrue(window.center_panel.isAncestorOf(window.btn_toggle_sidebar))
+
+            window.btn_toggle_sidebar.setChecked(True)
+            self._app.processEvents()
+            self.assertFalse(window.status_sidebar_panel.isVisible())
+            self.assertFalse(window.status_tabs.isVisible())
+
+            window.btn_toggle_sidebar.setChecked(False)
+            self._app.processEvents()
+            self.assertTrue(window.status_sidebar_panel.isVisible())
+            self.assertTrue(window.status_tabs.isVisible())
+        finally:
+            window.close()
+
+    def test_copy_folder_paths_to_clipboard(self) -> None:
+        window = self._make_window()
+        try:
+            window._copy_folder_paths_to_clipboard(["folder_a", "folder_b"])
+            clipboard_text = self._app.clipboard().text()
+            self.assertEqual(clipboard_text, "folder_a\nfolder_b")
+        finally:
+            window.close()
+
+    def test_initial_horizontal_scrollbars_are_aligned_to_left(self) -> None:
+        window = self._make_window()
+        try:
+            window.show()
+            self._app.processEvents()
+            self._app.processEvents()
+
+            widgets = [
+                window.folder_tree,
+                window.active_folder_table,
+                window.completed_folder_table,
+                window.image_table,
+                window.log_text,
+            ]
+            for widget in widgets:
+                scrollbar = widget.horizontalScrollBar()
+                self.assertEqual(scrollbar.value(), scrollbar.minimum())
         finally:
             window.close()
 

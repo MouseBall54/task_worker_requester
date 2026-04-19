@@ -17,6 +17,12 @@ QGroupBox {
     border-radius: 12px;
 }
 
+QFrame#statusSidebar {
+    background-color: #111827;
+    border: 1px solid #1f2937;
+    border-radius: 12px;
+}
+
 QGroupBox {
     margin-top: 8px;
     padding-top: 14px;
@@ -49,6 +55,12 @@ QLabel#connectionStatus {
     padding: 6px 10px;
     background-color: #334155;
     color: #e2e8f0;
+}
+
+QLabel#queueMetricsLabel {
+    color: #cbd5e1;
+    font-size: 12px;
+    padding-left: 2px;
 }
 
 QLabel#connectionStatus[state="connected"] {
@@ -96,26 +108,59 @@ QTreeView {
     selection-color: #eff6ff;
 }
 
-QTreeView::item {
-    height: 24px;
-    padding-left: 6px;
-    border-left: 3px solid transparent;
+QTreeView#folderTree {
+    background-color: #12233a;
+    border: 1px solid #274362;
+    border-radius: 10px;
+    alternate-background-color: #152b46;
+    padding: 4px 3px;
 }
 
-QTreeView::item:hover {
-    background-color: #13223b;
+QTreeView#folderTree::item {
+    height: 26px;
+    margin: 1px 2px;
+    padding: 0 8px;
+    border: none;
+    border-radius: 6px;
 }
 
-QTreeView::item:selected {
-    background-color: #1e3a8a;
+QTreeView#folderTree::item:hover {
+    background-color: #1f3a5d;
+}
+
+QTreeView#folderTree::item:selected {
+    background-color: #2c4f7f;
     color: #eff6ff;
-    border-left: 3px solid #60a5fa;
 }
 
-QTreeView::item:selected:active,
-QTreeView::item:selected:!active {
-    background-color: #1e3a8a;
+QTreeView#folderTree::item:selected:active,
+QTreeView#folderTree::item:selected:!active {
+    background-color: #2c4f7f;
     color: #eff6ff;
+}
+
+QTreeView#folderTree::branch {
+    background: transparent;
+}
+
+QToolButton#statusSidebarToggle {
+    background-color: transparent;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    padding: 4px;
+    min-width: 30px;
+    min-height: 30px;
+}
+
+QToolButton#statusSidebarToggle:hover {
+    background-color: rgba(37, 99, 235, 0.22);
+    border-color: rgba(96, 165, 250, 0.55);
+}
+
+QToolButton#statusSidebarToggle:pressed,
+QToolButton#statusSidebarToggle:checked {
+    background-color: rgba(37, 99, 235, 0.34);
+    border-color: rgba(125, 211, 252, 0.72);
 }
 
 QHeaderView::section {
@@ -186,6 +231,16 @@ QProgressBar::chunk {
 
 QSplitter::handle {
     background: #1f2937;
+    border-radius: 4px;
+}
+
+QSplitter::handle:horizontal {
+    width: 8px;
+    margin: 2px 0;
+}
+
+QSplitter::handle:horizontal:hover {
+    background: #2563eb;
 }
 
 QScrollBar:vertical {

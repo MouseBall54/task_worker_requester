@@ -15,6 +15,7 @@ from app.runtime_paths import (
     resolve_default_config_path,
     resolve_logs_dir,
     resolve_stylesheet_path,
+    resolve_ui_icon_path,
 )
 
 
@@ -165,6 +166,24 @@ class RuntimePathsTest(unittest.TestCase):
                 patch("app.runtime_paths._development_root", return_value=base),
             ):
                 resolved = resolve_app_icon_path()
+
+            self.assertIsNotNone(resolved)
+            assert resolved is not None
+            self.assertEqual(resolved.resolve(), icon_file.resolve())
+
+    def test_resolve_ui_icon_path_finds_bundled_svg_icon(self) -> None:
+        with TemporaryDirectory() as runtime_dir:
+            base = Path(runtime_dir)
+            (base / "assets" / "icons").mkdir(parents=True, exist_ok=True)
+            icon_file = base / "assets" / "icons" / "status_sidebar_expand.svg"
+            icon_file.write_text("<svg></svg>", encoding="utf-8")
+
+            with (
+                patch("app.runtime_paths.resolve_runtime_base_dir", return_value=base),
+                patch("app.runtime_paths.resolve_install_dir", return_value=base),
+                patch("app.runtime_paths._development_root", return_value=base),
+            ):
+                resolved = resolve_ui_icon_path("status_sidebar_expand.svg")
 
             self.assertIsNotNone(resolved)
             assert resolved is not None
