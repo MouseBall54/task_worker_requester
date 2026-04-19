@@ -17,6 +17,7 @@ from services.broker.routing import resolve_publish_route
 from services.folder_scanner import FolderScanner
 from services.result_parser import parse_task_result
 from services.workers import PollingWorker, PublishWorker
+from services.workers.queue_metrics_worker import QueueMetricsWorker
 from state.task_store import TaskStore
 from ui.main_window import MainWindow
 
@@ -46,6 +47,8 @@ class TaskController(QObject):
         self._publish_worker: PublishWorker | None = None
         self._poll_thread: QThread | None = None
         self._poll_worker: PollingWorker | None = None
+        self._queue_metrics_thread: QThread | None = None
+        self._queue_metrics_worker: QueueMetricsWorker | None = None
 
         self._publish_finished = True
         self._active = False
@@ -75,6 +78,8 @@ class TaskController(QObject):
         self._wire_signals()
         self._view.set_running_state(False)
         self._check_connection_once()
+        if not getattr(self._view, "_disable_queue_metrics_monitor", False):
+            self._start_queue_metrics_monitor()
 
     def _wire_signals(self) -> None:
         self._view.add_folder_requested.connect(self.on_add_folder_requested)
@@ -321,6 +326,7 @@ class TaskController(QObject):
         """Application shutdown hook to avoid orphan threads."""
 
         self._stop_workers("프로그램 종료로 워커를 중지합니다.")
+        self._stop_queue_metrics_monitor()
 
     def _start_publish_worker(
         self,
@@ -382,6 +388,38 @@ class TaskController(QObject):
         self._poll_worker.finished.connect(self._poll_worker.deleteLater)
         self._poll_thread.finished.connect(self._poll_thread.deleteLater)
         self._poll_thread.start()
+
+    def _start_queue_metrics_monitor(self) -> None:
+        """Start a background monitor for request queue consumer/message counters."""
+
+        if self._queue_metrics_thread is not None:
+            try:
+                if self._queue_metrics_thread.isRunning():
+                    return
+            except RuntimeError:
+                self._queue_metrics_thread = None
+                self._queue_metrics_worker = None
+
+        self._queue_metrics_thread = QThread(self)
+        self._queue_metrics_worker = QueueMetricsWorker(
+            broker_provider=self._broker_provider,
+            queue_name=self._config.rabbitmq.request_queue,
+            interval_seconds=5,
+        )
+        self._queue_metrics_worker.moveToThread(self._queue_metrics_thread)
+
+        self._queue_metrics_thread.started.connect(self._queue_metrics_worker.run)
+        self._queue_metrics_worker.metrics_updated.connect(self._on_queue_metrics_updated)
+        self._queue_metrics_worker.log.connect(self._log)
+        self._queue_metrics_worker.finished.connect(self._on_queue_metrics_finished)
+
+        self._queue_metrics_worker.finished.connect(self._queue_metrics_thread.quit)
+        self._queue_metrics_worker.finished.connect(self._queue_metrics_worker.deleteLater)
+        self._queue_metrics_thread.finished.connect(self._queue_metrics_thread.deleteLater)
+        self._queue_metrics_thread.start()
+        self._log(
+            f"Queue metrics 모니터 시작 - queue={self._config.rabbitmq.request_queue}, interval=5s"
+        )
 
     @Slot(str)
     def _on_queue_ready(self, queue_name: str) -> None:
@@ -501,6 +539,22 @@ class TaskController(QObject):
             self._active = False
             self._view.set_running_state(False)
 
+    @Slot(int, int)
+    def _on_queue_metrics_updated(self, worker_count: int, message_count: int) -> None:
+        """Reflect request-queue metrics in connection area."""
+
+        if worker_count < 0 or message_count < 0:
+            self._view.set_queue_metrics(None, None)
+            return
+        self._view.set_queue_metrics(worker_count, message_count)
+
+    @Slot()
+    def _on_queue_metrics_finished(self) -> None:
+        """Cleanup metrics-monitor references when thread exits."""
+
+        self._queue_metrics_worker = None
+        self._queue_metrics_thread = None
+
     @Slot(str)
     def _on_folder_group_changed(self, folder_path: str) -> None:
         summary = self._store.get_folder_summary(folder_path)
@@ -551,6 +605,14 @@ class TaskController(QObject):
         self._view.set_active_result_queue(None)
         self._view.set_running_state(False)
         self._log(reason)
+
+    def _stop_queue_metrics_monitor(self) -> None:
+        """Stop request-queue metrics monitor thread gracefully."""
+
+        self._safe_stop_worker(self._queue_metrics_worker)
+        self._safe_quit_thread(self._queue_metrics_thread)
+        self._queue_metrics_worker = None
+        self._queue_metrics_thread = None
 
     @staticmethod
     def _safe_stop_worker(worker: object | None) -> None:

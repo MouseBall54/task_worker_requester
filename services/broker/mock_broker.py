@@ -13,6 +13,7 @@ from services.broker.base import (
     AbstractBrokerClient,
     BrokerConsumeCallback,
     BrokerConsumeDecision,
+    BrokerQueueStats,
     BrokerResultEnvelope,
 )
 
@@ -32,6 +33,7 @@ class _MockBackend:
     _lock = threading.Lock()
     _result_queues: dict[str, deque[BrokerResultEnvelope]] = defaultdict(deque)
     _scheduled: list[_ScheduledResult] = []
+    _consumer_counts: dict[str, int] = defaultdict(int)
 
     @classmethod
     def declare_queue(cls, queue_name: str) -> None:
@@ -93,6 +95,36 @@ class _MockBackend:
         with cls._lock:
             cls._result_queues[queue_name].appendleft(envelope)
 
+    @classmethod
+    def register_consumer(cls, queue_name: str) -> None:
+        """Increase active consumer count for one queue."""
+
+        with cls._lock:
+            cls._consumer_counts[queue_name] += 1
+
+    @classmethod
+    def unregister_consumer(cls, queue_name: str) -> None:
+        """Decrease active consumer count for one queue."""
+
+        with cls._lock:
+            current = cls._consumer_counts.get(queue_name, 0)
+            if current <= 1:
+                cls._consumer_counts.pop(queue_name, None)
+                return
+            cls._consumer_counts[queue_name] = current - 1
+
+    @classmethod
+    def get_queue_stats(cls, queue_name: str) -> BrokerQueueStats:
+        """Return mock queue metrics for tests/UI."""
+
+        with cls._lock:
+            message_count = len(cls._result_queues.get(queue_name, deque()))
+            consumer_count = cls._consumer_counts.get(queue_name, 0)
+        return BrokerQueueStats(
+            consumer_count=max(0, int(consumer_count)),
+            message_count=max(0, int(message_count)),
+        )
+
 
 class MockBrokerClient(AbstractBrokerClient):
     """Mock broker implementing same behavior contract as RabbitMQ client."""
@@ -107,6 +139,7 @@ class MockBrokerClient(AbstractBrokerClient):
         self._connected = True
 
     def close(self) -> None:
+        self.stop_result_consumer()
         self._connected = False
 
     def declare_result_queue(self, queue_name: str) -> str:
@@ -124,10 +157,13 @@ class MockBrokerClient(AbstractBrokerClient):
         prefetch_count: int,
     ) -> None:
         self._ensure_connected()
+        if self._consumer_queue_name is not None:
+            _MockBackend.unregister_consumer(self._consumer_queue_name)
         _MockBackend.declare_queue(queue_name)
         self._consumer_queue_name = queue_name
         self._consumer_callback = on_envelope
         self._prefetch_count = max(1, int(prefetch_count))
+        _MockBackend.register_consumer(queue_name)
 
     def pump_events(self, time_limit_seconds: float) -> int:
         self._ensure_connected()
@@ -156,9 +192,15 @@ class MockBrokerClient(AbstractBrokerClient):
         return len(envelopes)
 
     def stop_result_consumer(self) -> None:
+        if self._consumer_queue_name is not None:
+            _MockBackend.unregister_consumer(self._consumer_queue_name)
         self._consumer_queue_name = None
         self._consumer_callback = None
         self._prefetch_count = 1
+
+    def get_queue_stats(self, queue_name: str) -> BrokerQueueStats:
+        self._ensure_connected()
+        return _MockBackend.get_queue_stats(queue_name)
 
     def ping(self) -> bool:
         return self._connected

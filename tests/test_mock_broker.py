@@ -6,7 +6,7 @@ import time
 import unittest
 
 from models.task_models import TaskMessage
-from services.broker.base import BrokerConsumeDecision
+from services.broker.base import BrokerConsumeDecision, BrokerResultEnvelope
 from services.broker.mock_broker import MockBrokerClient, _MockBackend
 
 
@@ -17,6 +17,7 @@ class MockBrokerClientTest(unittest.TestCase):
         with _MockBackend._lock:
             _MockBackend._result_queues.clear()
             _MockBackend._scheduled.clear()
+            _MockBackend._consumer_counts.clear()
 
     def _make_message(self, request_id: str, queue_name: str = "result.q") -> TaskMessage:
         return TaskMessage(
@@ -106,6 +107,25 @@ class MockBrokerClientTest(unittest.TestCase):
         queued = _MockBackend.collect_results("result.q", max_messages=5)
         self.assertEqual(len(queued), 1)
         self.assertEqual(queued[0].payload["request_id"], "req-pause")
+
+    def test_get_queue_stats_returns_consumer_and_ready_message_counts(self) -> None:
+        broker = MockBrokerClient()
+        broker.connect()
+        broker.declare_result_queue("result.q")
+        broker.start_result_consumer("result.q", lambda _envelope: BrokerConsumeDecision.ACK, prefetch_count=5)
+
+        with _MockBackend._lock:
+            _MockBackend._result_queues["result.q"].append(
+                BrokerResultEnvelope(payload={"request_id": "ready-1"})
+            )
+
+        stats = broker.get_queue_stats("result.q")
+        self.assertEqual(stats.consumer_count, 1)
+        self.assertEqual(stats.message_count, 1)
+
+        broker.stop_result_consumer()
+        stats_after_stop = broker.get_queue_stats("result.q")
+        self.assertEqual(stats_after_stop.consumer_count, 0)
 
 
 if __name__ == "__main__":

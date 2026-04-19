@@ -12,6 +12,7 @@ from services.broker.base import (
     AbstractBrokerClient,
     BrokerConsumeCallback,
     BrokerConsumeDecision,
+    BrokerQueueStats,
     BrokerResultEnvelope,
 )
 from services.broker.routing import resolve_publish_route
@@ -195,6 +196,21 @@ class RabbitMQClient(AbstractBrokerClient):
         self._consumer_callback = None
         self._delivered_since_pump = 0
         self._cancel_requested_after_delivery = False
+
+    def get_queue_stats(self, queue_name: str) -> BrokerQueueStats:
+        """Return passive queue metrics for UI monitoring."""
+
+        self._ensure_connected()
+        assert self._channel is not None
+
+        method_frame = self._channel.queue_declare(queue=queue_name, passive=True)
+        method = getattr(method_frame, "method", None)
+        consumer_count = int(getattr(method, "consumer_count", 0) or 0)
+        message_count = int(getattr(method, "message_count", 0) or 0)
+        return BrokerQueueStats(
+            consumer_count=max(0, consumer_count),
+            message_count=max(0, message_count),
+        )
 
     def ping(self) -> bool:
         """Return whether current connection appears healthy."""

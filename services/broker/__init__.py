@@ -8,6 +8,7 @@ from config.models import AppConfig
 from services.broker.base import (
     AbstractBrokerClient,
     BrokerConsumeDecision,
+    BrokerQueueStats,
     BrokerResultEnvelope,
 )
 from services.broker.mock_broker import MockBrokerClient
@@ -25,6 +26,7 @@ def build_broker_provider(config: AppConfig) -> Callable[[], AbstractBrokerClien
 __all__ = [
     "AbstractBrokerClient",
     "BrokerConsumeDecision",
+    "BrokerQueueStats",
     "BrokerResultEnvelope",
     "MockBrokerClient",
     "RabbitMQClient",

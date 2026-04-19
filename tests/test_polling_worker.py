@@ -10,6 +10,7 @@ from services.broker.base import (
     AbstractBrokerClient,
     BrokerConsumeCallback,
     BrokerConsumeDecision,
+    BrokerQueueStats,
     BrokerResultEnvelope,
 )
 
@@ -78,6 +79,10 @@ class FakeConsumerBroker(AbstractBrokerClient):
     def stop_result_consumer(self) -> None:
         self.consumer_stopped = True
         self.callback = None
+
+    def get_queue_stats(self, queue_name: str) -> BrokerQueueStats:
+        _ = queue_name
+        return BrokerQueueStats(consumer_count=0, message_count=0)
 
     def ping(self) -> bool:
         return self.connected

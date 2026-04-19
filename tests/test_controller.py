@@ -47,6 +47,8 @@ class DummyView(QObject if PYSIDE_AVAILABLE else object):
         self.connection = (False, "")
         self.overall: dict[str, float | int | None] = {}
         self.active_result_queue: str | None = None
+        self.queue_metrics: tuple[int | None, int | None] = (None, None)
+        self._disable_queue_metrics_monitor = True
 
     def set_running_state(self, running: bool) -> None:
         self.running = running
@@ -77,6 +79,9 @@ class DummyView(QObject if PYSIDE_AVAILABLE else object):
 
     def set_active_result_queue(self, queue_name: str | None) -> None:
         self.active_result_queue = queue_name
+
+    def set_queue_metrics(self, worker_count: int | None, message_count: int | None) -> None:
+        self.queue_metrics = (worker_count, message_count)
 
     def clear_progress_views(self) -> None:
         return
@@ -760,6 +765,33 @@ class TaskControllerTest(unittest.TestCase):
         self.assertFalse(controller._is_publish_worker_running())
         self.assertIsNone(controller._publish_thread)
         self.assertIsNone(controller._publish_worker)
+
+    def test_on_queue_metrics_updated_updates_view_with_fallback(self) -> None:
+        config = AppConfig(
+            rabbitmq=RabbitMQConfig(host="127.0.0.1", port=5672, username="guest", password="guest"),
+            publish=PublishConfig(image_extensions=[".jpg"]),
+            ui=UiConfig(),
+            mock_mode=True,
+        )
+        view = DummyView()
+        store = TaskStore()
+        logger = logging.getLogger("controller_queue_metrics_test")
+        logger.handlers.clear()
+        logger.addHandler(logging.NullHandler())
+
+        controller = TaskController(
+            config=config,
+            view=view,  # type: ignore[arg-type]
+            store=store,
+            broker_provider=build_broker_provider(config),
+            logger=logger,
+        )
+
+        controller._on_queue_metrics_updated(3, 41)
+        self.assertEqual(view.queue_metrics, (3, 41))
+
+        controller._on_queue_metrics_updated(-1, -1)
+        self.assertEqual(view.queue_metrics, (None, None))
 
 
 if __name__ == "__main__":

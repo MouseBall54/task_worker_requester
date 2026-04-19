@@ -20,6 +20,14 @@ class BrokerResultEnvelope:
     correlation_id: str | None = None
 
 
+@dataclass(slots=True)
+class BrokerQueueStats:
+    """Queue-level metrics sampled from broker management information."""
+
+    consumer_count: int
+    message_count: int
+
+
 class BrokerConsumeDecision(StrEnum):
     """Ack/nack policy returned by result-consumer callbacks."""
 
@@ -66,6 +74,10 @@ class AbstractBrokerClient(ABC):
     @abstractmethod
     def stop_result_consumer(self) -> None:
         """Cancel any registered result consumer safely."""
+
+    @abstractmethod
+    def get_queue_stats(self, queue_name: str) -> BrokerQueueStats:
+        """Return current queue metrics (consumer and ready-message counts)."""
 
     @abstractmethod
     def ping(self) -> bool:
