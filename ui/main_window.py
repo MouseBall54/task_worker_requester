@@ -269,7 +269,7 @@ class MainWindow(QMainWindow):
         connection_row = QHBoxLayout()
         connection_row.setSpacing(10)
 
-        self.connection_label = QLabel("연결 상태: 대기")
+        self.connection_label = QLabel(self._build_connection_status_text("대기"))
         self.connection_label.setObjectName("connectionStatus")
         connection_row.addWidget(self.connection_label, stretch=1)
 
@@ -289,27 +289,14 @@ class MainWindow(QMainWindow):
         self.queue_metrics_label.setObjectName("queueMetricsLabel")
         layout.addWidget(self.queue_metrics_label)
 
-        row_action_recipe = QHBoxLayout()
-
-        action_col = QHBoxLayout()
-        action_col.addWidget(QLabel("Action"), stretch=0)
-        self.action_edit = QLineEdit()
-        self.action_edit.setMinimumWidth(180)
-        action_col.addWidget(self.action_edit, stretch=1)
+        row_recipe_priority = QHBoxLayout()
 
         recipe_col = QHBoxLayout()
         recipe_col.addWidget(QLabel("Recipe"), stretch=0)
         self.recipe_combo = QComboBox()
         self.recipe_combo.currentIndexChanged.connect(self._on_recipe_changed)
-        self.recipe_combo.setMinimumWidth(180)
+        self.recipe_combo.setMinimumWidth(220)
         recipe_col.addWidget(self.recipe_combo, stretch=1)
-
-        row_action_recipe.addLayout(action_col, stretch=1)
-        row_action_recipe.addSpacing(12)
-        row_action_recipe.addLayout(recipe_col, stretch=1)
-        layout.addLayout(row_action_recipe)
-
-        row_runtime = QHBoxLayout()
 
         priority_col = QHBoxLayout()
         priority_col.addWidget(QLabel("Priority"), stretch=0)
@@ -319,21 +306,10 @@ class MainWindow(QMainWindow):
         priority_col.addWidget(self.priority_combo, stretch=0)
         priority_col.addStretch(1)
 
-        polling_col = QHBoxLayout()
-        polling_col.addWidget(QLabel("Polling 간격"), stretch=0)
-        self.polling_combo = QComboBox()
-        self.polling_combo.addItems(["3", "5", "10", "15"])
-        self.polling_combo.setEditable(True)
-        self.polling_combo.setMinimumContentsLength(4)
-        self.polling_combo.setMinimumWidth(112)
-        polling_col.addWidget(self.polling_combo, stretch=0)
-        polling_col.addWidget(QLabel("초"), stretch=0)
-        polling_col.addStretch(1)
-
-        row_runtime.addLayout(priority_col, stretch=1)
-        row_runtime.addSpacing(12)
-        row_runtime.addLayout(polling_col, stretch=1)
-        layout.addLayout(row_runtime)
+        row_recipe_priority.addLayout(recipe_col, stretch=1)
+        row_recipe_priority.addSpacing(12)
+        row_recipe_priority.addLayout(priority_col, stretch=1)
+        layout.addLayout(row_recipe_priority)
 
         recipe_path_row = QHBoxLayout()
         recipe_path_row.addWidget(QLabel("선택 경로"), stretch=0)
@@ -505,16 +481,9 @@ class MainWindow(QMainWindow):
         return panel
 
     def _apply_defaults(self) -> None:
-        self.action_edit.setText(self._config.publish.default_action)
         self._populate_recipe_selector()
         self._populate_priority_selector()
         self.set_queue_metrics(None, None)
-
-        idx = self.polling_combo.findText(str(self._config.publish.polling_interval_seconds))
-        if idx >= 0:
-            self.polling_combo.setCurrentIndex(idx)
-        else:
-            self.polling_combo.setCurrentText(str(self._config.publish.polling_interval_seconds))
 
     def _apply_initial_scroll_alignment_once(self) -> None:
         """Reset horizontal scrollbars to left once at startup."""
@@ -580,18 +549,14 @@ class MainWindow(QMainWindow):
         return True
 
     def current_runtime_settings(self) -> tuple[str, str, int, int]:
-        """Return action, recipe path, polling interval, and priority from UI fields."""
+        """Return runtime settings using recipe/priority UI and config defaults."""
 
-        action = self.action_edit.text().strip()
+        action = self._config.publish.default_action
         recipe_path = str(self.recipe_combo.currentData() or "").strip()
         if not recipe_path:
             recipe_path = self._config.recipe_config.default_path
 
-        polling_text = self.polling_combo.currentText().strip() or "5"
-        try:
-            polling_interval = max(1, int(polling_text))
-        except ValueError:
-            polling_interval = 5
+        polling_interval = max(1, int(self._config.publish.polling_interval_seconds))
 
         try:
             priority = max(0, int(self.priority_combo.currentText().strip() or "0"))
@@ -642,9 +607,17 @@ class MainWindow(QMainWindow):
 
         state = "connected" if connected else "disconnected"
         self.connection_label.setProperty("state", state)
-        self.connection_label.setText(f"연결 상태: {label}")
+        self.connection_label.setText(self._build_connection_status_text(label))
         self.connection_label.style().unpolish(self.connection_label)
         self.connection_label.style().polish(self.connection_label)
+
+    def _build_connection_status_text(self, status_label: str) -> str:
+        """Build connection badge text including broker endpoint and request queue."""
+
+        host = str(self._config.rabbitmq.host or "-").strip() or "-"
+        port = int(self._config.rabbitmq.port)
+        request_queue = str(self._config.rabbitmq.request_queue or "-").strip() or "-"
+        return f"연결 상태: {status_label} | {host}:{port} | request_queue: {request_queue}"
 
     def set_queue_metrics(self, worker_count: int | None, queued_messages: int | None) -> None:
         """Render queue consumer/message counters near connection status."""

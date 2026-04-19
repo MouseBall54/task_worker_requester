@@ -50,11 +50,15 @@ class MainWindowTest(unittest.TestCase):
             self.assertEqual(window.windowTitle(), "IPDK_plus")
             self.assertFalse(hasattr(window, "brand_icon_label"))
             self.assertFalse(hasattr(window, "drive_combo"))
+            self.assertFalse(hasattr(window, "action_edit"))
+            self.assertFalse(hasattr(window, "polling_combo"))
             self.assertFalse(window.folder_tree.rootIndex().isValid())
             self.assertTrue(window.folder_tree.isHeaderHidden())
             self.assertTrue(hasattr(window, "main_splitter"))
             self.assertEqual(window.folder_tree.horizontalScrollBarPolicy(), Qt.ScrollBarAsNeeded)
             self.assertEqual(window.folder_tree.textElideMode(), Qt.ElideNone)
+            self.assertIn("127.0.0.1:5672", window.connection_label.text())
+            self.assertIn("request_queue: task.request", window.connection_label.text())
         finally:
             window.close()
 
