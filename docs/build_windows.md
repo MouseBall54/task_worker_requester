@@ -14,6 +14,10 @@
 - Python `3.11`
 - `uv`
 - Inno Setup 6 이상 (`ISCC.exe` 가 PATH 에 잡혀 있으면 가장 편합니다)
+- `packaging\prereqs\vc_redist.x64.exe` (Microsoft Visual C++ Redistributable x64)
+
+`vc_redist.x64.exe`는 Microsoft 공식 배포 파일을 사용하세요.  
+권장 경로: `https://aka.ms/vs/17/release/vc_redist.x64.exe`
 
 ### 1. Build Environment
 
@@ -28,6 +32,11 @@ uv sync --group build
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\build_windows.ps1
 ```
+
+위 스크립트는 아래를 자동 검증합니다.
+
+- `packaging\prereqs\vc_redist.x64.exe` 존재 여부
+- PyInstaller 산출물의 Qt/VC 핵심 파일 존재 여부
 
 직접 실행:
 
@@ -53,6 +62,9 @@ ISCC .\packaging\IPDK_plus.iss
 
 성공하면 `dist\installer\IPDK_plusSetup.exe` 가 생성됩니다.
 
+설치 과정에서 `vc_redist.x64.exe`를 자동으로 `silent` 설치합니다.  
+Python 이 전혀 설치되지 않은 PC에서도 Qt DLL 로딩 실패를 방지하기 위한 필수 단계입니다.
+
 ### Runtime Config Location
 
 설치 후 사용자가 수정할 기본 설정은 설치 폴더가 아니라 아래 위치를 우선 사용합니다.
@@ -69,6 +81,9 @@ ISCC .\packaging\IPDK_plus.iss
 
 앱 첫 실행 시 위 파일이 없으면 번들된 seed 템플릿을 자동 복사합니다.
 로그도 동일한 AppData 루트 아래에 기록되며, 설치 폴더(`Program Files` 등) 아래에 `logs` 디렉터리를 만들지 않습니다.
+
+주의: 언인스톨 시 `%APPDATA%\IPDK_plus`는 자동 삭제됩니다.
+재설치 후에는 seed 템플릿 기준으로 새 `app_config.yaml`, `recipe_config.yaml`가 생성됩니다.
 
 ### Config Override
 

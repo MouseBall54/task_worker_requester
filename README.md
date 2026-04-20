@@ -63,6 +63,7 @@ uv run python main.py --config config/app_config.yaml
 - UI의 `Priority` 드롭다운 범위는 `rabbitmq.request_queue_declare.arguments.x-max-priority` 값을 기준으로 `0..max`로 생성됩니다.
 - 설치형 실행에서는 기본 편집 대상 설정 파일이 `%APPDATA%\IPDK_plus\app_config.yaml` 입니다.
 - 로그 파일은 `%APPDATA%\IPDK_plus\logs\app.log` 에 기록되며, 설치 폴더 아래에는 로그를 만들지 않습니다.
+- 설치 제거(Uninstall) 시 `%APPDATA%\IPDK_plus`는 자동 삭제되며, 재설치 시 기본 템플릿으로 다시 생성됩니다.
 
 ### Recipe 설정 분리
 
@@ -139,6 +140,7 @@ PySide6 미설치 환경에서는 GUI 의존 테스트(`test_controller`)가 자
 ## Windows 배포
 
 - PyInstaller onedir GUI exe + Inno Setup 설치형 패키지 기준으로 구성했습니다.
+- 설치형 패키지는 `packaging\prereqs\vc_redist.x64.exe`를 포함해 VC++ 런타임을 자동 설치합니다.
 - 빌드 스크립트: [scripts/build_windows.ps1](.\scripts\build_windows.ps1)
 - PyInstaller spec: [packaging/IPDK_plus.spec](.\packaging\IPDK_plus.spec)
 - Inno Setup 스크립트: [packaging/IPDK_plus.iss](.\packaging\IPDK_plus.iss)
