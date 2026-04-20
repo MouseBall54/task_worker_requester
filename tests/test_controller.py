@@ -48,10 +48,14 @@ class DummyView(QObject if PYSIDE_AVAILABLE else object):
         self.overall: dict[str, float | int | None] = {}
         self.active_result_queue: str | None = None
         self.queue_metrics: tuple[int | None, int | None] = (None, None)
+        self.runtime_options_enabled = True
         self._disable_queue_metrics_monitor = True
 
     def set_running_state(self, running: bool) -> None:
         self.running = running
+
+    def set_runtime_options_enabled(self, enabled: bool) -> None:
+        self.runtime_options_enabled = enabled
 
     def set_connection_status(self, connected: bool, label: str) -> None:
         self.connection = (connected, label)
@@ -792,6 +796,134 @@ class TaskControllerTest(unittest.TestCase):
 
         controller._on_queue_metrics_updated(-1, -1)
         self.assertEqual(view.queue_metrics, (None, None))
+
+    def test_start_requested_locks_runtime_options_and_stop_keeps_lock(self) -> None:
+        config = AppConfig(
+            rabbitmq=RabbitMQConfig(host="127.0.0.1", port=5672, username="guest", password="guest"),
+            publish=PublishConfig(image_extensions=[".jpg"]),
+            ui=UiConfig(),
+            mock_mode=True,
+        )
+        view = DummyView()
+        store = TaskStore()
+        logger = logging.getLogger("controller_runtime_lock_test")
+        logger.handlers.clear()
+        logger.addHandler(logging.NullHandler())
+
+        store.register_folder_map({"f1": ["f1/a.jpg"]})
+
+        controller = TaskController(
+            config=config,
+            view=view,  # type: ignore[arg-type]
+            store=store,
+            broker_provider=build_broker_provider(config),
+            logger=logger,
+        )
+
+        controller._start_publish_worker = lambda *args, **kwargs: None  # type: ignore[method-assign]
+        controller.on_start_requested()
+
+        self.assertTrue(controller._runtime_options_locked)
+        self.assertFalse(view.runtime_options_enabled)
+
+        controller.on_stop_requested()
+        self.assertTrue(controller._runtime_options_locked)
+        self.assertFalse(view.runtime_options_enabled)
+
+    def test_poll_finish_unlocks_runtime_options_when_all_terminal(self) -> None:
+        config = AppConfig(
+            rabbitmq=RabbitMQConfig(host="127.0.0.1", port=5672, username="guest", password="guest"),
+            publish=PublishConfig(image_extensions=[".jpg"]),
+            ui=UiConfig(),
+            mock_mode=True,
+        )
+        view = DummyView()
+        store = TaskStore()
+        logger = logging.getLogger("controller_runtime_unlock_terminal_test")
+        logger.handlers.clear()
+        logger.addHandler(logging.NullHandler())
+
+        store.register_folder_map({"f1": ["f1/a.jpg"]})
+
+        controller = TaskController(
+            config=config,
+            view=view,  # type: ignore[arg-type]
+            store=store,
+            broker_provider=build_broker_provider(config),
+            logger=logger,
+        )
+
+        controller._start_publish_worker = lambda *args, **kwargs: None  # type: ignore[method-assign]
+        controller.on_start_requested()
+        self.assertFalse(view.runtime_options_enabled)
+
+        for task in store.get_image_tasks("f1"):
+            task.status = TaskStatus.SUCCESS
+
+        controller._publish_finished = True
+        controller._on_poll_finished()
+
+        self.assertFalse(controller._runtime_options_locked)
+        self.assertTrue(view.runtime_options_enabled)
+
+    def test_reset_unlocks_runtime_options(self) -> None:
+        config = AppConfig(
+            rabbitmq=RabbitMQConfig(host="127.0.0.1", port=5672, username="guest", password="guest"),
+            publish=PublishConfig(image_extensions=[".jpg"]),
+            ui=UiConfig(),
+            mock_mode=True,
+        )
+        view = DummyView()
+        store = TaskStore()
+        logger = logging.getLogger("controller_runtime_unlock_reset_test")
+        logger.handlers.clear()
+        logger.addHandler(logging.NullHandler())
+
+        store.register_folder_map({"f1": ["f1/a.jpg"]})
+
+        controller = TaskController(
+            config=config,
+            view=view,  # type: ignore[arg-type]
+            store=store,
+            broker_provider=build_broker_provider(config),
+            logger=logger,
+        )
+
+        controller._start_publish_worker = lambda *args, **kwargs: None  # type: ignore[method-assign]
+        controller.on_start_requested()
+        self.assertFalse(view.runtime_options_enabled)
+
+        controller.on_reset_requested()
+
+        self.assertFalse(controller._runtime_options_locked)
+        self.assertTrue(view.runtime_options_enabled)
+
+    def test_start_validation_failure_does_not_lock_runtime_options(self) -> None:
+        config = AppConfig(
+            rabbitmq=RabbitMQConfig(host="127.0.0.1", port=5672, username="guest", password="guest"),
+            publish=PublishConfig(image_extensions=[".jpg"]),
+            ui=UiConfig(),
+            mock_mode=True,
+        )
+        view = DummyView()
+        store = TaskStore()
+        logger = logging.getLogger("controller_runtime_lock_validation_fail_test")
+        logger.handlers.clear()
+        logger.addHandler(logging.NullHandler())
+
+        controller = TaskController(
+            config=config,
+            view=view,  # type: ignore[arg-type]
+            store=store,
+            broker_provider=build_broker_provider(config),
+            logger=logger,
+        )
+
+        view.current_runtime_settings = lambda: ("", "", 1, 0)  # type: ignore[method-assign]
+        controller.on_start_requested()
+
+        self.assertFalse(controller._runtime_options_locked)
+        self.assertTrue(view.runtime_options_enabled)
 
 
 if __name__ == "__main__":

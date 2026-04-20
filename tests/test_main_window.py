@@ -144,6 +144,19 @@ class MainWindowTest(unittest.TestCase):
         finally:
             window.close()
 
+    def test_set_runtime_options_enabled_toggles_recipe_and_priority(self) -> None:
+        window = self._make_window()
+        try:
+            window.set_runtime_options_enabled(False)
+            self.assertFalse(window.recipe_combo.isEnabled())
+            self.assertFalse(window.priority_combo.isEnabled())
+
+            window.set_runtime_options_enabled(True)
+            self.assertTrue(window.recipe_combo.isEnabled())
+            self.assertTrue(window.priority_combo.isEnabled())
+        finally:
+            window.close()
+
 
 if __name__ == "__main__":
     unittest.main()

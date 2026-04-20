@@ -485,6 +485,7 @@ class MainWindow(QMainWindow):
         self._populate_recipe_selector()
         self._populate_priority_selector()
         self.set_queue_metrics(None, None)
+        self.set_runtime_options_enabled(True)
 
     def _apply_initial_scroll_alignment_once(self) -> None:
         """Reset horizontal scrollbars to left once at startup."""
@@ -667,6 +668,12 @@ class MainWindow(QMainWindow):
         self.btn_stop.setEnabled(running)
         self.btn_add_folder.setEnabled(True)
         self.btn_add_subfolders.setEnabled(True)
+
+    def set_runtime_options_enabled(self, enabled: bool) -> None:
+        """Enable/disable runtime-editable controls for session stability."""
+
+        self.recipe_combo.setEnabled(enabled)
+        self.priority_combo.setEnabled(enabled)
 
     def set_folder_rows(self, rows: list[FolderSummary]) -> None:
         """Replace folder table rows."""

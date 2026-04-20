@@ -52,6 +52,7 @@ class TaskController(QObject):
 
         self._publish_finished = True
         self._active = False
+        self._runtime_options_locked = False
         self._active_timeout_seconds = config.publish.timeout_seconds
         self._pending_polling_interval = config.publish.polling_interval_seconds
         self._active_result_queue: str | None = None
@@ -77,6 +78,7 @@ class TaskController(QObject):
 
         self._wire_signals()
         self._view.set_running_state(False)
+        self._sync_runtime_options_enabled()
         self._check_connection_once()
         if not getattr(self._view, "_disable_queue_metrics_monitor", False):
             self._start_queue_metrics_monitor()
@@ -205,6 +207,7 @@ class TaskController(QObject):
                     polling_interval=polling_interval,
                 )
             else:
+                self._set_runtime_options_locked(False)
                 self._log("전송할 PENDING 작업이 없습니다.")
             return
 
@@ -224,6 +227,7 @@ class TaskController(QObject):
         self._active_result_queue = queue_name
         self._view.set_active_result_queue(queue_name)
         self._view.set_running_state(True)
+        self._set_runtime_options_locked(True)
         if self._resolved_local_ipv4:
             self._log(
                 f"결과 큐 결정 - base={self._config.rabbitmq.result_queue_base}, "
@@ -238,6 +242,7 @@ class TaskController(QObject):
             self._log("초기 전송 대상 메시지를 구성하지 못했습니다.")
             self._active = False
             self._view.set_running_state(False)
+            self._set_runtime_options_locked(False)
             return
 
         self._start_publish_worker(
@@ -265,6 +270,7 @@ class TaskController(QObject):
         self._active_result_queue = queue_name
         self._view.set_active_result_queue(queue_name)
         self._view.set_running_state(True)
+        self._set_runtime_options_locked(True)
         self._view.set_connection_status(True, f"결과 모니터링 재개 ({queue_name})")
         self._start_polling_worker(
             queue_name=queue_name,
@@ -300,6 +306,7 @@ class TaskController(QObject):
         self._store.reset()
         self._active_result_queue = None
         self._view.set_active_result_queue(None)
+        self._set_runtime_options_locked(False)
         self._log("작업 상태를 초기화했습니다.")
 
     @Slot(str)
@@ -538,6 +545,8 @@ class TaskController(QObject):
         if self._publish_finished:
             self._active = False
             self._view.set_running_state(False)
+            if self._store.all_tasks_terminal():
+                self._set_runtime_options_locked(False)
 
     @Slot(int, int)
     def _on_queue_metrics_updated(self, worker_count: int, message_count: int) -> None:
@@ -604,6 +613,7 @@ class TaskController(QObject):
         self._active_result_queue = None
         self._view.set_active_result_queue(None)
         self._view.set_running_state(False)
+        self._sync_runtime_options_enabled()
         self._log(reason)
 
     def _stop_queue_metrics_monitor(self) -> None:
@@ -714,6 +724,17 @@ class TaskController(QObject):
         timestamped = f"[{datetime.now().strftime('%H:%M:%S')}] {message}"
         self._view.append_log(timestamped)
         self._logger.info(message)
+
+    def _set_runtime_options_locked(self, locked: bool) -> None:
+        """Persist and propagate recipe/priority edit lock state."""
+
+        self._runtime_options_locked = bool(locked)
+        self._sync_runtime_options_enabled()
+
+    def _sync_runtime_options_enabled(self) -> None:
+        """Reflect current lock state to view controls."""
+
+        self._view.set_runtime_options_enabled(not self._runtime_options_locked)
 
     def _register_selected_folders(self, folder_paths: list[str], include_subfolders: bool) -> None:
         """Scan/register folders from multi-selection and optionally enqueue during run."""
