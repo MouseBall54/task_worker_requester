@@ -433,7 +433,7 @@ class TaskController(QObject):
             )
         self._active_result_queue = queue_name
         self._view.set_active_result_queue(queue_name)
-        self._view.set_connection_status(True, f"결과 큐 준비 ({queue_name})")
+        self._view.set_connection_status(True, "연결 성공")
 
     @Slot(str, int, int, object, object)
     def _on_message_published(

@@ -57,6 +57,7 @@ class MainWindowTest(unittest.TestCase):
             self.assertTrue(hasattr(window, "main_splitter"))
             self.assertEqual(window.folder_tree.horizontalScrollBarPolicy(), Qt.ScrollBarAsNeeded)
             self.assertEqual(window.folder_tree.textElideMode(), Qt.ElideNone)
+            self.assertIn("\n", window.connection_label.text())
             self.assertIn("127.0.0.1:5672", window.connection_label.text())
             self.assertIn("request_queue: task.request", window.connection_label.text())
         finally:

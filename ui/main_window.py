@@ -271,6 +271,7 @@ class MainWindow(QMainWindow):
 
         self.connection_label = QLabel(self._build_connection_status_text("대기"))
         self.connection_label.setObjectName("connectionStatus")
+        self.connection_label.setWordWrap(True)
         connection_row.addWidget(self.connection_label, stretch=1)
 
         self.btn_toggle_sidebar = QToolButton(panel)
@@ -617,7 +618,10 @@ class MainWindow(QMainWindow):
         host = str(self._config.rabbitmq.host or "-").strip() or "-"
         port = int(self._config.rabbitmq.port)
         request_queue = str(self._config.rabbitmq.request_queue or "-").strip() or "-"
-        return f"연결 상태: {status_label} | {host}:{port} | request_queue: {request_queue}"
+        return (
+            f"연결 상태: {status_label}\n"
+            f"host: {host}:{port} | request_queue: {request_queue}"
+        )
 
     def set_queue_metrics(self, worker_count: int | None, queued_messages: int | None) -> None:
         """Render queue consumer/message counters near connection status."""
