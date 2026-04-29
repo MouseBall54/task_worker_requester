@@ -770,6 +770,157 @@ class TaskControllerTest(unittest.TestCase):
         self.assertIsNone(controller._publish_thread)
         self.assertIsNone(controller._publish_worker)
 
+    def test_on_poll_finished_clears_poll_worker_references(self) -> None:
+        config = AppConfig(
+            rabbitmq=RabbitMQConfig(host="127.0.0.1", port=5672, username="guest", password="guest"),
+            publish=PublishConfig(image_extensions=[".jpg"]),
+            ui=UiConfig(),
+            mock_mode=True,
+        )
+        view = DummyView()
+        store = TaskStore()
+        logger = logging.getLogger("controller_poll_finish_cleanup_test")
+        logger.handlers.clear()
+        logger.addHandler(logging.NullHandler())
+
+        controller = TaskController(
+            config=config,
+            view=view,  # type: ignore[arg-type]
+            store=store,
+            broker_provider=build_broker_provider(config),
+            logger=logger,
+        )
+        controller._poll_thread = object()  # type: ignore[assignment]
+        controller._poll_worker = object()  # type: ignore[assignment]
+
+        controller._on_poll_finished()
+
+        self.assertIsNone(controller._poll_thread)
+        self.assertIsNone(controller._poll_worker)
+
+    def test_on_queue_ready_restarts_polling_when_poll_thread_is_stale(self) -> None:
+        class _StoppedThread:
+            def isRunning(self) -> bool:  # noqa: N802
+                return False
+
+        config = AppConfig(
+            rabbitmq=RabbitMQConfig(host="127.0.0.1", port=5672, username="guest", password="guest"),
+            publish=PublishConfig(image_extensions=[".jpg"], polling_interval_seconds=7),
+            ui=UiConfig(),
+            mock_mode=True,
+        )
+        view = DummyView()
+        store = TaskStore()
+        logger = logging.getLogger("controller_stale_poll_restart_test")
+        logger.handlers.clear()
+        logger.addHandler(logging.NullHandler())
+        store.register_folder_map({"f1": ["f1/a.jpg"]})
+        request_id = store.get_image_tasks("f1")[0].request_id
+
+        controller = TaskController(
+            config=config,
+            view=view,  # type: ignore[arg-type]
+            store=store,
+            broker_provider=build_broker_provider(config),
+            logger=logger,
+        )
+        controller._poll_thread = _StoppedThread()  # type: ignore[assignment]
+        controller._poll_worker = object()  # type: ignore[assignment]
+        controller._pending_polling_interval = 7
+
+        started: dict[str, object] = {}
+
+        def _fake_start_polling_worker(
+            queue_name: str,
+            polling_interval: int,
+            tracked_request_ids: set[str] | None = None,
+        ) -> None:
+            started["queue_name"] = queue_name
+            started["polling_interval"] = polling_interval
+            started["tracked_request_ids"] = tracked_request_ids or set()
+
+        controller._start_polling_worker = _fake_start_polling_worker  # type: ignore[method-assign]
+
+        controller._on_queue_ready("result.q")
+
+        self.assertEqual(started.get("queue_name"), "result.q")
+        self.assertEqual(started.get("polling_interval"), 7)
+        self.assertIn(request_id, started.get("tracked_request_ids", set()))
+        self.assertEqual(view.active_result_queue, "result.q")
+        self.assertEqual(view.connection, (True, "연결 성공"))
+
+    def test_subfolder_start_restarts_polling_after_completed_session(self) -> None:
+        class _StoppedThread:
+            def isRunning(self) -> bool:  # noqa: N802
+                return False
+
+        config = AppConfig(
+            rabbitmq=RabbitMQConfig(host="127.0.0.1", port=5672, username="guest", password="guest"),
+            publish=PublishConfig(image_extensions=[".jpg"], polling_interval_seconds=3),
+            ui=UiConfig(),
+            mock_mode=True,
+        )
+        view = DummyView()
+        store = TaskStore()
+        logger = logging.getLogger("controller_subfolder_poll_restart_test")
+        logger.handlers.clear()
+        logger.addHandler(logging.NullHandler())
+
+        store.register_folder_map({"done_folder": ["done_folder/done.jpg"]})
+        for task in store.get_image_tasks("done_folder"):
+            task.status = TaskStatus.SUCCESS
+
+        controller = TaskController(
+            config=config,
+            view=view,  # type: ignore[arg-type]
+            store=store,
+            broker_provider=build_broker_provider(config),
+            logger=logger,
+        )
+        controller._ensure_resolved_result_queue = lambda: "result.q"  # type: ignore[method-assign]
+        controller._resolved_local_ipv4 = "127.0.0.1"
+        controller._poll_thread = _StoppedThread()  # type: ignore[assignment]
+        controller._poll_worker = object()  # type: ignore[assignment]
+        controller._publish_finished = True
+
+        published_request_ids: list[str] = []
+        started: dict[str, object] = {}
+
+        def _fake_start_publish_worker(messages, publish_exchange, publish_routing_key):  # noqa: ANN001
+            _ = publish_exchange
+            _ = publish_routing_key
+            published_request_ids.extend(message.request_id for message in messages)
+
+        def _fake_start_polling_worker(
+            queue_name: str,
+            polling_interval: int,
+            tracked_request_ids: set[str] | None = None,
+        ) -> None:
+            started["queue_name"] = queue_name
+            started["polling_interval"] = polling_interval
+            started["tracked_request_ids"] = tracked_request_ids or set()
+
+        controller._start_publish_worker = _fake_start_publish_worker  # type: ignore[method-assign]
+        controller._start_polling_worker = _fake_start_polling_worker  # type: ignore[method-assign]
+
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "root"
+            subfolder = root / "sub_a"
+            subfolder.mkdir(parents=True)
+            image_path = subfolder / "new.jpg"
+            image_path.write_text("x", encoding="utf-8")
+
+            controller.on_add_subfolders_requested([str(root)])
+            controller.on_start_requested()
+
+        controller._on_queue_ready("result.q")
+
+        self.assertEqual(len(published_request_ids), 1)
+        self.assertEqual(started.get("queue_name"), "result.q")
+        self.assertEqual(started.get("polling_interval"), 1)
+        self.assertIn(published_request_ids[0], started.get("tracked_request_ids", set()))
+        self.assertTrue(any("sub_folder 등록 완료" in log for log in view.logs))
+
     def test_on_queue_metrics_updated_updates_view_with_fallback(self) -> None:
         config = AppConfig(
             rabbitmq=RabbitMQConfig(host="127.0.0.1", port=5672, username="guest", password="guest"),

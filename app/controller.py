@@ -432,7 +432,7 @@ class TaskController(QObject):
     def _on_queue_ready(self, queue_name: str) -> None:
         """Start polling only after result queue declaration is confirmed."""
 
-        if self._poll_worker is None:
+        if not self._is_poll_worker_running():
             self._start_polling_worker(
                 queue_name=queue_name,
                 polling_interval=self._pending_polling_interval,
@@ -542,6 +542,8 @@ class TaskController(QObject):
     @Slot()
     def _on_poll_finished(self) -> None:
         self._log("Polling 워커 종료")
+        self._poll_worker = None
+        self._poll_thread = None
         if self._publish_finished:
             self._active = False
             self._view.set_running_state(False)
@@ -1085,6 +1087,22 @@ class TaskController(QObject):
         if not running and self._publish_finished:
             self._publish_thread = None
             self._publish_worker = None
+        return running
+
+    def _is_poll_worker_running(self) -> bool:
+        """Return whether one polling worker thread is still active."""
+
+        if self._poll_thread is None:
+            return False
+        try:
+            running = self._poll_thread.isRunning()
+        except RuntimeError:
+            self._poll_thread = None
+            self._poll_worker = None
+            return False
+        if not running:
+            self._poll_thread = None
+            self._poll_worker = None
         return running
 
     def _available_open_slots(self) -> int:
