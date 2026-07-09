@@ -142,6 +142,15 @@ class UiConfig:
 
 
 @dataclass(slots=True)
+class UpdateConfig:
+    """External update link settings."""
+
+    enabled: bool = True
+    latest_release_url: str = "https://github.com/MouseBall54/task_worker_requester/releases/latest"
+    manifest_url: str = "https://github.com/MouseBall54/task_worker_requester/releases/latest/download/latest.json"
+
+
+@dataclass(slots=True)
 class AppConfig:
     """Root configuration object."""
 
@@ -150,6 +159,7 @@ class AppConfig:
     recipe_config: RecipeConfig = field(default_factory=RecipeConfig)
     publish: PublishConfig = field(default_factory=PublishConfig)
     ui: UiConfig = field(default_factory=UiConfig)
+    update: UpdateConfig = field(default_factory=UpdateConfig)
     mock_mode: bool = False
     log_level: str = "INFO"
 

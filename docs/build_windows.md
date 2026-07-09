@@ -7,7 +7,7 @@
 1. `PyInstaller` 로 `IPDK_plus.exe` onedir 산출물 생성
 2. `Inno Setup` 으로 설치형 패키지 생성
 
-기본 아이콘은 사용자 제공 `C:\Users\youngmoon\Pictures\IPDK_plus_02_layer_stack.ico` 를 반영한 [assets/IPDK_plus.ico](.\assets\IPDK_plus.ico) 를 사용합니다.
+기본 아이콘은 사용자 제공 [a5303f13-1f30-4cdd-9acb-964ee59596a7.png](.\a5303f13-1f30-4cdd-9acb-964ee59596a7.png)를 투명 배경으로 정리한 [assets/IPDK_plus.png](.\assets\IPDK_plus.png)와 Windows용 다중 해상도 [assets/IPDK_plus.ico](.\assets\IPDK_plus.ico)를 사용합니다.
 
 ### Prerequisites
 
@@ -37,6 +37,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build_windows.ps1
 
 - `packaging\prereqs\vc_redist.x64.exe` 존재 여부
 - PyInstaller 산출물의 Qt/VC 핵심 파일 존재 여부
+- QWidget 앱에서 쓰지 않는 Qt Quick/QML/PDF/VirtualKeyboard 계열 번들 파일 제거
 
 직접 실행:
 
@@ -50,9 +51,10 @@ uv run --group build pyinstaller .\packaging\IPDK_plus.spec --clean --noconfirm
 
 제목 표시줄 아이콘까지 정상 표시되려면 아래 runtime asset도 함께 포함되어야 합니다.
 
+- `dist\IPDK_plus\_internal\assets\IPDK_plus.png`
 - `dist\IPDK_plus\_internal\assets\IPDK_plus.ico`
 
-작업표시줄 아이콘은 exe 내부 아이콘을 사용하고, 메인창 제목 표시줄 아이콘은 위 runtime asset을 읽어 설정합니다.
+작업표시줄 아이콘은 exe 내부 ICO를 사용하고, 메인창 제목 표시줄 아이콘은 PNG runtime asset을 우선 읽어 설정합니다.
 
 ### 3. Build Installer
 
@@ -60,7 +62,7 @@ uv run --group build pyinstaller .\packaging\IPDK_plus.spec --clean --noconfirm
 ISCC .\packaging\IPDK_plus.iss
 ```
 
-성공하면 `dist\installer\IPDK_plusSetup.exe` 가 생성됩니다.
+성공하면 `dist\installer\IPDK_plusSetup_26.7.9.exe` 가 생성됩니다.
 
 설치 과정에서 `vc_redist.x64.exe`를 자동으로 `silent` 설치합니다.  
 Python 이 전혀 설치되지 않은 PC에서도 Qt DLL 로딩 실패를 방지하기 위한 필수 단계입니다.
@@ -82,8 +84,10 @@ Python 이 전혀 설치되지 않은 PC에서도 Qt DLL 로딩 실패를 방지
 앱 첫 실행 시 위 파일이 없으면 번들된 seed 템플릿을 자동 복사합니다.
 로그도 동일한 AppData 루트 아래에 기록되며, 설치 폴더(`Program Files` 등) 아래에 `logs` 디렉터리를 만들지 않습니다.
 
-주의: 언인스톨 시 `%APPDATA%\IPDK_plus`는 자동 삭제됩니다.
-재설치 후에는 seed 템플릿 기준으로 새 `app_config.yaml`, `recipe_config.yaml`가 생성됩니다.
+앱은 마지막으로 적용한 seed fingerprint를 `%APPDATA%\IPDK_plus\.seed_fingerprint`에 저장합니다.
+새 설치본에 포함된 `app_config.yaml`, `recipe_config.yaml` fingerprint가 달라지면 다음 앱 실행 시 기존 파일은 `.bak.<timestamp>`로 백업되고 새 seed 템플릿으로 갱신됩니다.
+
+주의: 언인스톨 시 `%APPDATA%\IPDK_plus`는 삭제하지 않습니다.
 
 ### Config Override
 
@@ -98,3 +102,9 @@ Python 이 전혀 설치되지 않은 PC에서도 Qt DLL 로딩 실패를 방지
 - `recipe_config.yaml` 안의 `path` 값은 현재 환경에 맞는 실제 recipe JSON 경로로 수정하는 것을 권장합니다.
 - 기본 seed 설정은 예시 경로를 담고 있으며, repo 에 실제 `recipes\*.json` 파일은 포함되어 있지 않습니다.
 - 앱은 선택한 recipe 파일이 로컬에 없으면 경고 로그를 남기지만, MQ payload 의 `RECIPE_PATH` 값은 설정 문자열 그대로 유지합니다.
+
+### Update Link
+
+- 설치 프로그램의 `AppUpdatesURL`과 시작 메뉴의 `업데이트 확인` shortcut은 `https://github.com/MouseBall54/task_worker_requester/releases/latest`를 사용합니다.
+- 앱 내부 `도움말 > 업데이트 확인` 메뉴도 `config/app_config.yaml`의 `update.latest_release_url`을 엽니다.
+- 실제 배포 위치가 바뀌면 `config/app_config.yaml`의 `update.latest_release_url`, `update.manifest_url`, `packaging/IPDK_plus.iss`의 `MyUpdateUrl`을 같은 대상으로 맞추세요.

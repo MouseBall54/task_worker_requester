@@ -16,6 +16,7 @@ from app.runtime_paths import (
     resolve_stylesheet_path,
 )
 from app.single_instance import SingleInstanceGuard, ensure_single_instance
+from app.version import APP_VERSION
 from config.config_loader import ConfigError, ConfigLoader
 from services.broker import build_broker_provider
 from state.task_store import TaskStore
@@ -32,6 +33,7 @@ def run_app(config_path: str | None = None) -> int:
 
     app = QApplication.instance() or QApplication(sys.argv)
     app.setApplicationName(APP_DISPLAY_NAME)
+    app.setApplicationVersion(APP_VERSION)
 
     guard = ensure_single_instance(SINGLE_INSTANCE_KEY)
     if guard is None:

@@ -9,12 +9,14 @@ from models.task_models import FolderSummary, TaskStatus
 
 try:
     from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication
     from ui.main_window import MainWindow
 
     PYSIDE_AVAILABLE = True
 except ImportError:  # pragma: no cover
     Qt = None  # type: ignore[assignment]
+    QTest = None  # type: ignore[assignment]
     QApplication = None  # type: ignore[assignment]
     MainWindow = None  # type: ignore[assignment]
     PYSIDE_AVAILABLE = False
@@ -63,6 +65,44 @@ class MainWindowTest(unittest.TestCase):
         finally:
             window.close()
 
+    def test_help_menu_action_opens_searchable_help_dialog(self) -> None:
+        window = self._make_window()
+        try:
+            self.assertTrue(hasattr(window, "action_open_help"))
+            self.assertEqual(window.action_open_help.text(), "도움말 열기")
+            self.assertEqual(window.action_open_help.shortcut().toString(), "F1")
+            self.assertTrue(hasattr(window, "action_check_update"))
+            self.assertEqual(window.action_check_update.text(), "업데이트 확인")
+
+            window.show()
+            self._app.processEvents()
+            QTest.keyClick(window, Qt.Key_F1)
+            self._app.processEvents()
+
+            self.assertIsNotNone(window._help_dialog)
+            dialog = window._help_dialog
+            self.assertTrue(dialog.isVisible())
+            self.assertGreaterEqual(dialog.topic_list.count(), 11)
+
+            dialog.search_edit.setText("RabbitMQ")
+            self._app.processEvents()
+            self.assertRegex(dialog.match_count_label.text(), r"^\d+ / \d+$")
+
+            first_count = dialog.match_count_label.text()
+            QTest.keyClick(dialog.search_edit, Qt.Key_Return)
+            self._app.processEvents()
+            self.assertNotEqual(dialog.match_count_label.text(), first_count)
+
+            QTest.keyClick(dialog.search_edit, Qt.Key_Return, Qt.ShiftModifier)
+            self._app.processEvents()
+            self.assertEqual(dialog.match_count_label.text(), first_count)
+
+            window.action_open_help.trigger()
+            self._app.processEvents()
+            self.assertIs(window._help_dialog, dialog)
+        finally:
+            window.close()
+
     def test_active_folder_single_selection_switches_to_detail_tab(self) -> None:
         window = self._make_window()
         selected_paths: list[str] = []
@@ -96,6 +136,9 @@ class MainWindowTest(unittest.TestCase):
     def test_status_sidebar_toggle_button_collapses_and_expands_panel(self) -> None:
         window = self._make_window()
         try:
+            window.show()
+            self._app.processEvents()
+
             self.assertTrue(window.status_sidebar_panel.isVisible())
             self.assertTrue(window.status_tabs.isVisible())
             self.assertEqual(window.btn_toggle_sidebar.text(), "")

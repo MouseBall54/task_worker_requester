@@ -72,6 +72,8 @@ class ConfigLoaderTest(unittest.TestCase):
         self.assertEqual(config.rabbitmq.result_queue_declare.arguments["module_group"], "default")
         self.assertEqual(config.publish.initial_open_folders, 2)
         self.assertEqual(config.publish.max_active_open_folders, 4)
+        self.assertTrue(config.update.enabled)
+        self.assertIn("releases/latest", config.update.latest_release_url)
 
     def test_missing_recipe_config_path_raises_helpful_error(self) -> None:
         content = textwrap.dedent(
@@ -356,6 +358,41 @@ class ConfigLoaderTest(unittest.TestCase):
             config = ConfigLoader.load(config_path)
 
         self.assertEqual(config.ui.app_name, "IPDK_plus")
+
+    def test_invalid_update_url_raises_helpful_error(self) -> None:
+        main_content = textwrap.dedent(
+            """
+            recipe_config_path: "recipe_config.yaml"
+            rabbitmq:
+              host: "127.0.0.1"
+              port: 5672
+              username: "guest"
+              password: "guest"
+            update:
+              latest_release_url: "not-a-url"
+              manifest_url: "https://example.test/latest.json"
+            """
+        ).strip()
+        recipe_content = textwrap.dedent(
+            """
+            default_alias: "Default Recipe"
+            recipes:
+              - alias: "Default Recipe"
+                path: "recipes/default.json"
+            """
+        ).strip()
+
+        with TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            config_path = temp_path / "app.yaml"
+            recipe_path = temp_path / "recipe_config.yaml"
+            config_path.write_text(main_content, encoding="utf-8")
+            recipe_path.write_text(recipe_content, encoding="utf-8")
+
+            with self.assertRaises(ConfigError) as ctx:
+                ConfigLoader.load(config_path)
+
+        self.assertIn("latest_release_url", str(ctx.exception))
 
 
 if __name__ == "__main__":

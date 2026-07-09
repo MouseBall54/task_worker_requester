@@ -13,9 +13,32 @@ datas = [
     (str(PROJECT_ROOT / "ui" / "styles.qss"), "ui"),
     (str(PROJECT_ROOT / "config" / "app_config.yaml"), "config"),
     (str(PROJECT_ROOT / "config" / "recipe_config.yaml"), "config"),
+    (str(PROJECT_ROOT / "assets" / "IPDK_plus.png"), "assets"),
     (str(PROJECT_ROOT / "assets" / "IPDK_plus.ico"), "assets"),
     (str(PROJECT_ROOT / "assets" / "icons" / "status_sidebar_collapse.svg"), "assets/icons"),
     (str(PROJECT_ROOT / "assets" / "icons" / "status_sidebar_expand.svg"), "assets/icons"),
+]
+
+excludes = [
+    "PySide6.Qt3DCore",
+    "PySide6.Qt3DRender",
+    "PySide6.QtBluetooth",
+    "PySide6.QtCharts",
+    "PySide6.QtDataVisualization",
+    "PySide6.QtMultimedia",
+    "PySide6.QtPdf",
+    "PySide6.QtPdfWidgets",
+    "PySide6.QtPositioning",
+    "PySide6.QtQml",
+    "PySide6.QtQuick",
+    "PySide6.QtQuickControls2",
+    "PySide6.QtQuickWidgets",
+    "PySide6.QtSerialPort",
+    "PySide6.QtSql",
+    "PySide6.QtWebChannel",
+    "PySide6.QtWebEngineCore",
+    "PySide6.QtWebEngineWidgets",
+    "PySide6.QtWebSockets",
 ]
 
 
@@ -28,7 +51,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=excludes,
     noarchive=False,
     optimize=0,
 )

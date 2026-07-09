@@ -1,17 +1,18 @@
 #define MyAppName "IPDK_plus"
-#define MyAppVersion "26.04.17"
+#define MyAppVersion "26.7.9"
 #define MyAppPublisher "박영문"
 #define MyAppExeName "IPDK_plus.exe"
 #define MyDistDir "..\\dist\\IPDK_plus"
 #define MyIconFile "..\\assets\\IPDK_plus.ico"
 #define MyVCRedistExe "..\\packaging\\prereqs\\vc_redist.x64.exe"
-#define MyAppDataDir "{userappdata}\\IPDK_plus"
+#define MyUpdateUrl "https://github.com/MouseBall54/task_worker_requester/releases/latest"
 
 [Setup]
 AppId={{E2C1A58A-67B0-44B1-8AF6-3D2FD375B271}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
+AppUpdatesURL={#MyUpdateUrl}
 DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
@@ -19,9 +20,11 @@ WizardStyle=modern
 Compression=lzma
 SolidCompression=yes
 OutputDir=..\dist\installer
-OutputBaseFilename=IPDK_plusSetup
+OutputBaseFilename=IPDK_plusSetup_{#MyAppVersion}
 SetupIconFile={#MyIconFile}
 UninstallDisplayIcon={app}\{#MyAppExeName}
+VersionInfoVersion=26.7.9.0
+VersionInfoTextVersion={#MyAppVersion}
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 
@@ -36,11 +39,9 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 Source: "{#MyDistDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#MyVCRedistExe}"; DestDir: "{tmp}"; DestName: "vc_redist.x64.exe"; Flags: deleteafterinstall
 
-[UninstallDelete]
-Type: filesandordirs; Name: "{#MyAppDataDir}"
-
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
+Name: "{group}\업데이트 확인"; Filename: "{#MyUpdateUrl}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Run]

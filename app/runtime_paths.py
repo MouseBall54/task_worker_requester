@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
+import hashlib
 import os
 from pathlib import Path
 import shutil
@@ -13,6 +15,10 @@ APPDATA_DIR_NAME = "IPDK_plus"
 LEGACY_APPDATA_DIR_NAME = "TaskWorkerRequester"
 CONFIG_FILE_NAME = "app_config.yaml"
 RECIPE_CONFIG_FILE_NAME = "recipe_config.yaml"
+APP_ICON_PNG_NAME = "IPDK_plus.png"
+APP_ICON_ICO_NAME = "IPDK_plus.ico"
+SEED_REFRESH_MARKER_NAME = ".refresh_seed_config"
+SEED_FINGERPRINT_FILE_NAME = ".seed_fingerprint"
 
 
 class RuntimePathError(RuntimeError):
@@ -85,7 +91,12 @@ def resolve_stylesheet_path() -> Path | None:
 def resolve_app_icon_path() -> Path | None:
     """Return the bundled application icon path for runtime UI usage."""
 
-    return find_bundled_resource(Path("assets") / "IPDK_plus.ico")
+    return find_first_bundled_resource(
+        [
+            Path("assets") / APP_ICON_PNG_NAME,
+            Path("assets") / APP_ICON_ICO_NAME,
+        ]
+    )
 
 
 def resolve_ui_icon_path(icon_filename: str) -> Path | None:
@@ -106,7 +117,7 @@ def resolve_logs_dir() -> Path:
 def ensure_user_config_seeded() -> RuntimeConfigPaths:
     """Create AppData config files from bundled templates when missing."""
 
-    migrate_legacy_appdata_dir()
+    migrated_dir = migrate_legacy_appdata_dir()
     appdata_dir = resolve_user_appdata_dir()
     appdata_dir.mkdir(parents=True, exist_ok=True)
 
@@ -114,8 +125,24 @@ def ensure_user_config_seeded() -> RuntimeConfigPaths:
     user_recipe_config_path = appdata_dir / RECIPE_CONFIG_FILE_NAME
     seed_config_source = find_bundled_resource(Path("config") / CONFIG_FILE_NAME)
     seed_recipe_source = find_bundled_resource(Path("config") / RECIPE_CONFIG_FILE_NAME)
+    seed_fingerprint = _calculate_seed_fingerprint(seed_config_source, seed_recipe_source)
+    refresh_seed = _consume_seed_refresh_marker(appdata_dir) or (
+        migrated_dir is None
+        and _seed_fingerprint_changed(
+            appdata_dir,
+            seed_fingerprint,
+        )
+    )
 
-    if not user_config_path.exists():
+    if refresh_seed:
+        if seed_config_source is None:
+            raise RuntimePathError(
+                "기본 app_config.yaml 템플릿을 찾지 못해 AppData 설정 파일을 갱신할 수 없습니다."
+            )
+        _replace_seeded_file_with_backup(user_config_path, seed_config_source)
+        if seed_recipe_source is not None:
+            _replace_seeded_file_with_backup(user_recipe_config_path, seed_recipe_source)
+    elif not user_config_path.exists():
         if seed_config_source is None:
             raise RuntimePathError(
                 "기본 app_config.yaml 템플릿을 찾지 못해 AppData 초기 설정 파일을 만들 수 없습니다."
@@ -124,6 +151,8 @@ def ensure_user_config_seeded() -> RuntimeConfigPaths:
 
     if not user_recipe_config_path.exists() and seed_recipe_source is not None:
         shutil.copy2(seed_recipe_source, user_recipe_config_path)
+
+    _write_seed_fingerprint(appdata_dir, seed_fingerprint)
 
     return RuntimeConfigPaths(
         appdata_dir=appdata_dir,
@@ -205,6 +234,16 @@ def find_bundled_resource(relative_path: str | Path) -> Path | None:
     return None
 
 
+def find_first_bundled_resource(relative_paths: list[str | Path]) -> Path | None:
+    """Find the first available bundled resource from an ordered list."""
+
+    for relative_path in relative_paths:
+        found = find_bundled_resource(relative_path)
+        if found is not None:
+            return found
+    return None
+
+
 def _candidate_roots() -> list[Path]:
     """Return deduplicated runtime roots searched for bundled resources."""
 
@@ -257,3 +296,98 @@ def _directory_has_entries(path: Path) -> bool:
     except StopIteration:
         return False
     return True
+
+
+def _consume_seed_refresh_marker(appdata_dir: Path) -> bool:
+    """Return whether installer requested a bundled config refresh."""
+
+    marker_path = appdata_dir / SEED_REFRESH_MARKER_NAME
+    if not marker_path.exists():
+        return False
+    try:
+        marker_path.unlink()
+    except OSError as exc:
+        raise RuntimePathError(f"설정 갱신 marker를 삭제하지 못했습니다: {marker_path}") from exc
+    return True
+
+
+def _replace_seeded_file_with_backup(target_path: Path, seed_path: Path) -> None:
+    """Replace an AppData config file from bundled seed, keeping a backup."""
+
+    if target_path.exists():
+        try:
+            if target_path.read_bytes() == seed_path.read_bytes():
+                return
+        except OSError:
+            pass
+
+        backup_path = _next_backup_path(target_path)
+        shutil.copy2(target_path, backup_path)
+
+    shutil.copy2(seed_path, target_path)
+
+
+def _next_backup_path(target_path: Path) -> Path:
+    """Build a non-conflicting backup path next to a refreshed config file."""
+
+    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    for index in range(0, 100):
+        suffix = f".bak.{timestamp}" if index == 0 else f".bak.{timestamp}.{index}"
+        candidate = target_path.with_name(f"{target_path.name}{suffix}")
+        if not candidate.exists():
+            return candidate
+    raise RuntimePathError(f"설정 백업 파일 이름을 만들 수 없습니다: {target_path}")
+
+
+def _calculate_seed_fingerprint(seed_config_source: Path | None, seed_recipe_source: Path | None) -> str | None:
+    """Calculate a stable fingerprint for bundled seed config files."""
+
+    if seed_config_source is None:
+        return None
+
+    digest = hashlib.sha256()
+    for label, seed_path in (
+        (CONFIG_FILE_NAME, seed_config_source),
+        (RECIPE_CONFIG_FILE_NAME, seed_recipe_source),
+    ):
+        digest.update(label.encode("utf-8"))
+        digest.update(b"\0")
+        if seed_path is None:
+            digest.update(b"<missing>")
+            continue
+        try:
+            digest.update(seed_path.read_bytes())
+        except OSError as exc:
+            raise RuntimePathError(f"기본 설정 fingerprint를 계산하지 못했습니다: {seed_path}") from exc
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def _seed_fingerprint_changed(appdata_dir: Path, seed_fingerprint: str | None) -> bool:
+    """Return whether bundled seed files differ from the last applied seed."""
+
+    if seed_fingerprint is None:
+        return False
+
+    fingerprint_path = appdata_dir / SEED_FINGERPRINT_FILE_NAME
+    if not fingerprint_path.exists():
+        return _directory_has_entries(appdata_dir)
+
+    try:
+        stored_fingerprint = fingerprint_path.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise RuntimePathError(f"설정 fingerprint를 읽지 못했습니다: {fingerprint_path}") from exc
+    return stored_fingerprint != seed_fingerprint
+
+
+def _write_seed_fingerprint(appdata_dir: Path, seed_fingerprint: str | None) -> None:
+    """Persist the bundled seed fingerprint after seeding or refresh."""
+
+    if seed_fingerprint is None:
+        return
+
+    fingerprint_path = appdata_dir / SEED_FINGERPRINT_FILE_NAME
+    try:
+        fingerprint_path.write_text(seed_fingerprint + "\n", encoding="utf-8")
+    except OSError as exc:
+        raise RuntimePathError(f"설정 fingerprint를 저장하지 못했습니다: {fingerprint_path}") from exc

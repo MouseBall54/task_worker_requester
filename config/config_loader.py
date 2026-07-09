@@ -16,6 +16,7 @@ from config.models import (
     RecipeConfig,
     RecipeItem,
     UiConfig,
+    UpdateConfig,
     default_recipe_items,
     default_request_queue_declare,
     default_result_queue_declare,
@@ -73,9 +74,10 @@ class ConfigLoader:
 
         publish_raw = raw.get("publish", {})
         ui_raw = raw.get("ui", {})
+        update_raw = raw.get("update", {})
 
-        if not isinstance(publish_raw, dict) or not isinstance(ui_raw, dict):
-            raise ConfigError("publish/ui 설정은 key-value 형식이어야 합니다.")
+        if not isinstance(publish_raw, dict) or not isinstance(ui_raw, dict) or not isinstance(update_raw, dict):
+            raise ConfigError("publish/ui/update 설정은 key-value 형식이어야 합니다.")
 
         ConfigLoader._ensure_legacy_recipe_keys_removed(publish_raw)
         ConfigLoader._ensure_inline_recipe_config_removed(raw)
@@ -104,6 +106,7 @@ class ConfigLoader:
         publish = _build_dataclass(PublishConfig, publish_for_parse)
         recipe_config = ConfigLoader._parse_recipe_config(recipe_raw)
         ui = _build_dataclass(UiConfig, ui_raw)
+        update = _build_dataclass(UpdateConfig, update_raw)
 
         config = AppConfig(
             rabbitmq=rabbitmq,
@@ -111,6 +114,7 @@ class ConfigLoader:
             recipe_config=recipe_config,
             publish=publish,
             ui=ui,
+            update=update,
             mock_mode=bool(raw.get("mock_mode", False)),
             log_level=str(raw.get("log_level", "INFO")),
         )
@@ -192,6 +196,7 @@ class ConfigLoader:
             config.recipe_config.default_alias = recipes[0].alias
 
         config.ui.app_name = ConfigLoader._normalize_app_name(config.ui.app_name)
+        ConfigLoader._validate_update_config(config.update)
 
     @staticmethod
     def _read_request_queue_max_priority(rabbitmq_config: RabbitMQConfig) -> int | None:
@@ -346,3 +351,20 @@ class ConfigLoader:
         }:
             return "IPDK_plus"
         return normalized
+
+    @staticmethod
+    def _validate_update_config(update_config: UpdateConfig) -> None:
+        """Validate update links without requiring a live network check."""
+
+        if not update_config.enabled:
+            return
+
+        for label, raw_url in {
+            "update.latest_release_url": update_config.latest_release_url,
+            "update.manifest_url": update_config.manifest_url,
+        }.items():
+            url = str(raw_url or "").strip()
+            if not url:
+                raise ConfigError(f"{label} 는 비어 있을 수 없습니다.")
+            if not (url.startswith("https://") or url.startswith("http://")):
+                raise ConfigError(f"{label} 는 http(s) URL 이어야 합니다.")

@@ -49,3 +49,8 @@ ui:
   window_height: 900
   theme: "dark"
   font_family: "Segoe UI"
+
+update:
+  enabled: true
+  latest_release_url: "https://github.com/MouseBall54/task_worker_requester/releases/latest"
+  manifest_url: "https://github.com/MouseBall54/task_worker_requester/releases/latest/download/latest.json"

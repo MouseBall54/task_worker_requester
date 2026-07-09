@@ -7,8 +7,8 @@ import os
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QDir, QItemSelectionModel, QModelIndex, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QIcon, QShowEvent
+from PySide6.QtCore import QDir, QItemSelectionModel, QModelIndex, QSize, Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import QAction, QDesktopServices, QIcon, QKeySequence, QShowEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -41,6 +41,7 @@ from PySide6.QtWidgets import (
 from app.runtime_paths import resolve_ui_icon_path
 from config.models import AppConfig
 from models.task_models import FolderSummary, ImageTask
+from ui.help_dialog import HelpDialog
 from ui.models import FolderTableModel, ImageTableModel, ProgressBarDelegate
 from ui.widgets import MQButtonDelegate, StatusBadgeDelegate
 
@@ -125,9 +126,27 @@ class MainWindow(QMainWindow):
         self._pending_jump_attempts = 0
         self._max_pending_jump_attempts = 10
         self._initial_scroll_alignment_done = False
-        self._last_status_sidebar_width = 420
+        self._last_status_sidebar_width = 440
+        self._help_dialog: HelpDialog | None = None
         self._build_ui()
+        self._build_menu_bar()
         self._apply_defaults()
+
+    def _build_menu_bar(self) -> None:
+        """Build top-level app actions."""
+
+        help_menu = self.menuBar().addMenu("도움말")
+        self.action_open_help = QAction("도움말 열기", self)
+        self.action_open_help.setShortcut(QKeySequence.HelpContents)
+        self.action_open_help.triggered.connect(self._open_help_dialog)
+        help_menu.addAction(self.action_open_help)
+        self.addAction(self.action_open_help)
+
+        help_menu.addSeparator()
+        self.action_check_update = QAction("업데이트 확인", self)
+        self.action_check_update.setEnabled(self._config.update.enabled)
+        self.action_check_update.triggered.connect(self._open_update_link)
+        help_menu.addAction(self.action_check_update)
 
     def showEvent(self, event: QShowEvent) -> None:  # noqa: N802
         """Align horizontal scroll positions once when the main window is first shown."""
@@ -143,8 +162,8 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(root)
 
         root_layout = QVBoxLayout(root)
-        root_layout.setContentsMargins(16, 16, 16, 16)
-        root_layout.setSpacing(14)
+        root_layout.setContentsMargins(14, 14, 14, 14)
+        root_layout.setSpacing(12)
 
         left_panel = self._build_left_panel()
         center_panel = self._build_center_panel()
@@ -163,7 +182,7 @@ class MainWindow(QMainWindow):
         self.main_splitter.setStretchFactor(0, 3)
         self.main_splitter.setStretchFactor(1, 8)
         self.main_splitter.setStretchFactor(2, 5)
-        self.main_splitter.setSizes([360, 900, self._last_status_sidebar_width])
+        self.main_splitter.setSizes([340, 900, self._last_status_sidebar_width])
 
         self.left_panel = left_panel
         self.center_panel = center_panel
@@ -175,8 +194,8 @@ class MainWindow(QMainWindow):
         panel = QFrame()
         panel.setObjectName("leftPanel")
         layout = QVBoxLayout(panel)
-        layout.setContentsMargins(14, 12, 14, 14)
-        layout.setSpacing(10)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(11)
 
         title = QLabel("폴더 탐색")
         title.setObjectName("panelTitle")
@@ -242,7 +261,7 @@ class MainWindow(QMainWindow):
         panel = QWidget()
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(12)
+        layout.setSpacing(11)
 
         layout.addWidget(self._build_control_panel())
         layout.addWidget(self._build_folder_progress_panel(), stretch=1)
@@ -263,11 +282,11 @@ class MainWindow(QMainWindow):
     def _build_control_panel(self) -> QWidget:
         panel = QGroupBox("작업 설정 및 제어")
         layout = QVBoxLayout(panel)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(10)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(11)
 
         connection_row = QHBoxLayout()
-        connection_row.setSpacing(10)
+        connection_row.setSpacing(12)
 
         self.connection_label = QLabel(self._build_connection_status_text("대기"))
         self.connection_label.setObjectName("connectionStatus")
@@ -343,8 +362,8 @@ class MainWindow(QMainWindow):
     def _build_folder_progress_panel(self) -> QWidget:
         panel = QGroupBox("폴더 단위 진행 현황")
         layout = QVBoxLayout(panel)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(8)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(9)
 
         self.active_folder_table_model = FolderTableModel()
         self.completed_folder_table_model = FolderTableModel()
@@ -360,7 +379,7 @@ class MainWindow(QMainWindow):
             selection_mode=QTableView.ExtendedSelection,
         )
         # Keep active list visibly larger from first render as requested.
-        self.active_folder_table.setMinimumHeight(190)
+        self.active_folder_table.setMinimumHeight(198)
         self.active_folder_table.selectionModel().selectionChanged.connect(self._on_active_folder_selection_changed)
         self.active_folder_table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.active_folder_table.customContextMenuRequested.connect(self._on_active_folder_context_menu)
@@ -382,7 +401,7 @@ class MainWindow(QMainWindow):
 
         self.completed_folder_table = self._create_folder_table(self.completed_folder_table_model)
         # Preserve completed-list readability without stealing too much initial height.
-        self.completed_folder_table.setMinimumHeight(140)
+        self.completed_folder_table.setMinimumHeight(148)
         self.completed_folder_table.selectionModel().selectionChanged.connect(
             self._on_completed_folder_selection_changed
         )
@@ -404,8 +423,8 @@ class MainWindow(QMainWindow):
         table.setSelectionMode(selection_mode)
         table.setAlternatingRowColors(True)
         table.verticalHeader().setVisible(False)
-        table.verticalHeader().setDefaultSectionSize(34)
-        table.verticalHeader().setMinimumSectionSize(30)
+        table.verticalHeader().setDefaultSectionSize(36)
+        table.verticalHeader().setMinimumSectionSize(32)
         table.setWordWrap(False)
         table.setTextElideMode(Qt.ElideRight)
         table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
@@ -428,8 +447,8 @@ class MainWindow(QMainWindow):
     def _build_bottom_panel(self) -> QWidget:
         panel = QGroupBox("상태 및 로그")
         layout = QVBoxLayout(panel)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(8)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(9)
 
         self.status_tabs = QTabWidget()
         self.status_tabs.setObjectName("bottomTabs")
@@ -440,8 +459,8 @@ class MainWindow(QMainWindow):
         self.image_table.setSelectionBehavior(QTableView.SelectRows)
         self.image_table.setAlternatingRowColors(True)
         self.image_table.verticalHeader().setVisible(False)
-        self.image_table.verticalHeader().setDefaultSectionSize(34)
-        self.image_table.verticalHeader().setMinimumSectionSize(30)
+        self.image_table.verticalHeader().setDefaultSectionSize(36)
+        self.image_table.verticalHeader().setMinimumSectionSize(32)
         self.image_table.setWordWrap(False)
         self.image_table.setTextElideMode(Qt.ElideRight)
         self.image_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
@@ -1013,6 +1032,29 @@ class MainWindow(QMainWindow):
         recipe_path = str(self.recipe_combo.itemData(index) or "")
         self.recipe_path_preview.setText(recipe_path)
         self.recipe_path_preview.setToolTip(recipe_path)
+
+    def _open_update_link(self) -> None:
+        """Open the configured latest release URL in the default browser."""
+
+        url = str(self._config.update.latest_release_url or "").strip()
+        if not url:
+            QMessageBox.warning(self, "업데이트 확인", "업데이트 링크가 설정되어 있지 않습니다.")
+            return
+        if not QDesktopServices.openUrl(QUrl(url)):
+            QMessageBox.warning(self, "업데이트 확인", f"업데이트 링크를 열 수 없습니다:\n{url}")
+
+    def _open_help_dialog(self) -> None:
+        """Open or focus the searchable in-app help dialog."""
+
+        if self._help_dialog is None:
+            self._help_dialog = HelpDialog(self)
+            self._help_dialog.finished.connect(self._clear_help_dialog_reference)
+        self._help_dialog.show()
+        self._help_dialog.raise_()
+        self._help_dialog.activateWindow()
+
+    def _clear_help_dialog_reference(self, *_args: Any) -> None:
+        self._help_dialog = None
 
     def _populate_priority_selector(self) -> None:
         """Populate request priority combo from queue declare max priority."""
