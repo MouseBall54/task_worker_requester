@@ -29,17 +29,17 @@ worker는 request queue에서 메시지를 가져가 작업을 수행하고, 메
     HelpTopic(
         title="기본 사용 흐름",
         keywords=("폴더 추가", "sub_folder", "Recipe", "Priority", "전송 시작", "중지", "초기화"),
-        body="""1. 왼쪽 폴더 탐색기에서 작업할 폴더를 선택합니다.
+        body="""1. 왼쪽 폴더 탐색기에서 작업할 폴더를 선택합니다. 깊은 계층을 선택하거나 경로로 이동하면 선택 노드의 들여쓰기와 이름이 가로 화면 중앙에 오도록 자동 정렬됩니다.
 
 2. 폴더 추가를 누르면 선택한 폴더 자체를 작업 대상으로 등록합니다. 설정의 scan_mode가 direct이면 선택 폴더 바로 아래의 이미지만 대상으로 삼고, recursive이면 하위 폴더까지 탐색합니다.
 
 3. sub_folder 추가를 누르면 선택한 폴더 아래에서 이미지가 들어 있는 하위 폴더들을 작업 단위로 등록합니다. 여러 하위 폴더를 폴더 단위 진행 현황에서 따로 추적하려는 경우에 사용합니다.
 
-4. Recipe는 worker에 전달할 RECIPE_PATH입니다. 화면에는 recipe_config.yaml의 alias가 보이고, 실제 MQ payload에는 해당 alias에 연결된 path 문자열이 들어갑니다. 로컬에서 recipe 파일이 보이지 않아도 payload에는 설정 문자열이 그대로 전송될 수 있으므로, worker가 접근할 수 있는 경로인지 확인해야 합니다.
+4. Recipe는 worker에 전달할 RECIPE_PATH입니다. 화면에는 recipe_config.yaml의 alias가 보이고, 실제 MQ payload에는 해당 alias에 연결된 path 문자열이 들어갑니다. 다중 지정을 켜면 Recipe를 여러 개 체크할 수 있으며, 폴더 추가 시점의 선택이 이미지별 작업에 저장됩니다. 이미지 N개와 Recipe M개는 N×M개의 고유 request로 등록됩니다. 로컬에서 recipe 파일이 보이지 않아도 payload에는 설정 문자열이 그대로 전송될 수 있으므로, worker가 접근할 수 있는 경로인지 확인해야 합니다.
 
 5. Priority는 RabbitMQ AMQP BasicProperties.priority로 전달됩니다. JSON payload 안에는 priority 필드가 들어가지 않습니다. 선택 가능한 범위는 request queue의 x-max-priority 설정을 기준으로 만들어집니다.
 
-6. 전송 시작을 누르면 현재 PENDING 작업을 폴더 정책에 맞춰 발행합니다. initial_open_folders만큼 처음 열고, max_active_open_folders 범위 안에서 다음 폴더를 순차적으로 개방합니다.
+6. 전송 시작을 누르면 현재 PENDING 작업을 폴더 정책에 맞춰 발행합니다. 각 메시지의 RECIPE_PATH는 시작 시점의 UI 값이 아니라 폴더 추가 시 저장된 Recipe를 사용합니다. 여러 Recipe가 지정된 이미지는 Recipe마다 별도 메시지를 기존 request queue에 발행합니다. initial_open_folders만큼 처음 열고, max_active_open_folders 범위 안에서 다음 폴더를 순차적으로 개방합니다.
 
 7. 중지는 publish/poll worker를 정지시키는 동작입니다. 이미 broker에 발행된 메시지를 worker나 RabbitMQ에서 회수하는 기능은 아닙니다.
 

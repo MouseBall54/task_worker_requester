@@ -80,6 +80,8 @@ class ImageTask:
     request_id: str
     image_path: str
     folder_path: str
+    recipe_alias: str = ""
+    recipe_path: str = ""
     status: TaskStatus = TaskStatus.PENDING
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     sent_at: datetime | None = None
@@ -106,6 +108,7 @@ class FolderSummary:
     error: int
     progress: float
     status: TaskStatus
+    recipe_aliases: tuple[str, ...] = ()
 
 
 @dataclass(slots=True)
@@ -140,6 +143,13 @@ class FolderTaskGroup:
             status = TaskStatus.PENDING
 
         progress = (completed / total * 100.0) if total else 0.0
+        recipe_aliases = tuple(
+            dict.fromkeys(
+                (task.recipe_alias or task.recipe_path)
+                for task in tasks
+                if task.recipe_alias or task.recipe_path
+            )
+        )
 
         return FolderSummary(
             folder_path=self.folder_path,
@@ -151,4 +161,5 @@ class FolderTaskGroup:
             error=error,
             progress=progress,
             status=status,
+            recipe_aliases=recipe_aliases,
         )

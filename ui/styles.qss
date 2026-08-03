@@ -1,13 +1,14 @@
 /* Brighter operator style for RabbitMQ task tracker */
 QWidget {
-    background-color: #1a2335;
+    background-color: transparent;
     color: #edf4fb;
     font-family: "Segoe UI Variable Text", "Segoe UI", "Malgun Gothic", "Noto Sans KR";
     font-size: 13px;
 }
 
-QMainWindow {
-    background-color: #162033;
+QMainWindow,
+QWidget#appRoot {
+    background-color: #111827;
 }
 
 QMenuBar {
@@ -44,15 +45,14 @@ QMenu::item:selected {
 
 QFrame#leftPanel,
 QGroupBox {
-    background-color: #202b3d;
-    border: 1px solid #34445f;
-    border-radius: 10px;
+    background-color: #1b2639;
+    border: 1px solid #33445f;
+    border-radius: 12px;
 }
 
 QFrame#statusSidebar {
-    background-color: #202b3d;
-    border: 1px solid #34445f;
-    border-radius: 10px;
+    background-color: transparent;
+    border: none;
 }
 
 QGroupBox {
@@ -85,7 +85,7 @@ QLabel#subPanelTitle {
 QLabel#connectionStatus {
     border-radius: 8px;
     padding: 8px 11px;
-    background-color: #2f435f;
+    background-color: #26364d;
     color: #edf4fb;
 }
 
@@ -135,12 +135,30 @@ QPlainTextEdit,
 QTreeView,
 QListWidget,
 QTextBrowser {
-    background-color: #182236;
-    border: 1px solid #334155;
+    background-color: #111b2d;
+    border: 1px solid #3a4b66;
     border-radius: 8px;
     padding: 7px;
     selection-background-color: #2563eb;
     selection-color: #eff6ff;
+}
+
+QLineEdit:focus,
+QComboBox:focus,
+QTextEdit:focus,
+QPlainTextEdit:focus,
+QTreeView:focus,
+QTableView:focus {
+    border-color: #60a5fa;
+}
+
+QComboBox QAbstractItemView {
+    background-color: #111b2d;
+    border: 1px solid #3a4b66;
+    selection-background-color: #2f5f9e;
+    selection-color: #eff6ff;
+    outline: none;
+    padding: 4px;
 }
 
 QListWidget#helpTopicList::item {
@@ -167,10 +185,10 @@ QLabel#helpMatchLabel {
 }
 
 QTreeView#folderTree {
-    background-color: #1d2c43;
-    border: 1px solid #3d5878;
+    background-color: #111b2d;
+    border: 1px solid #3a4b66;
     border-radius: 10px;
-    alternate-background-color: #243754;
+    alternate-background-color: #17243a;
     padding: 4px 3px;
 }
 
@@ -210,6 +228,27 @@ QToolButton#statusSidebarToggle {
     min-height: 30px;
 }
 
+QToolButton#recipeMultiButton {
+    background-color: #26364d;
+    color: #edf4fb;
+    border: 1px solid #3a4b66;
+    border-radius: 8px;
+    padding: 6px 10px;
+    min-height: 22px;
+}
+
+QToolButton#recipeMultiButton:hover,
+QToolButton#recipeMultiButton:checked {
+    background-color: #315075;
+    border-color: #60a5fa;
+}
+
+QToolButton#recipeMultiButton:disabled {
+    background-color: #253044;
+    color: #8290a4;
+    border-color: #344054;
+}
+
 QToolButton#statusSidebarToggle:hover {
     background-color: rgba(59, 130, 246, 0.24);
     border-color: rgba(125, 211, 252, 0.6);
@@ -222,7 +261,7 @@ QToolButton#statusSidebarToggle:checked {
 }
 
 QHeaderView::section {
-    background-color: #1b2538;
+    background-color: #172237;
     color: #dbeafe;
     border: 0;
     border-bottom: 1px solid #34445f;
@@ -231,13 +270,13 @@ QHeaderView::section {
 }
 
 QTableView {
-    background-color: #172033;
-    border: 1px solid #34445f;
+    background-color: #111b2d;
+    border: 1px solid #3a4b66;
     border-radius: 8px;
     selection-background-color: #2f5f9e;
     selection-color: #eff6ff;
     gridline-color: #2d3c55;
-    alternate-background-color: #1d2a3f;
+    alternate-background-color: #17243a;
     padding: 0px;
 }
 
@@ -246,9 +285,9 @@ QTableView::item {
 }
 
 QTabWidget#bottomTabs::pane {
-    border: 1px solid #34445f;
+    border: 1px solid #3a4b66;
     border-radius: 10px;
-    background-color: #172033;
+    background-color: #111b2d;
     top: -1px;
 }
 
@@ -276,10 +315,10 @@ QTabWidget#bottomTabs QTabBar::tab:hover:!selected {
 }
 
 QProgressBar {
-    border: 1px solid #34445f;
+    border: 1px solid #3a4b66;
     border-radius: 8px;
     text-align: center;
-    background-color: #172033;
+    background-color: #111b2d;
     color: #edf4fb;
 }
 

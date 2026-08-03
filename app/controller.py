@@ -746,6 +746,11 @@ class TaskController(QObject):
             self._log("선택된 폴더가 없습니다.")
             return
 
+        recipe_selections = self._current_recipe_selections()
+        if not recipe_selections:
+            self._log("선택된 Recipe가 없습니다. Recipe를 하나 이상 선택한 뒤 폴더를 추가하세요.")
+            return
+
         folder_map = self._scan_selected_folder_map(
             folder_paths=normalized_paths,
             include_subfolders=include_subfolders,
@@ -759,11 +764,14 @@ class TaskController(QObject):
                 self._log(f"선택한 {len(normalized_paths)}개 폴더에서 이미지를 찾지 못했습니다.")
             return
 
-        added_folders, added_images = self._store.register_folder_map(folder_map)
+        added_folders, added_images = self._store.register_folder_map(
+            folder_map,
+            recipe_selections=recipe_selections,
+        )
         mode_label = "sub_folder" if include_subfolders else "폴더"
         self._log(
             f"{mode_label} 등록 완료 - 스캔 대상 {len(normalized_paths)}개, "
-            f"신규 폴더 {added_folders}개, 신규 이미지 {added_images}개"
+            f"Recipe {len(recipe_selections)}개, 신규 폴더 {added_folders}개, 신규 작업 {added_images}개"
         )
 
         if not self._active or added_images <= 0:
@@ -813,6 +821,27 @@ class TaskController(QObject):
             f"{len(self._folder_message_batches) - self._next_folder_batch_index})"
         )
         self._maybe_dispatch_next_folder_batch()
+
+    def _current_recipe_selections(self) -> list[tuple[str, str]]:
+        """Return the view's current recipe selection as an immutable snapshot."""
+
+        selection_reader = getattr(self._view, "current_recipe_selections", None)
+        if callable(selection_reader):
+            selections = selection_reader()
+        else:
+            _, recipe_path, _, _ = self._view.current_runtime_settings()
+            selections = [(recipe_path, recipe_path)] if recipe_path else []
+
+        normalized: list[tuple[str, str]] = []
+        seen_paths: set[str] = set()
+        for alias, path in selections:
+            normalized_alias = str(alias or "").strip()
+            normalized_path = str(path or "").strip()
+            if not normalized_path or normalized_path in seen_paths:
+                continue
+            seen_paths.add(normalized_path)
+            normalized.append((normalized_alias or normalized_path, normalized_path))
+        return normalized
 
     def _scan_selected_folder_map(
         self,

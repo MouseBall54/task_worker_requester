@@ -28,6 +28,8 @@ class ImageTableModelTest(unittest.TestCase):
                     request_id="req-1",
                     image_path=r"D:\\data\\images\\sample_01.jpg",
                     folder_path=r"D:\\data\\images",
+                    recipe_alias="Recipe A",
+                    recipe_path="recipes/a.json",
                     status=TaskStatus.PENDING,
                 )
             ]
@@ -35,12 +37,14 @@ class ImageTableModelTest(unittest.TestCase):
 
         mq_index = model.index(0, 0)
         image_index = model.index(0, 1)
-        status_index = model.index(0, 2)
+        recipe_index = model.index(0, 2)
+        status_index = model.index(0, 3)
 
         self.assertEqual(model.data(mq_index, Qt.DisplayRole), "보기")
         self.assertEqual(model.data(image_index, Qt.DisplayRole), "sample_01.jpg")
+        self.assertEqual(model.data(recipe_index, Qt.DisplayRole), "Recipe A")
         self.assertEqual(model.data(status_index, Qt.DisplayRole), "PENDING")
-        self.assertEqual(model.columnCount(), 7)
+        self.assertEqual(model.columnCount(), 8)
 
 
 if __name__ == "__main__":

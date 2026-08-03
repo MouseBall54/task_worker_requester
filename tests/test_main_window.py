@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import unittest
 
-from config.models import AppConfig, PublishConfig, RabbitMQConfig, UiConfig
+from config.models import AppConfig, PublishConfig, RabbitMQConfig, RecipeConfig, RecipeItem, UiConfig
 from models.task_models import FolderSummary, TaskStatus
 
 try:
@@ -34,6 +34,13 @@ class MainWindowTest(unittest.TestCase):
         config = AppConfig(
             rabbitmq=RabbitMQConfig(host="127.0.0.1", port=5672, username="guest", password="guest"),
             publish=PublishConfig(image_extensions=[".jpg"]),
+            recipe_config=RecipeConfig(
+                default_alias="Recipe A",
+                recipes=[
+                    RecipeItem(alias="Recipe A", path="recipes/a.json"),
+                    RecipeItem(alias="Recipe B", path="recipes/b.json"),
+                ],
+            ),
             ui=UiConfig(),
             mock_mode=True,
         )
@@ -175,7 +182,6 @@ class MainWindowTest(unittest.TestCase):
             self._app.processEvents()
 
             widgets = [
-                window.folder_tree,
                 window.active_folder_table,
                 window.completed_folder_table,
                 window.image_table,
@@ -187,16 +193,73 @@ class MainWindowTest(unittest.TestCase):
         finally:
             window.close()
 
+    def test_horizontal_alignment_reset_preserves_tree_context(self) -> None:
+        window = self._make_window()
+        try:
+            window.folder_tree.setColumnWidth(0, 1200)
+            window.show()
+            self._app.processEvents()
+            scrollbar = window.folder_tree.horizontalScrollBar()
+            self.assertGreater(scrollbar.maximum(), scrollbar.minimum())
+            scrollbar.setValue(scrollbar.maximum())
+
+            window._reset_horizontal_scrollbars_to_left()
+
+            self.assertEqual(scrollbar.value(), scrollbar.maximum())
+        finally:
+            window.close()
+
+    def test_deep_tree_index_is_centered_horizontally(self) -> None:
+        anchor = MainWindow._calculate_tree_horizontal_anchor(
+            depth=8,
+            indentation=22,
+            label_width=80,
+        )
+        scroll_value = MainWindow._calculate_centered_tree_scroll_value(
+            anchor=anchor,
+            viewport_width=280,
+            minimum=0,
+            maximum=900,
+        )
+
+        self.assertEqual(anchor, 266)
+        self.assertEqual(scroll_value, 126)
+        self.assertEqual(anchor - scroll_value, 140)
+
     def test_set_runtime_options_enabled_toggles_recipe_and_priority(self) -> None:
         window = self._make_window()
         try:
             window.set_runtime_options_enabled(False)
             self.assertFalse(window.recipe_combo.isEnabled())
+            self.assertFalse(window.recipe_multi_check.isEnabled())
             self.assertFalse(window.priority_combo.isEnabled())
 
             window.set_runtime_options_enabled(True)
             self.assertTrue(window.recipe_combo.isEnabled())
+            self.assertTrue(window.recipe_multi_check.isEnabled())
             self.assertTrue(window.priority_combo.isEnabled())
+        finally:
+            window.close()
+
+    def test_multi_recipe_selector_returns_all_checked_recipes(self) -> None:
+        window = self._make_window()
+        try:
+            self.assertEqual(window.current_recipe_selections(), [("Recipe A", "recipes/a.json")])
+
+            window.recipe_multi_check.setChecked(True)
+            window._recipe_actions[1].trigger()
+
+            self.assertEqual(
+                window.current_recipe_selections(),
+                [("Recipe A", "recipes/a.json"), ("Recipe B", "recipes/b.json")],
+            )
+            self.assertEqual(window.recipe_multi_button.text(), "2개: Recipe A, Recipe B")
+            self.assertIn("recipes/a.json", window.recipe_path_preview.text())
+            self.assertIn("recipes/b.json", window.recipe_path_preview.text())
+
+            window.set_runtime_options_enabled(False)
+            self.assertFalse(window.recipe_multi_check.isEnabled())
+            self.assertFalse(window.recipe_multi_button.isEnabled())
         finally:
             window.close()
 

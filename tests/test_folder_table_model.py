@@ -29,7 +29,14 @@ class FolderTableModelTest(unittest.TestCase):
             error=0,
             progress=50.0,
             status=status,
+            recipe_aliases=("Recipe A", "Recipe B"),
         )
+
+    def test_recipe_aliases_are_visible(self) -> None:
+        model = FolderTableModel()
+        model.set_rows([self._summary("folder_a", TaskStatus.PENDING)])
+
+        self.assertEqual(model.data(model.index(0, 3)), "Recipe A, Recipe B")
 
     def test_remove_by_folder_path_updates_index_map(self) -> None:
         model = FolderTableModel()

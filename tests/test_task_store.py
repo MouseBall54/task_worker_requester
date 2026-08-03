@@ -52,6 +52,131 @@ class TaskStoreTest(unittest.TestCase):
         self.assertEqual(len(grouped[1][1]), 1)
         self.assertTrue(all(len(message.IMG_LIST) == 1 for _, messages in grouped for message in messages))
 
+    def test_recipe_selections_create_independent_image_recipe_tasks(self) -> None:
+        store = TaskStore()
+
+        added_folders, added_tasks = store.register_folder_map(
+            {"folder_multi": ["folder_multi/a.jpg", "folder_multi/b.jpg"]},
+            recipe_selections=[("Recipe A", "recipes/a.json"), ("Recipe B", "recipes/b.json")],
+        )
+
+        self.assertEqual((added_folders, added_tasks), (1, 4))
+        tasks = store.get_image_tasks("folder_multi")
+        self.assertEqual(len(tasks), 4)
+        self.assertEqual(len({task.request_id for task in tasks}), 4)
+        summary = store.get_folder_summary("folder_multi")
+        self.assertIsNotNone(summary)
+        assert summary is not None
+        self.assertEqual(summary.total, 4)
+        self.assertEqual(summary.recipe_aliases, ("Recipe A", "Recipe B"))
+        self.assertEqual(
+            {(task.image_path, task.recipe_path) for task in tasks},
+            {
+                ("folder_multi/a.jpg", "recipes/a.json"),
+                ("folder_multi/a.jpg", "recipes/b.json"),
+                ("folder_multi/b.jpg", "recipes/a.json"),
+                ("folder_multi/b.jpg", "recipes/b.json"),
+            },
+        )
+
+        grouped = store.build_pending_messages_by_folder(
+            action="RUN_RECIPE",
+            result_queue_name="result.client.1",
+            recipe_path="recipes/current-ui-selection.json",
+        )
+        self.assertEqual(
+            {message.RECIPE_PATH for message in grouped[0][1]},
+            {"recipes/a.json", "recipes/b.json"},
+        )
+
+    def test_recipe_registration_deduplicates_pairs_and_allows_new_recipe(self) -> None:
+        store = TaskStore()
+        folder_map = {"folder_a": ["folder_a/img.jpg"]}
+
+        store.register_folder_map(folder_map, recipe_selections=[("Recipe A", "recipes/a.json")])
+        duplicate_result = store.register_folder_map(
+            folder_map,
+            recipe_selections=[("Recipe A", "recipes/a.json")],
+        )
+        new_recipe_result = store.register_folder_map(
+            folder_map,
+            recipe_selections=[("Recipe B", "recipes/b.json")],
+        )
+
+        self.assertEqual(duplicate_result, (0, 0))
+        self.assertEqual(new_recipe_result, (0, 1))
+        self.assertEqual(
+            {task.recipe_path for task in store.get_image_tasks("folder_a")},
+            {"recipes/a.json", "recipes/b.json"},
+        )
+
+    def test_folder_recipe_snapshots_do_not_follow_later_selection(self) -> None:
+        store = TaskStore()
+        store.register_folder_map(
+            {"folder_a": ["folder_a/a.jpg"]},
+            recipe_selections=[("Recipe A", "recipes/a.json")],
+        )
+        store.register_folder_map(
+            {"folder_b": ["folder_b/b.jpg"]},
+            recipe_selections=[("Recipe B", "recipes/b.json")],
+        )
+
+        grouped = dict(
+            store.build_pending_messages_by_folder(
+                "RUN_RECIPE",
+                "result.client.1",
+                "recipes/last-selected.json",
+            )
+        )
+
+        self.assertEqual([message.RECIPE_PATH for message in grouped["folder_a"]], ["recipes/a.json"])
+        self.assertEqual([message.RECIPE_PATH for message in grouped["folder_b"]], ["recipes/b.json"])
+
+    def test_multi_recipe_results_update_only_the_matching_request(self) -> None:
+        store = TaskStore()
+        store.register_folder_map(
+            {"folder_a": ["folder_a/a.jpg"]},
+            recipe_selections=[("Recipe A", "recipes/a.json"), ("Recipe B", "recipes/b.json")],
+        )
+        messages = store.build_pending_messages("RUN_RECIPE", "result.q", "ignored.json")
+        for message in messages:
+            store.mark_task_sent(message.request_id)
+
+        self.assertTrue(
+            store.apply_result(TaskResult(request_id=messages[0].request_id, result=["PASS"], status="DONE"))
+        )
+
+        tasks = {task.request_id: task for task in store.get_image_tasks("folder_a")}
+        self.assertEqual(tasks[messages[0].request_id].status, TaskStatus.SUCCESS)
+        self.assertEqual(tasks[messages[1].request_id].status, TaskStatus.SENT)
+        summary = store.get_folder_summary("folder_a")
+        self.assertIsNotNone(summary)
+        assert summary is not None
+        self.assertEqual(summary.completed, 1)
+        self.assertEqual(summary.progress, 50.0)
+
+    def test_mq_preview_prefers_snapshotted_recipe_over_runtime_selection(self) -> None:
+        store = TaskStore()
+        store.register_folder_map(
+            {"folder_a": ["folder_a/a.jpg"]},
+            recipe_selections=[("Recipe A", "recipes/a.json")],
+        )
+        task = store.get_image_tasks("folder_a")[0]
+        config = AppConfig(
+            rabbitmq=RabbitMQConfig(host="127.0.0.1", port=5672, username="guest", password="guest")
+        )
+
+        preview = store.build_mq_preview(
+            request_id=task.request_id,
+            app_config=config,
+            active_result_queue="result.q",
+            runtime_recipe_path="recipes/current-ui.json",
+        )
+
+        self.assertIsNotNone(preview)
+        assert preview is not None
+        self.assertEqual(preview["payload"]["expected"]["RECIPE_PATH"], "recipes/a.json")
+
     def test_build_pending_messages_for_folders_filters_targets_and_exclusions(self) -> None:
         all_grouped = self.store.build_pending_messages_by_folder(
             action="RUN_RECIPE",

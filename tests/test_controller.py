@@ -49,6 +49,7 @@ class DummyView(QObject if PYSIDE_AVAILABLE else object):
         self.active_result_queue: str | None = None
         self.queue_metrics: tuple[int | None, int | None] = (None, None)
         self.runtime_options_enabled = True
+        self.recipe_selections = [("Recipe", "recipe.json")]
         self._disable_queue_metrics_monitor = True
 
     def set_running_state(self, running: bool) -> None:
@@ -96,6 +97,9 @@ class DummyView(QObject if PYSIDE_AVAILABLE else object):
     def current_runtime_settings(self) -> tuple[str, str, int, int]:
         return ("RUN_RECIPE", "recipe.json", 1, 0)
 
+    def current_recipe_selections(self) -> list[tuple[str, str]]:
+        return list(self.recipe_selections)
+
 
 @unittest.skipUnless(PYSIDE_AVAILABLE, "PySide6 is required for controller tests.")
 class TaskControllerTest(unittest.TestCase):
@@ -133,6 +137,102 @@ class TaskControllerTest(unittest.TestCase):
 
         self.assertEqual(store.overall_stats()["total"], 1)
         self.assertTrue(len(view.logs) >= 1)
+
+    def test_add_folder_snapshots_all_selected_recipes(self) -> None:
+        config = AppConfig(
+            rabbitmq=RabbitMQConfig(host="127.0.0.1", port=5672, username="guest", password="guest"),
+            publish=PublishConfig(image_extensions=[".jpg"]),
+            ui=UiConfig(),
+            mock_mode=True,
+        )
+        view = DummyView()
+        view.recipe_selections = [("Recipe A", "recipes/a.json"), ("Recipe B", "recipes/b.json")]
+        store = TaskStore()
+        logger = logging.getLogger("controller_multi_recipe_test")
+        logger.handlers.clear()
+        logger.addHandler(logging.NullHandler())
+        controller = TaskController(
+            config=config,
+            view=view,  # type: ignore[arg-type]
+            store=store,
+            broker_provider=build_broker_provider(config),
+            logger=logger,
+        )
+
+        with TemporaryDirectory() as temp_dir:
+            folder = Path(temp_dir)
+            (folder / "a.jpg").write_text("x", encoding="utf-8")
+            (folder / "b.jpg").write_text("x", encoding="utf-8")
+            folder_path = str(folder)
+            controller.on_add_folder_requested([folder_path])
+            tasks = store.get_image_tasks(folder_path)
+
+        self.assertEqual(len(tasks), 4)
+        self.assertEqual({task.recipe_path for task in tasks}, {"recipes/a.json", "recipes/b.json"})
+
+    def test_recipe_change_between_folder_additions_keeps_each_snapshot(self) -> None:
+        config = AppConfig(
+            rabbitmq=RabbitMQConfig(host="127.0.0.1", port=5672, username="guest", password="guest"),
+            publish=PublishConfig(image_extensions=[".jpg"]),
+            ui=UiConfig(),
+            mock_mode=True,
+        )
+        view = DummyView()
+        store = TaskStore()
+        logger = logging.getLogger("controller_recipe_snapshot_test")
+        logger.handlers.clear()
+        logger.addHandler(logging.NullHandler())
+        controller = TaskController(
+            config=config,
+            view=view,  # type: ignore[arg-type]
+            store=store,
+            broker_provider=build_broker_provider(config),
+            logger=logger,
+        )
+
+        with TemporaryDirectory() as temp_dir:
+            folder_a = Path(temp_dir) / "folder_a"
+            folder_b = Path(temp_dir) / "folder_b"
+            folder_a.mkdir()
+            folder_b.mkdir()
+            (folder_a / "a.jpg").write_text("x", encoding="utf-8")
+            (folder_b / "b.jpg").write_text("x", encoding="utf-8")
+
+            view.recipe_selections = [("Recipe A", "recipes/a.json")]
+            controller.on_add_folder_requested([str(folder_a)])
+            view.recipe_selections = [("Recipe B", "recipes/b.json")]
+            controller.on_add_folder_requested([str(folder_b)])
+
+            grouped = dict(store.build_pending_messages_by_folder("RUN_RECIPE", "result.q", "recipes/b.json"))
+
+        self.assertEqual(grouped[str(folder_a)][0].RECIPE_PATH, "recipes/a.json")
+        self.assertEqual(grouped[str(folder_b)][0].RECIPE_PATH, "recipes/b.json")
+
+    def test_add_folder_requires_at_least_one_recipe(self) -> None:
+        config = AppConfig(
+            rabbitmq=RabbitMQConfig(host="127.0.0.1", port=5672, username="guest", password="guest"),
+            publish=PublishConfig(image_extensions=[".jpg"]),
+            ui=UiConfig(),
+            mock_mode=True,
+        )
+        view = DummyView()
+        view.recipe_selections = []
+        store = TaskStore()
+        logger = logging.getLogger("controller_empty_recipe_test")
+        logger.handlers.clear()
+        logger.addHandler(logging.NullHandler())
+        controller = TaskController(
+            config=config,
+            view=view,  # type: ignore[arg-type]
+            store=store,
+            broker_provider=build_broker_provider(config),
+            logger=logger,
+        )
+
+        controller.on_add_folder_requested(["folder_a"])
+
+        self.assertEqual(store.overall_stats()["total"], 0)
+        self.assertTrue(any("Recipe가 없습니다" in message for message in view.logs))
 
     def test_controller_uses_configured_folder_open_limits(self) -> None:
         config = AppConfig(
@@ -548,6 +648,8 @@ class TaskControllerTest(unittest.TestCase):
             task = store.get_task(message.request_id)
             self.assertIsNotNone(task)
             assert task is not None
+            self.assertEqual(task.recipe_path, "recipe.json")
+            self.assertEqual(message.RECIPE_PATH, task.recipe_path)
             self.assertIsNotNone(task.expected_message)
 
     def test_delete_folders_requested_removes_pending_only(self) -> None:

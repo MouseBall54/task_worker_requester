@@ -5,12 +5,14 @@ RabbitMQ로 이미지 단위 작업 요청을 전송하고(`IMG_LIST` 1건), 전
 ## 주요 기능
 
 - 폴더/하위 폴더 이미지 수집
+- 깊은 폴더 계층 선택 시 해당 노드가 가로 뷰포트 중앙에 오도록 자동 정렬
 - 이미지 1건당 MQ 메시지 1건 전송
 - `request_id` + `correlation_id` 기반 결과 매칭
 - 폴더 단위 진행률/성공/실패/타임아웃 집계
 - 실시간 로그 패널
 - Mock Broker 모드 (`mock_mode: true`)
 - 별도 recipe 설정 파일의 레시피 별명(`alias`) 선택 지원
+- 단일 또는 다중 Recipe를 폴더 추가 시점에 지정하고 이미지×Recipe별 독립 메시지 발행
 - request/result queue별 `queue_declare` 옵션 설정 지원
 - 폴더 동시 전송 수 설정 지원
 - request queue `x-max-priority` 기반 MQ priority 선택 지원
@@ -57,6 +59,8 @@ uv run python main.py --config config/app_config.yaml
 - `recipe_config_path`는 별도 recipe 설정 YAML 파일 경로입니다.
 - 예제 기본 경로는 [config/app_config.yaml](.\config\app_config.yaml) 기준 상대경로인 `recipe_config.yaml` 입니다.
 - 별도 recipe 파일의 `recipes`에 `alias/path`를 등록하면 UI에는 별명이 표시되고 전송에는 실제 path가 사용됩니다.
+- `다중 지정`을 켜면 여러 Recipe를 체크할 수 있습니다. 폴더를 추가하는 순간 선택 목록이 작업에 저장되며, 이미지 N개와 Recipe M개는 N×M개의 고유 request로 등록됩니다.
+- 같은 이미지와 같은 Recipe 조합은 중복 등록하지 않지만, 이미 등록된 이미지에 다른 Recipe를 추가하는 것은 허용합니다.
 - `rabbitmq.request_queue_declare`, `rabbitmq.result_queue_declare`로 queue declare 옵션을 각각 설정할 수 있습니다.
 - `publish.initial_open_folders`, `publish.max_active_open_folders`로 폴더 개방 정책을 조정할 수 있습니다.
 - `publish.default_priority`는 기본 request MQ priority 입니다.
@@ -118,6 +122,7 @@ uv run python main.py --config config/app_config.yaml
 ```
 
 - 이미지 1건당 메시지 1건으로 전송되며 `IMG_LIST` 길이는 항상 `1`입니다.
+- 여러 Recipe가 지정된 이미지는 Recipe마다 고유한 `request_id`와 `RECIPE_PATH`를 가진 메시지를 기존 request queue에 각각 발행합니다. 별도 queue를 생성하지는 않습니다.
 - `message_id`, `correlation_id`, `reply_to`는 각각 `request_id`, `request_id`, `QUEUE_NAME`으로 설정됩니다.
 - `priority`는 JSON payload에 추가되지 않고, AMQP `BasicProperties.priority` 속성으로만 전송됩니다.
 - `sent_at`는 앱 내부 상태 추적용이며 네트워크 payload에는 포함하지 않습니다.

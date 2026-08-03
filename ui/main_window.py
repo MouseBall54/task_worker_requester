@@ -12,6 +12,7 @@ from PySide6.QtGui import QAction, QDesktopServices, QIcon, QKeySequence, QShowE
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
+    QCheckBox,
     QToolButton,
     QDialog,
     QFileSystemModel,
@@ -128,6 +129,8 @@ class MainWindow(QMainWindow):
         self._initial_scroll_alignment_done = False
         self._last_status_sidebar_width = 440
         self._help_dialog: HelpDialog | None = None
+        self._runtime_options_enabled = True
+        self._recipe_actions: list[QAction] = []
         self._build_ui()
         self._build_menu_bar()
         self._apply_defaults()
@@ -159,6 +162,7 @@ class MainWindow(QMainWindow):
         self.resize(self._config.ui.window_width, self._config.ui.window_height)
 
         root = QWidget(self)
+        root.setObjectName("appRoot")
         self.setCentralWidget(root)
 
         root_layout = QVBoxLayout(root)
@@ -259,6 +263,7 @@ class MainWindow(QMainWindow):
 
     def _build_center_panel(self) -> QWidget:
         panel = QWidget()
+        panel.setObjectName("centerPanel")
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(11)
@@ -317,6 +322,15 @@ class MainWindow(QMainWindow):
         self.recipe_combo.currentIndexChanged.connect(self._on_recipe_changed)
         self.recipe_combo.setMinimumWidth(220)
         recipe_col.addWidget(self.recipe_combo, stretch=1)
+        self.recipe_multi_check = QCheckBox("다중 지정")
+        self.recipe_multi_check.toggled.connect(self._on_multi_recipe_toggled)
+        recipe_col.addWidget(self.recipe_multi_check, stretch=0)
+        self.recipe_multi_button = QToolButton()
+        self.recipe_multi_button.setObjectName("recipeMultiButton")
+        self.recipe_multi_button.setPopupMode(QToolButton.InstantPopup)
+        self.recipe_multi_button.setMenu(QMenu(self.recipe_multi_button))
+        self.recipe_multi_button.setVisible(False)
+        recipe_col.addWidget(self.recipe_multi_button, stretch=0)
 
         priority_col = QHBoxLayout()
         priority_col.addWidget(QLabel("Priority"), stretch=0)
@@ -476,7 +490,7 @@ class MainWindow(QMainWindow):
         self._mq_button_delegate = MQButtonDelegate(self.image_table)
         self._mq_button_delegate.clicked.connect(self._on_mq_button_clicked)
         self.image_table.setItemDelegateForColumn(0, self._mq_button_delegate)
-        self.image_table.setItemDelegateForColumn(2, StatusBadgeDelegate(self.image_table))
+        self.image_table.setItemDelegateForColumn(3, StatusBadgeDelegate(self.image_table))
 
         detail_tab = QWidget()
         detail_layout = QVBoxLayout(detail_tab)
@@ -520,7 +534,6 @@ class MainWindow(QMainWindow):
         """Move known horizontal scrollbars to their minimum position."""
 
         for widget in (
-            self.folder_tree,
             self.active_folder_table,
             self.completed_folder_table,
             self.image_table,
@@ -573,7 +586,8 @@ class MainWindow(QMainWindow):
         """Return runtime settings using recipe/priority UI and config defaults."""
 
         action = self._config.publish.default_action
-        recipe_path = str(self.recipe_combo.currentData() or "").strip()
+        selections = self.current_recipe_selections()
+        recipe_path = selections[0][1] if selections else ""
         if not recipe_path:
             recipe_path = self._config.recipe_config.default_path
 
@@ -585,6 +599,20 @@ class MainWindow(QMainWindow):
             priority = 0
 
         return action, recipe_path, polling_interval, priority
+
+    def current_recipe_selections(self) -> list[tuple[str, str]]:
+        """Return currently selected recipe alias/path pairs in display order."""
+
+        if not self.recipe_multi_check.isChecked():
+            alias = self.recipe_combo.currentText().strip()
+            path = str(self.recipe_combo.currentData() or "").strip()
+            return [(alias or path, path)] if path else []
+
+        return [
+            (action.text().strip() or str(action.data()), str(action.data() or "").strip())
+            for action in self._recipe_actions
+            if action.isChecked() and str(action.data() or "").strip()
+        ]
 
     def selected_tree_folder(self) -> str | None:
         """Return currently focused folder path from left tree."""
@@ -691,7 +719,11 @@ class MainWindow(QMainWindow):
     def set_runtime_options_enabled(self, enabled: bool) -> None:
         """Enable/disable runtime-editable controls for session stability."""
 
-        self.recipe_combo.setEnabled(enabled)
+        self._runtime_options_enabled = bool(enabled)
+        multi_enabled = self.recipe_multi_check.isChecked()
+        self.recipe_combo.setEnabled(enabled and not multi_enabled)
+        self.recipe_multi_check.setEnabled(enabled)
+        self.recipe_multi_button.setEnabled(enabled and multi_enabled)
         self.priority_combo.setEnabled(enabled)
 
     def set_folder_rows(self, rows: list[FolderSummary]) -> None:
@@ -992,6 +1024,7 @@ class MainWindow(QMainWindow):
         self._is_syncing_navigation = True
         try:
             self.path_jump_edit.setText(selected_path)
+            self._center_tree_index_horizontally(current)
         finally:
             self._is_syncing_navigation = False
 
@@ -1007,9 +1040,19 @@ class MainWindow(QMainWindow):
 
         self.recipe_combo.blockSignals(True)
         self.recipe_combo.clear()
+        recipe_menu = self.recipe_multi_button.menu()
+        assert recipe_menu is not None
+        recipe_menu.clear()
+        self._recipe_actions = []
 
         for recipe_item in self._config.recipe_config.recipes:
             self.recipe_combo.addItem(recipe_item.alias, recipe_item.path)
+            action = QAction(recipe_item.alias, recipe_menu)
+            action.setCheckable(True)
+            action.setData(recipe_item.path)
+            action.triggered.connect(self._on_multi_recipe_selection_changed)
+            recipe_menu.addAction(action)
+            self._recipe_actions.append(action)
 
         default_alias = (self._config.recipe_config.default_alias or "").strip().lower()
         selected_idx = 0
@@ -1021,17 +1064,68 @@ class MainWindow(QMainWindow):
                     break
         self.recipe_combo.setCurrentIndex(selected_idx)
         self.recipe_combo.blockSignals(False)
+        if 0 <= selected_idx < len(self._recipe_actions):
+            self._recipe_actions[selected_idx].setChecked(True)
+        self._update_recipe_selection_display()
         self._on_recipe_changed(selected_idx)
 
     def _on_recipe_changed(self, index: int) -> None:
         """Update path preview when user selects recipe alias."""
 
+        if self.recipe_multi_check.isChecked():
+            return
         if index < 0:
             self.recipe_path_preview.clear()
             return
         recipe_path = str(self.recipe_combo.itemData(index) or "")
         self.recipe_path_preview.setText(recipe_path)
         self.recipe_path_preview.setToolTip(recipe_path)
+
+    def _on_multi_recipe_toggled(self, enabled: bool) -> None:
+        """Switch between the legacy single selector and checkable recipe menu."""
+
+        if enabled and not any(action.isChecked() for action in self._recipe_actions):
+            current_index = self.recipe_combo.currentIndex()
+            if 0 <= current_index < len(self._recipe_actions):
+                self._recipe_actions[current_index].setChecked(True)
+        elif not enabled:
+            first_checked = next(
+                (index for index, action in enumerate(self._recipe_actions) if action.isChecked()),
+                None,
+            )
+            if first_checked is not None:
+                self.recipe_combo.setCurrentIndex(first_checked)
+
+        self.recipe_multi_button.setVisible(enabled)
+        self.recipe_combo.setEnabled(self._runtime_options_enabled and not enabled)
+        self.recipe_multi_button.setEnabled(self._runtime_options_enabled and enabled)
+        self._update_recipe_selection_display()
+
+    def _on_multi_recipe_selection_changed(self, _checked: bool = False) -> None:
+        """Refresh the recipe count and path preview after a check action."""
+
+        self._update_recipe_selection_display()
+
+    def _update_recipe_selection_display(self) -> None:
+        """Show selected recipe count and paths without changing selection state."""
+
+        if not self.recipe_multi_check.isChecked():
+            self._on_recipe_changed(self.recipe_combo.currentIndex())
+            return
+
+        selections = self.current_recipe_selections()
+        aliases = ", ".join(alias for alias, _ in selections)
+        paths = " | ".join(path for _, path in selections)
+        visible_aliases = ", ".join(alias for alias, _ in selections[:2])
+        if len(selections) > 2:
+            visible_aliases = f"{visible_aliases} 외 {len(selections) - 2}"
+        button_text = f"{len(selections)}개"
+        if visible_aliases:
+            button_text = f"{button_text}: {visible_aliases}"
+        self.recipe_multi_button.setText(button_text)
+        self.recipe_multi_button.setToolTip(aliases or "선택된 Recipe 없음")
+        self.recipe_path_preview.setText(paths)
+        self.recipe_path_preview.setToolTip("\n".join(path for _, path in selections))
 
     def _open_update_link(self) -> None:
         """Open the configured latest release URL in the default browser."""
@@ -1113,6 +1207,7 @@ class MainWindow(QMainWindow):
             self.folder_tree.setCurrentIndex(model_index)
             self.folder_tree.scrollTo(model_index, QTreeView.PositionAtCenter)
             self.folder_tree.expand(model_index)
+            self._center_tree_index_horizontally(model_index)
             self.folder_tree.setFocus(Qt.OtherFocusReason)
             self.path_jump_edit.setText(target_path)
         finally:
@@ -1162,13 +1257,71 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(80, self._finalize_pending_jump)
             return
 
-        tree_scrollbar = self.folder_tree.horizontalScrollBar()
-        if tree_scrollbar is not None:
-            tree_scrollbar.setValue(tree_scrollbar.minimum())
+        self._center_tree_index_horizontally(self.folder_tree.currentIndex())
 
         if self._pending_jump_show_feedback:
             self.append_log(f"[탐색] 경로 이동 완료: {target_path}")
         self._clear_pending_jump()
+
+    def _center_tree_index_horizontally(self, index: QModelIndex) -> None:
+        """Center a tree item's hierarchy/text anchor in the horizontal viewport."""
+
+        if not index.isValid():
+            return
+        self._center_tree_horizontal_anchor(self._tree_index_horizontal_anchor(index))
+
+    def _center_tree_horizontal_anchor(self, anchor: int) -> None:
+        """Center one tree content-space anchor within the available scroll range."""
+
+        scrollbar = self.folder_tree.horizontalScrollBar()
+        viewport = self.folder_tree.viewport()
+        if scrollbar is None or viewport.width() <= 0:
+            return
+
+        scrollbar.setValue(
+            self._calculate_centered_tree_scroll_value(
+                anchor=anchor,
+                viewport_width=viewport.width(),
+                minimum=scrollbar.minimum(),
+                maximum=scrollbar.maximum(),
+            )
+        )
+
+    def _tree_index_horizontal_anchor(self, index: QModelIndex) -> int:
+        """Return the content-space center of an item's branch icon and label."""
+
+        depth = 0
+        parent = index.parent()
+        while parent.isValid():
+            depth += 1
+            parent = parent.parent()
+
+        label = str(index.data(Qt.DisplayRole) or "")
+        label_width = self.folder_tree.fontMetrics().horizontalAdvance(label)
+        return self._calculate_tree_horizontal_anchor(
+            depth=depth,
+            indentation=self.folder_tree.indentation(),
+            label_width=label_width,
+        )
+
+    @staticmethod
+    def _calculate_tree_horizontal_anchor(depth: int, indentation: int, label_width: int) -> int:
+        """Calculate the branch/icon/label center in tree content coordinates."""
+
+        branch_and_icon_width = 28
+        return (depth + 1) * indentation + branch_and_icon_width + label_width // 2
+
+    @staticmethod
+    def _calculate_centered_tree_scroll_value(
+        anchor: int,
+        viewport_width: int,
+        minimum: int,
+        maximum: int,
+    ) -> int:
+        """Clamp the scroll value that places a content anchor at viewport center."""
+
+        target_value = anchor - max(0, viewport_width) // 2
+        return max(minimum, min(maximum, target_value))
 
     @staticmethod
     def _normalize_navigation_path(path: str) -> str:
