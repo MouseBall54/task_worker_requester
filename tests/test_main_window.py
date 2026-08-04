@@ -10,8 +10,8 @@ from models.task_models import FolderSummary, TaskStatus
 try:
     from PySide6.QtCore import Qt
     from PySide6.QtTest import QTest
-    from PySide6.QtWidgets import QApplication
-    from ui.main_window import MainWindow
+    from PySide6.QtWidgets import QApplication, QComboBox, QLabel, QToolButton
+    from ui.main_window import MainWindow, RecipePathRow, ResponsiveRecipeSettings
 
     PYSIDE_AVAILABLE = True
 except ImportError:  # pragma: no cover
@@ -230,13 +230,11 @@ class MainWindowTest(unittest.TestCase):
         window = self._make_window()
         try:
             window.set_runtime_options_enabled(False)
-            self.assertFalse(window.recipe_combo.isEnabled())
-            self.assertFalse(window.recipe_multi_check.isEnabled())
+            self.assertFalse(window.recipe_multi_button.isEnabled())
             self.assertFalse(window.priority_combo.isEnabled())
 
             window.set_runtime_options_enabled(True)
-            self.assertTrue(window.recipe_combo.isEnabled())
-            self.assertTrue(window.recipe_multi_check.isEnabled())
+            self.assertTrue(window.recipe_multi_button.isEnabled())
             self.assertTrue(window.priority_combo.isEnabled())
         finally:
             window.close()
@@ -245,23 +243,124 @@ class MainWindowTest(unittest.TestCase):
         window = self._make_window()
         try:
             self.assertEqual(window.current_recipe_selections(), [("Recipe A", "recipes/a.json")])
+            self.assertFalse(hasattr(window, "recipe_combo"))
+            self.assertFalse(hasattr(window, "recipe_multi_check"))
 
-            window.recipe_multi_check.setChecked(True)
             window._recipe_actions[1].trigger()
 
             self.assertEqual(
                 window.current_recipe_selections(),
                 [("Recipe A", "recipes/a.json"), ("Recipe B", "recipes/b.json")],
             )
-            self.assertEqual(window.recipe_multi_button.text(), "2개: Recipe A, Recipe B")
-            self.assertIn("recipes/a.json", window.recipe_path_preview.text())
-            self.assertIn("recipes/b.json", window.recipe_path_preview.text())
+            self.assertEqual(window.recipe_multi_button.text(), "2개 선택")
+            self.assertEqual(
+                [(row.alias, row.path) for row in window.recipe_path_rows],
+                [("Recipe A", "recipes/a.json"), ("Recipe B", "recipes/b.json")],
+            )
 
             window.set_runtime_options_enabled(False)
-            self.assertFalse(window.recipe_multi_check.isEnabled())
             self.assertFalse(window.recipe_multi_button.isEnabled())
         finally:
             window.close()
+
+    def test_recipe_selector_supports_empty_and_select_all_states(self) -> None:
+        window = self._make_window()
+        try:
+            window._clear_all_recipes()
+            self.assertEqual(window.current_recipe_selections(), [])
+            self.assertEqual(window.recipe_multi_button.text(), "Recipe 선택")
+            self.assertTrue(window.recipe_path_empty_label.isVisibleTo(window.recipe_paths_panel))
+            self.assertEqual(window.recipe_path_rows, [])
+
+            window._select_all_recipes()
+            self.assertEqual(len(window.current_recipe_selections()), 2)
+            self.assertEqual(window.recipe_multi_button.text(), "2개 선택")
+            self.assertFalse(window.recipe_path_empty_label.isVisible())
+        finally:
+            window.close()
+
+    def test_recipe_selection_survives_refresh_and_drops_removed_recipe(self) -> None:
+        window = self._make_window()
+        try:
+            window._select_all_recipes()
+            window._populate_recipe_selector()
+            self.assertEqual(len(window.current_recipe_selections()), 2)
+
+            window._config.recipe_config.recipes = [
+                RecipeItem(alias="Recipe B", path="recipes/b.json")
+            ]
+            window._populate_recipe_selector()
+            self.assertEqual(
+                window.current_recipe_selections(),
+                [("Recipe B", "recipes/b.json")],
+            )
+        finally:
+            window.close()
+
+    def test_recipe_selector_ignores_duplicate_paths(self) -> None:
+        window = self._make_window()
+        try:
+            window._config.recipe_config.recipes.append(
+                RecipeItem(alias="Recipe A Duplicate", path="recipes/a.json")
+            )
+            window._populate_recipe_selector()
+            window._select_all_recipes()
+
+            self.assertEqual(len(window._recipe_actions), 2)
+            self.assertEqual(
+                window.current_recipe_selections(),
+                [("Recipe A", "recipes/a.json"), ("Recipe B", "recipes/b.json")],
+            )
+        finally:
+            window.close()
+
+    def test_recipe_and_priority_layout_reflows_without_overlap(self) -> None:
+        settings = ResponsiveRecipeSettings(
+            QLabel("Recipe"),
+            QToolButton(),
+            QLabel("Priority"),
+            QComboBox(),
+        )
+        try:
+            settings.show()
+            for width in (560, 700, 900):
+                settings.resize(width, 100)
+                self._app.processEvents()
+                self.assertFalse(settings.is_compact)
+                self.assertFalse(
+                    settings.recipe_selector.geometry().intersects(
+                        settings.priority_selector.geometry()
+                    )
+                )
+
+            settings.resize(480, 100)
+            self._app.processEvents()
+            self.assertTrue(settings.is_compact)
+            self.assertGreater(
+                settings.priority_selector.geometry().top(),
+                settings.recipe_selector.geometry().top(),
+            )
+        finally:
+            settings.close()
+
+    def test_recipe_path_row_reflows_and_elides_long_path(self) -> None:
+        long_path = "D:/" + "/very-long-folder" * 20 + "/recipe.json"
+        row = RecipePathRow("Very Long Recipe Alias", long_path)
+        try:
+            row.show()
+            row.resize(600, 50)
+            self._app.processEvents()
+            self.assertFalse(row.is_compact)
+
+            row.resize(380, 80)
+            self._app.processEvents()
+            self._app.processEvents()
+            self.assertTrue(row.is_compact)
+            self.assertGreater(row.path_label.geometry().top(), row.alias_label.geometry().top())
+            self.assertEqual(row.path_label.toolTip(), long_path)
+            self.assertIn("…", row.path_label.text())
+        finally:
+            row.close()
 
 
 if __name__ == "__main__":

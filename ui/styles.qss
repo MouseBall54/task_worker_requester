@@ -235,6 +235,7 @@ QToolButton#recipeMultiButton {
     border-radius: 8px;
     padding: 6px 10px;
     min-height: 22px;
+    text-align: left;
 }
 
 QToolButton#recipeMultiButton:hover,
@@ -247,6 +248,38 @@ QToolButton#recipeMultiButton:disabled {
     background-color: #253044;
     color: #8290a4;
     border-color: #344054;
+}
+
+QLabel#recipePathsTitle {
+    color: #cbd5e1;
+    font-weight: 600;
+    padding-top: 2px;
+}
+
+QFrame#recipePathsPanel {
+    background-color: #111b2d;
+    border: 1px solid #34445f;
+    border-radius: 8px;
+}
+
+QFrame#recipePathRow {
+    background-color: #17243a;
+    border: 1px solid #2d3c55;
+    border-radius: 6px;
+}
+
+QLabel#recipePathAlias {
+    color: #dbeafe;
+    font-weight: 600;
+}
+
+QLabel#recipePathValue {
+    color: #aebed2;
+}
+
+QLabel#recipePathEmpty {
+    color: #8290a4;
+    padding: 8px;
 }
 
 QToolButton#statusSidebarToggle:hover {

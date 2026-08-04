@@ -12,13 +12,13 @@ from PySide6.QtGui import QAction, QDesktopServices, QIcon, QKeySequence, QShowE
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
-    QCheckBox,
     QToolButton,
     QDialog,
     QFileSystemModel,
     QFrame,
     QGroupBox,
     QHeaderView,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
     QWidget,
     QComboBox,
     QProgressBar,
+    QSizePolicy,
     QDialogButtonBox,
     QPlainTextEdit,
 )
@@ -98,6 +99,129 @@ class MQPreviewDialog(QDialog):
             json.dumps(preview_data.get("payload", {}).get("received", {}), ensure_ascii=False, indent=2),
         ]
         return "\n".join(sections)
+
+
+class ResponsiveRecipeSettings(QWidget):
+    """Keep Recipe and Priority controls readable at narrow widths."""
+
+    COMPACT_WIDTH = 500
+
+    def __init__(
+        self,
+        recipe_label: QLabel,
+        recipe_selector: QWidget,
+        priority_label: QLabel,
+        priority_selector: QWidget,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.recipe_label = recipe_label
+        self.recipe_selector = recipe_selector
+        self.priority_label = priority_label
+        self.priority_selector = priority_selector
+        self._compact = False
+
+        self.grid = QGridLayout(self)
+        self.grid.setContentsMargins(0, 0, 0, 0)
+        self.grid.setHorizontalSpacing(10)
+        self.grid.setVerticalSpacing(8)
+        self._apply_layout(compact=False)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._apply_layout(compact=event.size().width() < self.COMPACT_WIDTH)
+
+    def _apply_layout(self, *, compact: bool) -> None:
+        if compact == self._compact and self.grid.count() == 4:
+            return
+        self._compact = compact
+        for widget in (
+            self.recipe_label,
+            self.recipe_selector,
+            self.priority_label,
+            self.priority_selector,
+        ):
+            self.grid.removeWidget(widget)
+
+        self.grid.addWidget(self.recipe_label, 0, 0)
+        self.grid.addWidget(self.recipe_selector, 0, 1)
+        if compact:
+            self.grid.addWidget(self.priority_label, 1, 0)
+            self.grid.addWidget(self.priority_selector, 1, 1, alignment=Qt.AlignLeft)
+        else:
+            self.grid.addWidget(self.priority_label, 0, 2)
+            self.grid.addWidget(self.priority_selector, 0, 3)
+        self.grid.setColumnStretch(1, 1)
+
+    @property
+    def is_compact(self) -> bool:
+        return self._compact
+
+
+class RecipePathRow(QFrame):
+    """Render one selected Recipe and its path responsively."""
+
+    COMPACT_WIDTH = 430
+
+    def __init__(self, alias: str, path: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("recipePathRow")
+        self.alias = alias
+        self.path = path
+        self._compact = False
+
+        self.alias_label = QLabel(alias, self)
+        self.alias_label.setObjectName("recipePathAlias")
+        self.alias_label.setToolTip(alias)
+        self.alias_label.setMinimumWidth(110)
+        self.alias_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+
+        self.path_label = QLabel(path, self)
+        self.path_label.setObjectName("recipePathValue")
+        self.path_label.setToolTip(path)
+        self.path_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+
+        self.grid = QGridLayout(self)
+        self.grid.setContentsMargins(10, 7, 10, 7)
+        self.grid.setHorizontalSpacing(12)
+        self.grid.setVerticalSpacing(3)
+        self._apply_layout(compact=False)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._apply_layout(compact=event.size().width() < self.COMPACT_WIDTH)
+        self.grid.activate()
+        self._update_elided_text()
+
+    def _apply_layout(self, *, compact: bool) -> None:
+        if compact == self._compact and self.grid.count() == 2:
+            return
+        self._compact = compact
+        self.grid.removeWidget(self.alias_label)
+        self.grid.removeWidget(self.path_label)
+        if compact:
+            self.grid.addWidget(self.alias_label, 0, 0)
+            self.grid.addWidget(self.path_label, 1, 0)
+        else:
+            self.grid.addWidget(self.alias_label, 0, 0)
+            self.grid.addWidget(self.path_label, 0, 1)
+        self.grid.setColumnStretch(0, 0)
+        self.grid.setColumnStretch(1, 0)
+        self.grid.setColumnStretch(1 if not compact else 0, 1)
+
+    def _update_elided_text(self) -> None:
+        alias_width = max(0, self.alias_label.width() - 2)
+        self.alias_label.setText(
+            self.alias_label.fontMetrics().elidedText(self.alias, Qt.ElideRight, alias_width)
+        )
+        path_width = max(0, self.path_label.width() - 2)
+        self.path_label.setText(
+            self.path_label.fontMetrics().elidedText(self.path, Qt.ElideMiddle, path_width)
+        )
+
+    @property
+    def is_compact(self) -> bool:
+        return self._compact
 
 
 class MainWindow(QMainWindow):
@@ -314,43 +438,43 @@ class MainWindow(QMainWindow):
         self.queue_metrics_label.setObjectName("queueMetricsLabel")
         layout.addWidget(self.queue_metrics_label)
 
-        row_recipe_priority = QHBoxLayout()
-
-        recipe_col = QHBoxLayout()
-        recipe_col.addWidget(QLabel("Recipe"), stretch=0)
-        self.recipe_combo = QComboBox()
-        self.recipe_combo.currentIndexChanged.connect(self._on_recipe_changed)
-        self.recipe_combo.setMinimumWidth(220)
-        recipe_col.addWidget(self.recipe_combo, stretch=1)
-        self.recipe_multi_check = QCheckBox("다중 지정")
-        self.recipe_multi_check.toggled.connect(self._on_multi_recipe_toggled)
-        recipe_col.addWidget(self.recipe_multi_check, stretch=0)
+        recipe_label = QLabel("Recipe")
         self.recipe_multi_button = QToolButton()
         self.recipe_multi_button.setObjectName("recipeMultiButton")
         self.recipe_multi_button.setPopupMode(QToolButton.InstantPopup)
         self.recipe_multi_button.setMenu(QMenu(self.recipe_multi_button))
-        self.recipe_multi_button.setVisible(False)
-        recipe_col.addWidget(self.recipe_multi_button, stretch=0)
+        self.recipe_multi_button.setMinimumWidth(180)
+        self.recipe_multi_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.recipe_multi_button.setAccessibleName("Recipe 선택")
 
-        priority_col = QHBoxLayout()
-        priority_col.addWidget(QLabel("Priority"), stretch=0)
+        priority_label = QLabel("Priority")
         self.priority_combo = QComboBox()
         self.priority_combo.setMinimumContentsLength(3)
-        self.priority_combo.setMinimumWidth(92)
-        priority_col.addWidget(self.priority_combo, stretch=0)
-        priority_col.addStretch(1)
+        self.priority_combo.setFixedWidth(80)
 
-        row_recipe_priority.addLayout(recipe_col, stretch=1)
-        row_recipe_priority.addSpacing(12)
-        row_recipe_priority.addLayout(priority_col, stretch=1)
-        layout.addLayout(row_recipe_priority)
+        self.recipe_settings = ResponsiveRecipeSettings(
+            recipe_label,
+            self.recipe_multi_button,
+            priority_label,
+            self.priority_combo,
+            panel,
+        )
+        layout.addWidget(self.recipe_settings)
 
-        recipe_path_row = QHBoxLayout()
-        recipe_path_row.addWidget(QLabel("선택 경로"), stretch=0)
-        self.recipe_path_preview = QLineEdit()
-        self.recipe_path_preview.setReadOnly(True)
-        recipe_path_row.addWidget(self.recipe_path_preview, stretch=1)
-        layout.addLayout(recipe_path_row)
+        recipe_paths_label = QLabel("Recipe 선택 경로")
+        recipe_paths_label.setObjectName("recipePathsTitle")
+        layout.addWidget(recipe_paths_label)
+
+        self.recipe_paths_panel = QFrame(panel)
+        self.recipe_paths_panel.setObjectName("recipePathsPanel")
+        self.recipe_paths_layout = QVBoxLayout(self.recipe_paths_panel)
+        self.recipe_paths_layout.setContentsMargins(5, 5, 5, 5)
+        self.recipe_paths_layout.setSpacing(4)
+        self.recipe_path_empty_label = QLabel("선택된 Recipe가 없습니다.", self.recipe_paths_panel)
+        self.recipe_path_empty_label.setObjectName("recipePathEmpty")
+        self.recipe_paths_layout.addWidget(self.recipe_path_empty_label)
+        self.recipe_path_rows: list[RecipePathRow] = []
+        layout.addWidget(self.recipe_paths_panel)
 
         self.overall_progress = QProgressBar()
         self.overall_progress.setRange(0, 100)
@@ -603,11 +727,6 @@ class MainWindow(QMainWindow):
     def current_recipe_selections(self) -> list[tuple[str, str]]:
         """Return currently selected recipe alias/path pairs in display order."""
 
-        if not self.recipe_multi_check.isChecked():
-            alias = self.recipe_combo.currentText().strip()
-            path = str(self.recipe_combo.currentData() or "").strip()
-            return [(alias or path, path)] if path else []
-
         return [
             (action.text().strip() or str(action.data()), str(action.data() or "").strip())
             for action in self._recipe_actions
@@ -720,10 +839,7 @@ class MainWindow(QMainWindow):
         """Enable/disable runtime-editable controls for session stability."""
 
         self._runtime_options_enabled = bool(enabled)
-        multi_enabled = self.recipe_multi_check.isChecked()
-        self.recipe_combo.setEnabled(enabled and not multi_enabled)
-        self.recipe_multi_check.setEnabled(enabled)
-        self.recipe_multi_button.setEnabled(enabled and multi_enabled)
+        self.recipe_multi_button.setEnabled(enabled)
         self.priority_combo.setEnabled(enabled)
 
     def set_folder_rows(self, rows: list[FolderSummary]) -> None:
@@ -1036,69 +1152,49 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, self._retry_pending_jump)
 
     def _populate_recipe_selector(self) -> None:
-        """Populate recipe alias combo from top-level recipe config."""
+        """Populate the always-multi-select Recipe menu from configuration."""
 
-        self.recipe_combo.blockSignals(True)
-        self.recipe_combo.clear()
+        previous_paths = {
+            str(action.data() or "").strip()
+            for action in self._recipe_actions
+            if action.isChecked() and str(action.data() or "").strip()
+        }
+        had_actions = bool(self._recipe_actions)
         recipe_menu = self.recipe_multi_button.menu()
         assert recipe_menu is not None
         recipe_menu.clear()
         self._recipe_actions = []
 
+        select_all_action = recipe_menu.addAction("전체 선택")
+        select_all_action.triggered.connect(self._select_all_recipes)
+        clear_action = recipe_menu.addAction("전체 해제")
+        clear_action.triggered.connect(self._clear_all_recipes)
+        recipe_menu.addSeparator()
+
+        seen_recipe_paths: set[str] = set()
         for recipe_item in self._config.recipe_config.recipes:
-            self.recipe_combo.addItem(recipe_item.alias, recipe_item.path)
+            recipe_path = str(recipe_item.path or "").strip()
+            if not recipe_path or recipe_path in seen_recipe_paths:
+                continue
+            seen_recipe_paths.add(recipe_path)
             action = QAction(recipe_item.alias, recipe_menu)
             action.setCheckable(True)
-            action.setData(recipe_item.path)
+            action.setData(recipe_path)
+            action.setToolTip(recipe_path)
             action.triggered.connect(self._on_multi_recipe_selection_changed)
             recipe_menu.addAction(action)
             self._recipe_actions.append(action)
 
         default_alias = (self._config.recipe_config.default_alias or "").strip().lower()
-        selected_idx = 0
-        if default_alias:
-            for idx in range(self.recipe_combo.count()):
-                alias = self.recipe_combo.itemText(idx).strip().lower()
-                if alias == default_alias:
-                    selected_idx = idx
-                    break
-        self.recipe_combo.setCurrentIndex(selected_idx)
-        self.recipe_combo.blockSignals(False)
-        if 0 <= selected_idx < len(self._recipe_actions):
-            self._recipe_actions[selected_idx].setChecked(True)
-        self._update_recipe_selection_display()
-        self._on_recipe_changed(selected_idx)
+        for action in self._recipe_actions:
+            path = str(action.data() or "").strip()
+            alias = action.text().strip().lower()
+            action.setChecked(path in previous_paths if had_actions else alias == default_alias)
 
-    def _on_recipe_changed(self, index: int) -> None:
-        """Update path preview when user selects recipe alias."""
-
-        if self.recipe_multi_check.isChecked():
-            return
-        if index < 0:
-            self.recipe_path_preview.clear()
-            return
-        recipe_path = str(self.recipe_combo.itemData(index) or "")
-        self.recipe_path_preview.setText(recipe_path)
-        self.recipe_path_preview.setToolTip(recipe_path)
-
-    def _on_multi_recipe_toggled(self, enabled: bool) -> None:
-        """Switch between the legacy single selector and checkable recipe menu."""
-
-        if enabled and not any(action.isChecked() for action in self._recipe_actions):
-            current_index = self.recipe_combo.currentIndex()
-            if 0 <= current_index < len(self._recipe_actions):
-                self._recipe_actions[current_index].setChecked(True)
-        elif not enabled:
-            first_checked = next(
-                (index for index, action in enumerate(self._recipe_actions) if action.isChecked()),
-                None,
-            )
-            if first_checked is not None:
-                self.recipe_combo.setCurrentIndex(first_checked)
-
-        self.recipe_multi_button.setVisible(enabled)
-        self.recipe_combo.setEnabled(self._runtime_options_enabled and not enabled)
-        self.recipe_multi_button.setEnabled(self._runtime_options_enabled and enabled)
+        if not had_actions and self._recipe_actions and not any(
+            action.isChecked() for action in self._recipe_actions
+        ):
+            self._recipe_actions[0].setChecked(True)
         self._update_recipe_selection_display()
 
     def _on_multi_recipe_selection_changed(self, _checked: bool = False) -> None:
@@ -1106,26 +1202,34 @@ class MainWindow(QMainWindow):
 
         self._update_recipe_selection_display()
 
+    def _select_all_recipes(self) -> None:
+        for action in self._recipe_actions:
+            action.setChecked(True)
+        self._update_recipe_selection_display()
+
+    def _clear_all_recipes(self) -> None:
+        for action in self._recipe_actions:
+            action.setChecked(False)
+        self._update_recipe_selection_display()
+
     def _update_recipe_selection_display(self) -> None:
         """Show selected recipe count and paths without changing selection state."""
 
-        if not self.recipe_multi_check.isChecked():
-            self._on_recipe_changed(self.recipe_combo.currentIndex())
-            return
-
         selections = self.current_recipe_selections()
-        aliases = ", ".join(alias for alias, _ in selections)
-        paths = " | ".join(path for _, path in selections)
-        visible_aliases = ", ".join(alias for alias, _ in selections[:2])
-        if len(selections) > 2:
-            visible_aliases = f"{visible_aliases} 외 {len(selections) - 2}"
-        button_text = f"{len(selections)}개"
-        if visible_aliases:
-            button_text = f"{button_text}: {visible_aliases}"
-        self.recipe_multi_button.setText(button_text)
-        self.recipe_multi_button.setToolTip(aliases or "선택된 Recipe 없음")
-        self.recipe_path_preview.setText(paths)
-        self.recipe_path_preview.setToolTip("\n".join(path for _, path in selections))
+        self.recipe_multi_button.setText(f"{len(selections)}개 선택" if selections else "Recipe 선택")
+        tooltip = "\n".join(f"{alias}: {path}" for alias, path in selections)
+        self.recipe_multi_button.setToolTip(tooltip or "선택된 Recipe가 없습니다.")
+
+        for row in self.recipe_path_rows:
+            self.recipe_paths_layout.removeWidget(row)
+            row.deleteLater()
+        self.recipe_path_rows = []
+
+        self.recipe_path_empty_label.setVisible(not selections)
+        for alias, path in selections:
+            row = RecipePathRow(alias, path, self.recipe_paths_panel)
+            self.recipe_paths_layout.addWidget(row)
+            self.recipe_path_rows.append(row)
 
     def _open_update_link(self) -> None:
         """Open the configured latest release URL in the default browser."""
