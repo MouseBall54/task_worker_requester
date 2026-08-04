@@ -17,6 +17,7 @@ datas = [
     (str(PROJECT_ROOT / "assets" / "IPDK_plus.ico"), "assets"),
     (str(PROJECT_ROOT / "assets" / "icons" / "status_sidebar_collapse.svg"), "assets/icons"),
     (str(PROJECT_ROOT / "assets" / "icons" / "status_sidebar_expand.svg"), "assets/icons"),
+    (str(PROJECT_ROOT / "assets" / "icons" / "combo_down.svg"), "assets/icons"),
 ]
 
 excludes = [

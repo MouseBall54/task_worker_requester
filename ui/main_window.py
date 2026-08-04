@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSplitter,
     QTabWidget,
     QTableView,
@@ -123,7 +124,7 @@ class ResponsiveRecipeSettings(QWidget):
 
         self.grid = QGridLayout(self)
         self.grid.setContentsMargins(0, 0, 0, 0)
-        self.grid.setHorizontalSpacing(10)
+        self.grid.setHorizontalSpacing(16)
         self.grid.setVerticalSpacing(8)
         self._apply_layout(compact=False)
 
@@ -144,14 +145,26 @@ class ResponsiveRecipeSettings(QWidget):
             self.grid.removeWidget(widget)
 
         self.grid.addWidget(self.recipe_label, 0, 0)
-        self.grid.addWidget(self.recipe_selector, 0, 1)
+        self.grid.addWidget(
+            self.recipe_selector,
+            0,
+            1,
+            alignment=Qt.AlignLeft | Qt.AlignVCenter,
+        )
         if compact:
             self.grid.addWidget(self.priority_label, 1, 0)
             self.grid.addWidget(self.priority_selector, 1, 1, alignment=Qt.AlignLeft)
         else:
             self.grid.addWidget(self.priority_label, 0, 2)
-            self.grid.addWidget(self.priority_selector, 0, 3)
-        self.grid.setColumnStretch(1, 1)
+            self.grid.addWidget(
+                self.priority_selector,
+                0,
+                3,
+                alignment=Qt.AlignLeft | Qt.AlignVCenter,
+            )
+        for column in range(5):
+            self.grid.setColumnStretch(column, 0)
+        self.grid.setColumnStretch(4, 1)
 
     @property
     def is_compact(self) -> bool:
@@ -161,7 +174,8 @@ class ResponsiveRecipeSettings(QWidget):
 class RecipePathRow(QFrame):
     """Render one selected Recipe and its path responsively."""
 
-    COMPACT_WIDTH = 430
+    COMPACT_WIDTH = 520
+    layout_height_changed = Signal()
 
     def __init__(self, alias: str, path: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -173,13 +187,17 @@ class RecipePathRow(QFrame):
         self.alias_label = QLabel(alias, self)
         self.alias_label.setObjectName("recipePathAlias")
         self.alias_label.setToolTip(alias)
-        self.alias_label.setMinimumWidth(110)
+        self.alias_label.setMinimumWidth(120)
+        self.alias_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.alias_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
 
         self.path_label = QLabel(path, self)
         self.path_label.setObjectName("recipePathValue")
         self.path_label.setToolTip(path)
+        self.path_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.path_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
         self.grid = QGridLayout(self)
         self.grid.setContentsMargins(10, 7, 10, 7)
@@ -189,9 +207,14 @@ class RecipePathRow(QFrame):
 
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
-        self._apply_layout(compact=event.size().width() < self.COMPACT_WIDTH)
+        self.set_available_width(event.size().width())
         self.grid.activate()
         self._update_elided_text()
+
+    def set_available_width(self, width: int) -> None:
+        """Select one- or two-line layout before the parent assigns final geometry."""
+
+        self._apply_layout(compact=max(0, int(width)) < self.COMPACT_WIDTH)
 
     def _apply_layout(self, *, compact: bool) -> None:
         if compact == self._compact and self.grid.count() == 2:
@@ -200,14 +223,32 @@ class RecipePathRow(QFrame):
         self.grid.removeWidget(self.alias_label)
         self.grid.removeWidget(self.path_label)
         if compact:
+            self.alias_label.setMinimumWidth(0)
+            self.alias_label.setMaximumWidth(16777215)
+            self.alias_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+            self.grid.setColumnMinimumWidth(0, 0)
             self.grid.addWidget(self.alias_label, 0, 0)
             self.grid.addWidget(self.path_label, 1, 0)
         else:
+            self.alias_label.setMinimumWidth(160)
+            self.alias_label.setMaximumWidth(180)
+            self.alias_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+            self.grid.setColumnMinimumWidth(0, 160)
             self.grid.addWidget(self.alias_label, 0, 0)
             self.grid.addWidget(self.path_label, 0, 1)
         self.grid.setColumnStretch(0, 0)
         self.grid.setColumnStretch(1, 0)
         self.grid.setColumnStretch(1 if not compact else 0, 1)
+        line_height = max(
+            self.alias_label.fontMetrics().height(),
+            self.path_label.fontMetrics().height(),
+        )
+        content_height = line_height * (2 if compact else 1)
+        required_height = 14 + content_height + (5 if compact else 0)
+        self.setFixedHeight(required_height)
+        self.grid.invalidate()
+        self.updateGeometry()
+        self.layout_height_changed.emit()
 
     def _update_elided_text(self) -> None:
         alias_width = max(0, self.alias_label.width() - 2)
@@ -445,15 +486,47 @@ class MainWindow(QMainWindow):
         self.recipe_multi_button = QToolButton()
         self.recipe_multi_button.setObjectName("recipeMultiButton")
         self.recipe_multi_button.setPopupMode(QToolButton.InstantPopup)
-        self.recipe_multi_button.setMenu(QMenu(self.recipe_multi_button))
-        self.recipe_multi_button.setMinimumWidth(180)
-        self.recipe_multi_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        recipe_menu = QMenu(self.recipe_multi_button)
+        recipe_menu.setObjectName("recipeComboMenu")
+        self.recipe_multi_button.setMenu(recipe_menu)
+        self.recipe_multi_button.setMinimumWidth(220)
+        self.recipe_multi_button.setMaximumWidth(280)
+        self.recipe_multi_button.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         self.recipe_multi_button.setAccessibleName("Recipe 선택")
 
         priority_label = QLabel("Priority")
         self.priority_combo = QComboBox()
+        self.priority_combo.setObjectName("priorityCombo")
+        priority_arrow_path = resolve_ui_icon_path("combo_down.svg")
+        if priority_arrow_path is not None:
+            priority_arrow_url = priority_arrow_path.as_posix()
+            self.priority_combo.setStyleSheet(
+                f"""
+                QComboBox#priorityCombo {{
+                    padding-right: 27px;
+                }}
+                QComboBox#priorityCombo::drop-down {{
+                    subcontrol-origin: padding;
+                    subcontrol-position: right center;
+                    width: 18px;
+                    margin-right: 5px;
+                    border: none;
+                }}
+                QComboBox#priorityCombo::down-arrow {{
+                    image: url("{priority_arrow_url}");
+                    width: 8px;
+                    height: 5px;
+                }}
+                """
+            )
         self.priority_combo.setMinimumContentsLength(3)
         self.priority_combo.setFixedWidth(80)
+        control_height = max(
+            self.recipe_multi_button.minimumSizeHint().height(),
+            self.priority_combo.sizeHint().height(),
+        )
+        self.recipe_multi_button.setFixedHeight(control_height)
+        self.priority_combo.setFixedHeight(control_height)
 
         self.recipe_settings = ResponsiveRecipeSettings(
             recipe_label,
@@ -468,16 +541,24 @@ class MainWindow(QMainWindow):
         recipe_paths_label.setObjectName("recipePathsTitle")
         layout.addWidget(recipe_paths_label)
 
-        self.recipe_paths_panel = QFrame(panel)
+        self.recipe_paths_scroll = QScrollArea(panel)
+        self.recipe_paths_scroll.setObjectName("recipePathsScroll")
+        self.recipe_paths_scroll.setWidgetResizable(True)
+        self.recipe_paths_scroll.setFrameShape(QFrame.NoFrame)
+        self.recipe_paths_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.recipe_paths_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+
+        self.recipe_paths_panel = QFrame()
         self.recipe_paths_panel.setObjectName("recipePathsPanel")
         self.recipe_paths_layout = QVBoxLayout(self.recipe_paths_panel)
-        self.recipe_paths_layout.setContentsMargins(5, 5, 5, 5)
-        self.recipe_paths_layout.setSpacing(4)
+        self.recipe_paths_layout.setContentsMargins(6, 6, 6, 6)
+        self.recipe_paths_layout.setSpacing(6)
         self.recipe_path_empty_label = QLabel("선택된 Recipe가 없습니다.", self.recipe_paths_panel)
         self.recipe_path_empty_label.setObjectName("recipePathEmpty")
         self.recipe_paths_layout.addWidget(self.recipe_path_empty_label)
         self.recipe_path_rows: list[RecipePathRow] = []
-        layout.addWidget(self.recipe_paths_panel)
+        self.recipe_paths_scroll.setWidget(self.recipe_paths_panel)
+        layout.addWidget(self.recipe_paths_scroll)
 
         self.overall_progress = QProgressBar()
         self.overall_progress.setRange(0, 100)
@@ -1202,12 +1283,6 @@ class MainWindow(QMainWindow):
         recipe_menu.clear()
         self._recipe_actions = []
 
-        select_all_action = recipe_menu.addAction("전체 선택")
-        select_all_action.triggered.connect(self._select_all_recipes)
-        clear_action = recipe_menu.addAction("전체 해제")
-        clear_action.triggered.connect(self._clear_all_recipes)
-        recipe_menu.addSeparator()
-
         seen_recipe_paths: set[str] = set()
         for recipe_item in self._config.recipe_config.recipes:
             recipe_path = str(recipe_item.path or "").strip()
@@ -1239,21 +1314,21 @@ class MainWindow(QMainWindow):
 
         self._update_recipe_selection_display()
 
-    def _select_all_recipes(self) -> None:
-        for action in self._recipe_actions:
-            action.setChecked(True)
-        self._update_recipe_selection_display()
-
-    def _clear_all_recipes(self) -> None:
-        for action in self._recipe_actions:
-            action.setChecked(False)
-        self._update_recipe_selection_display()
-
     def _update_recipe_selection_display(self) -> None:
         """Show selected recipe count and paths without changing selection state."""
 
         selections = self.current_recipe_selections()
-        self.recipe_multi_button.setText(f"{len(selections)}개 선택" if selections else "Recipe 선택")
+        if not selections:
+            button_text = "Recipe 선택"
+        elif len(selections) == 1:
+            button_text = self.recipe_multi_button.fontMetrics().elidedText(
+                selections[0][0],
+                Qt.ElideRight,
+                210,
+            )
+        else:
+            button_text = f"Recipe {len(selections)}개 선택"
+        self.recipe_multi_button.setText(button_text)
         tooltip = "\n".join(f"{alias}: {path}" for alias, path in selections)
         self.recipe_multi_button.setToolTip(tooltip or "선택된 Recipe가 없습니다.")
 
@@ -1265,8 +1340,32 @@ class MainWindow(QMainWindow):
         self.recipe_path_empty_label.setVisible(not selections)
         for alias, path in selections:
             row = RecipePathRow(alias, path, self.recipe_paths_panel)
+            row.layout_height_changed.connect(self._update_recipe_paths_panel_height)
             self.recipe_paths_layout.addWidget(row)
             self.recipe_path_rows.append(row)
+        margins = self.recipe_paths_layout.contentsMargins()
+        available_width = max(
+            0,
+            self.recipe_paths_scroll.viewport().width() - margins.left() - margins.right(),
+        )
+        for row in self.recipe_path_rows:
+            row.set_available_width(available_width)
+        self._update_recipe_paths_panel_height()
+
+    def _update_recipe_paths_panel_height(self) -> None:
+        """Keep responsive Recipe rows separated and scroll only when the list grows."""
+
+        margins = self.recipe_paths_layout.contentsMargins()
+        if self.recipe_path_rows:
+            rows_height = sum(row.minimumHeight() for row in self.recipe_path_rows)
+            rows_height += self.recipe_paths_layout.spacing() * (len(self.recipe_path_rows) - 1)
+        else:
+            rows_height = self.recipe_path_empty_label.sizeHint().height()
+        content_height = max(48, margins.top() + rows_height + margins.bottom() + 2)
+        self.recipe_paths_panel.setMinimumHeight(content_height)
+        self.recipe_paths_scroll.setFixedHeight(min(content_height, 185))
+        self.recipe_paths_layout.activate()
+        self.recipe_paths_panel.updateGeometry()
 
     def _open_update_link(self) -> None:
         """Open the configured latest release URL in the default browser."""

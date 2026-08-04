@@ -10,7 +10,7 @@ from models.task_models import FolderSummary, TaskStatus
 try:
     from PySide6.QtCore import Qt
     from PySide6.QtTest import QTest
-    from PySide6.QtWidgets import QApplication, QComboBox, QLabel, QToolButton
+    from PySide6.QtWidgets import QApplication, QComboBox, QLabel, QSizePolicy, QToolButton
     from ui.main_window import MainWindow, RecipePathRow, ResponsiveRecipeSettings
 
     PYSIDE_AVAILABLE = True
@@ -262,7 +262,7 @@ class MainWindowTest(unittest.TestCase):
                 window.current_recipe_selections(),
                 [("Recipe A", "recipes/a.json"), ("Recipe B", "recipes/b.json")],
             )
-            self.assertEqual(window.recipe_multi_button.text(), "2개 선택")
+            self.assertEqual(window.recipe_multi_button.text(), "Recipe 2개 선택")
             self.assertEqual(
                 [(row.alias, row.path) for row in window.recipe_path_rows],
                 [("Recipe A", "recipes/a.json"), ("Recipe B", "recipes/b.json")],
@@ -273,18 +273,20 @@ class MainWindowTest(unittest.TestCase):
         finally:
             window.close()
 
-    def test_recipe_selector_supports_empty_and_select_all_states(self) -> None:
+    def test_recipe_selector_supports_empty_and_multiple_states(self) -> None:
         window = self._make_window()
         try:
-            window._clear_all_recipes()
+            window._recipe_actions[0].trigger()
             self.assertEqual(window.current_recipe_selections(), [])
             self.assertEqual(window.recipe_multi_button.text(), "Recipe 선택")
             self.assertTrue(window.recipe_path_empty_label.isVisibleTo(window.recipe_paths_panel))
             self.assertEqual(window.recipe_path_rows, [])
 
-            window._select_all_recipes()
+            for action in window._recipe_actions:
+                if not action.isChecked():
+                    action.trigger()
             self.assertEqual(len(window.current_recipe_selections()), 2)
-            self.assertEqual(window.recipe_multi_button.text(), "2개 선택")
+            self.assertEqual(window.recipe_multi_button.text(), "Recipe 2개 선택")
             self.assertFalse(window.recipe_path_empty_label.isVisible())
         finally:
             window.close()
@@ -292,7 +294,7 @@ class MainWindowTest(unittest.TestCase):
     def test_recipe_selection_survives_refresh_and_drops_removed_recipe(self) -> None:
         window = self._make_window()
         try:
-            window._select_all_recipes()
+            window._recipe_actions[1].trigger()
             window._populate_recipe_selector()
             self.assertEqual(len(window.current_recipe_selections()), 2)
 
@@ -314,7 +316,9 @@ class MainWindowTest(unittest.TestCase):
                 RecipeItem(alias="Recipe A Duplicate", path="recipes/a.json")
             )
             window._populate_recipe_selector()
-            window._select_all_recipes()
+            for action in window._recipe_actions:
+                if not action.isChecked():
+                    action.trigger()
 
             self.assertEqual(len(window._recipe_actions), 2)
             self.assertEqual(
@@ -342,6 +346,12 @@ class MainWindowTest(unittest.TestCase):
                         settings.priority_selector.geometry()
                     )
                 )
+                control_gap = (
+                    settings.priority_label.geometry().left()
+                    - settings.recipe_selector.geometry().right()
+                )
+                self.assertGreaterEqual(control_gap, 14)
+                self.assertLessEqual(control_gap, 18)
 
             settings.resize(480, 100)
             self._app.processEvents()
@@ -353,6 +363,61 @@ class MainWindowTest(unittest.TestCase):
         finally:
             settings.close()
 
+    def test_recipe_selector_uses_compact_combo_width_and_single_alias(self) -> None:
+        window = self._make_window()
+        try:
+            window.show()
+            self._app.processEvents()
+
+            self.assertEqual(window.recipe_multi_button.text(), "Recipe A")
+            self.assertGreaterEqual(window.recipe_multi_button.width(), 220)
+            self.assertLessEqual(window.recipe_multi_button.width(), 280)
+            self.assertEqual(
+                window.recipe_multi_button.height(),
+                window.priority_combo.height(),
+            )
+            self.assertEqual(window.priority_combo.objectName(), "priorityCombo")
+            self.assertIn("combo_down.svg", window.priority_combo.styleSheet())
+            self.assertIn("margin-right: 5px", window.priority_combo.styleSheet())
+            self.assertNotEqual(
+                window.recipe_multi_button.sizePolicy().horizontalPolicy(),
+                QSizePolicy.Expanding,
+            )
+        finally:
+            window.close()
+
+    def test_recipe_menu_contains_only_individual_recipe_actions(self) -> None:
+        window = self._make_window()
+        try:
+            menu = window.recipe_multi_button.menu()
+            self.assertIsNotNone(menu)
+            self.assertEqual(
+                [action.text() for action in menu.actions()],
+                ["Recipe A", "Recipe B"],
+            )
+            self.assertTrue(all(action.isCheckable() for action in menu.actions()))
+        finally:
+            window.close()
+
+    def test_recipe_path_panel_keeps_multiple_rows_separate(self) -> None:
+        window = self._make_window()
+        try:
+            window.show()
+            window._recipe_actions[1].trigger()
+            self._app.processEvents()
+            self._app.processEvents()
+
+            self.assertEqual(len(window.recipe_path_rows), 2)
+            first, second = window.recipe_path_rows
+            self.assertFalse(first.geometry().intersects(second.geometry()))
+            self.assertGreaterEqual(
+                window.recipe_paths_panel.height(),
+                first.height() + second.height() + window.recipe_paths_layout.spacing(),
+            )
+            self.assertLessEqual(window.recipe_paths_scroll.height(), 185)
+        finally:
+            window.close()
+
     def test_recipe_path_row_reflows_and_elides_long_path(self) -> None:
         long_path = "D:/" + "/very-long-folder" * 20 + "/recipe.json"
         row = RecipePathRow("Very Long Recipe Alias", long_path)
@@ -361,12 +426,22 @@ class MainWindowTest(unittest.TestCase):
             row.resize(600, 50)
             self._app.processEvents()
             self.assertFalse(row.is_compact)
+            self.assertFalse(row.path_label.geometry().intersects(row.alias_label.geometry()))
+            self.assertGreaterEqual(
+                row.path_label.geometry().left(),
+                row.alias_label.geometry().right(),
+            )
 
             row.resize(380, 80)
             self._app.processEvents()
             self._app.processEvents()
             self.assertTrue(row.is_compact)
             self.assertGreater(row.path_label.geometry().top(), row.alias_label.geometry().top())
+            self.assertFalse(row.path_label.geometry().intersects(row.alias_label.geometry()))
+            self.assertGreaterEqual(
+                row.height(),
+                row.alias_label.height() + row.path_label.height() + 3,
+            )
             self.assertEqual(row.path_label.toolTip(), long_path)
             self.assertIn("…", row.path_label.text())
         finally:

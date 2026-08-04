@@ -229,25 +229,52 @@ QToolButton#statusSidebarToggle {
 }
 
 QToolButton#recipeMultiButton {
-    background-color: #26364d;
+    background-color: #111b2d;
     color: #edf4fb;
     border: 1px solid #3a4b66;
     border-radius: 8px;
-    padding: 6px 10px;
-    min-height: 22px;
+    padding: 7px 34px 7px 11px;
     text-align: left;
+    font-weight: 500;
 }
 
 QToolButton#recipeMultiButton:hover,
 QToolButton#recipeMultiButton:checked {
-    background-color: #315075;
+    background-color: #17243a;
     border-color: #60a5fa;
+}
+
+QToolButton#recipeMultiButton:pressed {
+    background-color: #203652;
+}
+
+QToolButton#recipeMultiButton::menu-indicator {
+    subcontrol-origin: padding;
+    subcontrol-position: right center;
+    right: 10px;
+    width: 12px;
+    height: 12px;
 }
 
 QToolButton#recipeMultiButton:disabled {
     background-color: #253044;
     color: #8290a4;
     border-color: #344054;
+}
+
+QMenu#recipeComboMenu {
+    min-width: 230px;
+    padding: 6px;
+}
+
+QMenu#recipeComboMenu::item {
+    padding: 8px 28px 8px 26px;
+}
+
+QMenu#recipeComboMenu::indicator {
+    width: 14px;
+    height: 14px;
+    left: 7px;
 }
 
 QLabel#recipePathsTitle {
@@ -257,14 +284,23 @@ QLabel#recipePathsTitle {
 }
 
 QFrame#recipePathsPanel {
-    background-color: #111b2d;
+    background-color: #121d30;
     border: 1px solid #34445f;
     border-radius: 8px;
 }
 
+QScrollArea#recipePathsScroll {
+    background-color: transparent;
+    border: none;
+}
+
+QScrollArea#recipePathsScroll > QWidget > QWidget {
+    background-color: transparent;
+}
+
 QFrame#recipePathRow {
     background-color: #17243a;
-    border: 1px solid #2d3c55;
+    border: 1px solid #293a54;
     border-radius: 6px;
 }
 
