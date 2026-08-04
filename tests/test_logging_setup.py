@@ -38,7 +38,10 @@ class LoggingSetupTest(unittest.TestCase):
     def test_setup_logging_keeps_stream_logging_when_file_handler_fails(self) -> None:
         with TemporaryDirectory() as appdata_root:
             with patch.dict(os.environ, {"APPDATA": appdata_root}, clear=False):
-                with patch("logging.FileHandler", side_effect=PermissionError("denied")):
+                with patch(
+                    "utils.logging_setup.RotatingFileHandler",
+                    side_effect=PermissionError("denied"),
+                ):
                     logger = setup_logging("INFO")
 
             self.assertTrue(any(isinstance(handler, logging.StreamHandler) for handler in logger.handlers))

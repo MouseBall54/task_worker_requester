@@ -14,6 +14,7 @@ from app.runtime_paths import (
     resolve_app_icon_path,
     resolve_default_config_path,
     resolve_logs_dir,
+    resolve_task_database_path,
     resolve_stylesheet_path,
     resolve_ui_icon_path,
 )
@@ -313,6 +314,16 @@ class RuntimePathsTest(unittest.TestCase):
                 resolved = resolve_logs_dir()
 
             self.assertEqual(resolved, Path(appdata_root) / "IPDK_plus" / "logs")
+
+    def test_resolve_task_database_path_points_to_runtime_appdata(self) -> None:
+        with TemporaryDirectory() as appdata_root:
+            with patch.dict(os.environ, {"APPDATA": appdata_root}, clear=False):
+                resolved = resolve_task_database_path()
+
+            self.assertEqual(
+                resolved,
+                Path(appdata_root) / "IPDK_plus" / "runtime" / "task_state.sqlite3",
+            )
 
 
 if __name__ == "__main__":

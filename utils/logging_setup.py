@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from app.runtime_paths import resolve_logs_dir
@@ -28,7 +29,12 @@ def setup_logging(level: str = "INFO", logs_dir: str | Path | None = None) -> lo
 
     try:
         resolved_logs_dir.mkdir(parents=True, exist_ok=True)
-        file_handler = logging.FileHandler(resolved_logs_dir / "app.log", encoding="utf-8")
+        file_handler = RotatingFileHandler(
+            resolved_logs_dir / "app.log",
+            maxBytes=10 * 1024 * 1024,
+            backupCount=5,
+            encoding="utf-8",
+        )
     except OSError as exc:
         logger.warning("파일 로그를 초기화하지 못해 콘솔 로그만 사용합니다: %s", exc)
         return logger

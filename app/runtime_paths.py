@@ -19,6 +19,7 @@ APP_ICON_PNG_NAME = "IPDK_plus.png"
 APP_ICON_ICO_NAME = "IPDK_plus.ico"
 SEED_REFRESH_MARKER_NAME = ".refresh_seed_config"
 SEED_FINGERPRINT_FILE_NAME = ".seed_fingerprint"
+TASK_DATABASE_FILE_NAME = "task_state.sqlite3"
 
 
 class RuntimePathError(RuntimeError):
@@ -112,6 +113,12 @@ def resolve_logs_dir() -> Path:
     """Return the writable per-user log directory used by the application."""
 
     return resolve_user_appdata_dir() / "logs"
+
+
+def resolve_task_database_path() -> Path:
+    """Return the persistent SQLite path for resumable task state."""
+
+    return resolve_user_appdata_dir() / "runtime" / TASK_DATABASE_FILE_NAME
 
 
 def ensure_user_config_seeded() -> RuntimeConfigPaths:

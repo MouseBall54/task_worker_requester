@@ -59,6 +59,39 @@ class FolderScannerTest(unittest.TestCase):
             self.assertIn(str(nested), result)
             self.assertEqual(len(result[str(nested)]), 1)
 
+    def test_iter_images_streams_matching_paths(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            for index in range(7):
+                (root / f"{index}.jpg").write_text("x", encoding="utf-8")
+            (root / "ignore.txt").write_text("x", encoding="utf-8")
+
+            scanner = FolderScanner([".jpg"])
+            iterator = scanner.iter_images(str(root))
+
+            self.assertNotIsInstance(iterator, list)
+            self.assertEqual(len(list(iterator)), 7)
+
+    def test_discover_image_folders_does_not_return_image_lists(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            with_images = root / "with_images"
+            empty = root / "empty"
+            nested = with_images / "nested"
+            with_images.mkdir()
+            empty.mkdir()
+            nested.mkdir()
+            (with_images / "a.jpg").write_text("x", encoding="utf-8")
+            (nested / "b.jpg").write_text("x", encoding="utf-8")
+
+            scanner = FolderScanner([".jpg"])
+
+            self.assertEqual(list(scanner.discover_image_folders(str(root), "direct")), [str(with_images)])
+            self.assertEqual(
+                list(scanner.discover_image_folders(str(root), "recursive")),
+                [str(with_images), str(nested)],
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

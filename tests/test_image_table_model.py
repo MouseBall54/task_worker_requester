@@ -46,6 +46,17 @@ class ImageTableModelTest(unittest.TestCase):
         self.assertEqual(model.data(status_index, Qt.DisplayRole), "PENDING")
         self.assertEqual(model.columnCount(), 8)
 
+    def test_append_tasks_adds_page_without_duplicate_request_ids(self) -> None:
+        model = ImageTableModel()
+        first = ImageTask(request_id="req-1", image_path="a.jpg", folder_path="folder")
+        second = ImageTask(request_id="req-2", image_path="b.jpg", folder_path="folder")
+        model.set_tasks([first])
+
+        model.append_tasks([first, second])
+
+        self.assertEqual(model.rowCount(), 2)
+        self.assertEqual(model.data(model.index(1, 1), Qt.DisplayRole), "b.jpg")
+
 
 if __name__ == "__main__":
     unittest.main()

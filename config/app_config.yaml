@@ -40,6 +40,10 @@ publish:
   publish_retry_backoff_seconds: 1.5
   initial_open_folders: 2
   max_active_open_folders: 3
+  publish_chunk_size: 500
+  fallback_max_queued_messages: 2000
+  ui_refresh_interval_ms: 500
+  ui_log_max_lines: 5000
   image_extensions: [".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"]
   scan_mode: "direct"
 

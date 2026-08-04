@@ -14,12 +14,13 @@ from app.runtime_paths import (
     resolve_default_config_path,
     resolve_logs_dir,
     resolve_stylesheet_path,
+    resolve_task_database_path,
 )
 from app.single_instance import SingleInstanceGuard, ensure_single_instance
 from app.version import APP_VERSION
 from config.config_loader import ConfigError, ConfigLoader
 from services.broker import build_broker_provider
-from state.task_store import TaskStore
+from state.sqlite_task_store import SqliteTaskStore
 from ui.main_window import MainWindow
 from utils.logging_setup import setup_logging
 
@@ -64,7 +65,7 @@ def run_app(config_path: str | None = None) -> int:
     else:
         logger.warning("스타일 파일을 찾지 못했습니다.")
 
-    store = TaskStore()
+    store = SqliteTaskStore(resolve_task_database_path())
     broker_provider = build_broker_provider(app_config)
     window = MainWindow(config=app_config)
     controller = TaskController(
@@ -76,6 +77,7 @@ def run_app(config_path: str | None = None) -> int:
     )
 
     app.aboutToQuit.connect(controller.shutdown)
+    app.aboutToQuit.connect(store.close)
     app.aboutToQuit.connect(guard.release)
 
     if icon is not None:

@@ -53,6 +53,16 @@ class MainWindowTest(unittest.TestCase):
         finally:
             window.close()
 
+    def test_log_document_is_bounded_by_configuration(self) -> None:
+        window = self._make_window()
+        try:
+            self.assertEqual(
+                window.log_text.document().maximumBlockCount(),
+                window._config.publish.ui_log_max_lines,
+            )
+        finally:
+            window.close()
+
     def test_window_uses_ipdk_branding_and_removes_drive_combo(self) -> None:
         window = self._make_window()
         try:

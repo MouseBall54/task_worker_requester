@@ -39,7 +39,7 @@ worker는 request queue에서 메시지를 가져가 작업을 수행하고, 메
 
 5. Priority는 RabbitMQ AMQP BasicProperties.priority로 전달됩니다. JSON payload 안에는 priority 필드가 들어가지 않습니다. 선택 가능한 범위는 request queue의 x-max-priority 설정을 기준으로 만들어집니다.
 
-6. 전송 시작을 누르면 현재 PENDING 작업을 폴더 정책에 맞춰 발행합니다. 각 메시지의 RECIPE_PATH는 시작 시점의 UI 값이 아니라 폴더 추가 시 저장된 Recipe를 사용합니다. 여러 Recipe가 지정된 이미지는 Recipe마다 별도 메시지를 기존 request queue에 발행합니다. initial_open_folders만큼 처음 열고, max_active_open_folders 범위 안에서 다음 폴더를 순차적으로 개방합니다.
+6. 전송 시작을 누르면 initial_open_folders만큼의 폴더만 백그라운드에서 분할 스캔하고, max_active_open_folders 범위에서 다음 폴더를 순차 개방합니다. 열리지 않은 폴더의 이미지와 메시지는 메모리에 만들지 않습니다. 작업은 SQLite에 저장되고 publish_chunk_size 단위로만 메시지를 생성하며, queue와 처리 중 작업이 자동 상한에 도달하면 발행을 멈췄다가 여유가 생기면 재개합니다. 각 메시지의 RECIPE_PATH는 폴더 추가 시 저장된 Recipe를 사용합니다.
 
 7. 중지는 publish/poll worker를 정지시키는 동작입니다. 이미 broker에 발행된 메시지를 worker나 RabbitMQ에서 회수하는 기능은 아닙니다.
 
@@ -58,7 +58,7 @@ scan_mode가 direct이면 선택한 폴더 바로 아래의 이미지 파일만 
 
 scan_mode가 recursive이면 선택한 폴더 아래의 하위 폴더까지 탐색합니다. 깊은 폴더 구조를 한 번에 등록할 수 있지만, 예상보다 많은 이미지가 등록될 수 있으므로 대량 처리 전에 대상 폴더를 확인하는 것이 좋습니다.
 
-폴더 단위 진행률은 내부 FolderTaskGroup이 가진 이미지 작업 목록을 기준으로 계산됩니다. 이미지가 없는 폴더는 전송 대상이 없으므로 로그에 안내되고 스케줄에 들어가지 않습니다. 같은 이미지를 여러 경로 선택으로 중복 등록하면 별도 request_id를 가진 작업으로 취급될 수 있으므로, 운영 중에는 등록 대상 폴더를 명확히 나누는 것이 좋습니다.""",
+폴더 단위 진행률은 SQLite에 증감식으로 저장된 상태 카운터를 사용하므로 전체 작업을 다시 읽지 않습니다. 이미지가 없는 폴더는 이미지 없음 상태로 표시됩니다. 같은 세션의 동일한 이미지 경로와 Recipe 경로 조합은 중복 등록되지 않습니다.""",
     ),
     HelpTopic(
         title="RabbitMQ 연동 구조",
@@ -139,7 +139,7 @@ mock_mode가 true이면 실제 RabbitMQ 대신 내부 mock broker를 사용합�
 
 rabbitmq 섹션은 host, port, username, password, virtual_host, request queue, result queue, queue_declare 옵션을 정의합니다. worker와 같은 vhost, queue, exchange/routing 규칙을 사용해야 합니다.
 
-publish 섹션은 default_action, default_priority, polling_interval_seconds, timeout_seconds, max_messages_per_poll, retry 정책, 폴더 개방 정책, image_extensions, scan_mode를 정의합니다.
+publish 섹션은 default_action, default_priority, polling_interval_seconds, timeout_seconds, max_messages_per_poll, retry 정책, 폴더 개방 정책, publish_chunk_size, queue 자동 상한, UI 갱신/로그 상한, image_extensions, scan_mode를 정의합니다. 대용량 기본값은 앱에 내장되어 있어 사용자가 배치를 수동 분리할 필요가 없습니다.
 
 recipe_config_path는 별도 recipe 설정 파일 경로입니다. 상대 경로는 app_config.yaml이 있는 폴더 기준으로 해석됩니다. recipe_config.yaml에는 default_alias와 recipes[].alias/path 목록을 둡니다.
 
@@ -190,7 +190,7 @@ RabbitMQ 서버와 worker는 앱이 보내는 메시지 규격을 그대로 이�
 
 result queue 이름은 클라이언트 PC의 IPv4에 따라 달라집니다. 네트워크 어댑터, VPN, IP 변경, hostname lookup 변화가 있으면 result queue suffix가 바뀔 수 있습니다. worker는 반드시 request의 QUEUE_NAME 또는 reply_to를 사용해야 합니다.
 
-대량 이미지 처리 시 queue 적체, broker memory/disk alarm, worker 처리 지연, ETA 오차가 발생할 수 있습니다. initial_open_folders와 max_active_open_folders를 worker 처리량에 맞게 조절하고, RabbitMQ 관리 화면에서 queue depth를 같이 확인하는 것이 좋습니다.
+대량 이미지 처리 시 앱은 AppData의 SQLite 작업 DB, 활성 폴더 지연 스캔, Chunk 발행과 inflight 상한을 사용합니다. worker가 없거나 느린 경우에도 전체 작업을 RabbitMQ에 한꺼번에 넣지 않고 자동 대기합니다. 화면의 Queued Messages와 폴더 상태에서 스캔 대기/스캔 중/전송 대기/처리 중 상태를 확인할 수 있습니다. 앱이 중단되면 저장된 세션 설정으로 미완료 스캔과 결과 polling을 다음 실행에서 자동 재개합니다.
 
 운영 중 RabbitMQ queue argument를 바꾸면 기존 queue와 충돌할 수 있습니다. 특히 x-max-priority, durable, auto_delete 같은 값은 broker에 이미 만들어진 queue와 맞아야 합니다.""",
     ),

@@ -93,6 +93,10 @@ publish:
   publish_retry_backoff_seconds: 1.5
   initial_open_folders: 2
   max_active_open_folders: 3
+  publish_chunk_size: 500
+  fallback_max_queued_messages: 2000
+  ui_refresh_interval_ms: 500
+  ui_log_max_lines: 5000
   image_extensions: [".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"]
   scan_mode: "direct"
 
@@ -189,8 +193,14 @@ recipes:
 | `publish.max_messages_per_poll` | `100` | result consumer prefetch count | 한 번에 broker가 밀어줄 수 있는 미확인 메시지 수에 영향 | 너무 높으면 한 client가 result를 많이 선점할 수 있음 |
 | `publish.max_publish_retries` | `3` | request publish 실패 시 재시도 횟수 | publish 실패 복구 가능성이 바뀜 | 1 이상이어야 함 |
 | `publish.publish_retry_backoff_seconds` | `1.5` | publish retry backoff 기본 seconds | 재시도 대기 시간이 바뀜 | 실제 대기는 `backoff * attempt` |
-| `publish.initial_open_folders` | `2` | 시작 시 동시에 열어 전송할 폴더 batch 수 | 초기 전송량과 worker 부하가 바뀜 | `max_active_open_folders`보다 클 수 없음 |
-| `publish.max_active_open_folders` | `3` | 동시에 active 상태로 둘 폴더 수 상한 | 병렬 진행 폴더 수가 바뀜 | 1 이상이어야 함 |
+| `publish.initial_open_folders` | `2` | 시작 시 실제 스캔과 처리를 개시할 폴더 수 | 초기 디스크 I/O와 worker 부하가 바뀜 | `max_active_open_folders`보다 클 수 없음 |
+| `publish.max_active_open_folders` | `3` | 동시에 스캔·발행·결과 대기 상태로 유지할 폴더 수 | 열리지 않은 폴더는 Task/메시지를 생성하지 않음 | 1 이상이어야 함 |
+| `publish.publish_chunk_size` | `500` | SQLite에서 한 번에 claim하고 메시지로 만드는 Task 수 | 앱 메모리와 순간 publish량을 제한 | 1 이상, 사용자가 별도 조정하지 않아도 기본값 적용 |
+| `publish.fallback_max_queued_messages` | `2000` | broker 메트릭이 없을 때도 적용되는 CLAIMED/SENT/RUNNING 상한 | worker가 느리거나 0명일 때 무제한 발행 방지 | 1 이상 |
+| `publish.ui_refresh_interval_ms` | `500` | 대량 상태 UI 갱신을 묶는 목표 주기 | 값이 작을수록 UI 갱신량 증가 | 100 이상 |
+| `publish.ui_log_max_lines` | `5000` | 화면 로그 최대 줄 수 | 오래된 화면 로그 자동 제거 | 100 이상, 파일 로그는 별도 회전 |
+
+작업 세션은 `%APPDATA%\IPDK_plus\runtime\task_state.sqlite3`에 WAL 모드로 저장됩니다. 비정상 종료 뒤에는 미발행 `CLAIMED` 작업을 `PENDING`으로 복구하고, 세션에 저장된 Action·Priority·결과 큐·polling 주기를 사용해 스캔과 결과 수신을 자동 재개합니다.
 | `publish.image_extensions` | `[".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"]` | 이미지 스캔 대상 확장자 | 등록되는 이미지 파일 종류가 바뀜 | 확장자는 점 포함 문자열로 관리 |
 | `publish.scan_mode` | `"direct"` | 폴더 스캔 방식 | `"direct"`는 선택 폴더 직접 이미지, `"recursive"`는 하위까지 스캔 | 지원값은 `direct`, `recursive` |
 

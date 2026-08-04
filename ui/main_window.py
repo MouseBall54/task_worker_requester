@@ -239,6 +239,7 @@ class MainWindow(QMainWindow):
     reset_requested = Signal()
     folder_row_selected = Signal(str)
     mq_preview_requested = Signal(str)
+    image_page_requested = Signal(int)
 
     def __init__(self, config: AppConfig) -> None:
         super().__init__()
@@ -254,6 +255,8 @@ class MainWindow(QMainWindow):
         self._last_status_sidebar_width = 440
         self._help_dialog: HelpDialog | None = None
         self._runtime_options_enabled = True
+        self._image_page_has_more = False
+        self._image_page_request_pending = False
         self._recipe_actions: list[QAction] = []
         self._build_ui()
         self._build_menu_bar()
@@ -598,6 +601,7 @@ class MainWindow(QMainWindow):
         self.image_table.setAlternatingRowColors(True)
         self.image_table.verticalHeader().setVisible(False)
         self.image_table.verticalHeader().setDefaultSectionSize(36)
+        self.image_table.verticalScrollBar().valueChanged.connect(self._on_image_table_scrolled)
         self.image_table.verticalHeader().setMinimumSectionSize(32)
         self.image_table.setWordWrap(False)
         self.image_table.setTextElideMode(Qt.ElideRight)
@@ -626,6 +630,9 @@ class MainWindow(QMainWindow):
         self.log_text.setPlaceholderText("작업 로그가 여기에 표시됩니다.")
         self.log_text.setLineWrapMode(QTextEdit.NoWrap)
         self.log_text.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.log_text.document().setMaximumBlockCount(
+            max(100, int(self._config.publish.ui_log_max_lines))
+        )
 
         log_tab = QWidget()
         log_layout = QVBoxLayout(log_tab)
@@ -867,8 +874,38 @@ class MainWindow(QMainWindow):
         """Replace image detail rows for selected folder."""
 
         self.image_table_model.set_tasks(tasks)
+        self._image_page_has_more = False
+        self._image_page_request_pending = False
         if not tasks:
             self.image_table.clearSelection()
+
+    def set_image_task_page(
+        self,
+        tasks: list[ImageTask],
+        total_count: int,
+        append: bool = False,
+    ) -> None:
+        """Set or append one bounded detail page and track whether more rows exist."""
+
+        if append:
+            self.image_table_model.append_tasks(tasks)
+        else:
+            self.image_table_model.set_tasks(tasks)
+        self._image_page_has_more = self.image_table_model.rowCount() < max(0, int(total_count))
+        self._image_page_request_pending = False
+        if not tasks and not append:
+            self.image_table.clearSelection()
+
+    def _on_image_table_scrolled(self, value: int) -> None:
+        scrollbar = self.image_table.verticalScrollBar()
+        if (
+            not self._image_page_has_more
+            or self._image_page_request_pending
+            or value < scrollbar.maximum()
+        ):
+            return
+        self._image_page_request_pending = True
+        self.image_page_requested.emit(self.image_table_model.rowCount())
 
     def update_image_task(self, task: ImageTask) -> None:
         """Update one image row in detail table if visible."""

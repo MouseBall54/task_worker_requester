@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Iterator
 from typing import Iterable
 
 
@@ -24,6 +25,52 @@ class FolderScanner:
         if not images:
             return {}
         return {normalized_folder: images}
+
+    def iter_images(self, folder_path: str) -> Iterator[str]:
+        """Yield image paths without retaining the entire folder in memory."""
+
+        normalized_folder = os.path.normpath(folder_path)
+        if not os.path.isdir(normalized_folder):
+            return
+        try:
+            with os.scandir(normalized_folder) as entries:
+                for entry in entries:
+                    if not entry.is_file(follow_symlinks=False):
+                        continue
+                    _, extension = os.path.splitext(entry.name)
+                    if extension.lower() in self._extensions:
+                        yield os.path.normpath(entry.path)
+        except OSError:
+            return
+
+    def discover_image_folders(self, parent_folder: str, mode: str = "direct") -> Iterator[str]:
+        """Yield image-containing child folders without materializing image lists."""
+
+        normalized_parent = os.path.normpath(parent_folder)
+        if not os.path.isdir(normalized_parent):
+            return
+        if mode == "recursive":
+            for root, dirs, _files in os.walk(normalized_parent, topdown=True):
+                dirs.sort(key=str.lower)
+                if root != normalized_parent and self._folder_has_image(root):
+                    yield os.path.normpath(root)
+            return
+
+        try:
+            with os.scandir(normalized_parent) as entries:
+                child_dirs = sorted(
+                    (
+                        os.path.normpath(entry.path)
+                        for entry in entries
+                        if entry.is_dir(follow_symlinks=False)
+                    ),
+                    key=lambda path: os.path.basename(path).lower(),
+                )
+        except OSError:
+            return
+        for child_dir in child_dirs:
+            if self._folder_has_image(child_dir):
+                yield child_dir
 
     def scan_subfolders(self, parent_folder: str, mode: str = "direct") -> dict[str, list[str]]:
         """Collect images under direct or recursive child folder scope.
@@ -99,3 +146,16 @@ class FolderScanner:
 
         images.sort(key=lambda path: os.path.basename(path).lower())
         return images
+
+    def _folder_has_image(self, folder: str) -> bool:
+        try:
+            with os.scandir(folder) as entries:
+                for entry in entries:
+                    if not entry.is_file(follow_symlinks=False):
+                        continue
+                    _, extension = os.path.splitext(entry.name)
+                    if extension.lower() in self._extensions:
+                        return True
+        except OSError:
+            return False
+        return False

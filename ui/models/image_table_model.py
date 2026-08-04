@@ -88,6 +88,20 @@ class ImageTableModel(QAbstractTableModel):
         self._index_map = {task.request_id: idx for idx, task in enumerate(self._rows)}
         self.endResetModel()
 
+    def append_tasks(self, tasks: list[ImageTask]) -> None:
+        """Append one detail page while ignoring request IDs already loaded."""
+
+        new_tasks = [task for task in tasks if task.request_id not in self._index_map]
+        if not new_tasks:
+            return
+        start = len(self._rows)
+        end = start + len(new_tasks) - 1
+        self.beginInsertRows(QModelIndex(), start, end)
+        self._rows.extend(new_tasks)
+        for row, task in enumerate(new_tasks, start=start):
+            self._index_map[task.request_id] = row
+        self.endInsertRows()
+
     def update_task(self, task: ImageTask) -> None:
         """Update one row if it exists in current filtered view."""
 

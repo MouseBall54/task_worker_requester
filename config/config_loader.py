@@ -142,6 +142,14 @@ class ConfigLoader:
             raise ConfigError("max_active_open_folders 는 1 이상이어야 합니다.")
         if config.publish.initial_open_folders > config.publish.max_active_open_folders:
             raise ConfigError("initial_open_folders 는 max_active_open_folders 보다 클 수 없습니다.")
+        if config.publish.publish_chunk_size <= 0:
+            raise ConfigError("publish_chunk_size 는 1 이상이어야 합니다.")
+        if config.publish.fallback_max_queued_messages <= 0:
+            raise ConfigError("fallback_max_queued_messages 는 1 이상이어야 합니다.")
+        if config.publish.ui_refresh_interval_ms < 100:
+            raise ConfigError("ui_refresh_interval_ms 는 100 이상이어야 합니다.")
+        if config.publish.ui_log_max_lines < 100:
+            raise ConfigError("ui_log_max_lines 는 100 이상이어야 합니다.")
 
         max_priority = ConfigLoader._read_request_queue_max_priority(config.rabbitmq)
         if max_priority is None:

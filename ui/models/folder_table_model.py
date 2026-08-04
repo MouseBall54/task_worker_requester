@@ -40,7 +40,7 @@ class FolderTableModel(QAbstractTableModel):
             if column == 0:
                 return round(row.progress, 1)
             if column == 1:
-                return row.status.value
+                return row.stage_label or row.status.value
             if column == 2:
                 return row.folder_path
             if column == 3:

@@ -124,6 +124,10 @@ class PublishConfig:
     default_priority: int = 0
     initial_open_folders: int = 2
     max_active_open_folders: int = 3
+    publish_chunk_size: int = 500
+    fallback_max_queued_messages: int = 2000
+    ui_refresh_interval_ms: int = 500
+    ui_log_max_lines: int = 5000
     image_extensions: list[str] = field(
         default_factory=lambda: [".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"]
     )

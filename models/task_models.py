@@ -12,6 +12,7 @@ class TaskStatus(StrEnum):
     """Possible states for an image task lifecycle."""
 
     PENDING = "PENDING"
+    CLAIMED = "CLAIMED"
     SENT = "SENT"
     RUNNING = "RUNNING"
     SUCCESS = "SUCCESS"
@@ -109,6 +110,7 @@ class FolderSummary:
     progress: float
     status: TaskStatus
     recipe_aliases: tuple[str, ...] = ()
+    stage_label: str = ""
 
 
 @dataclass(slots=True)
