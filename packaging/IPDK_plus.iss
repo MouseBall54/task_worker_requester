@@ -1,5 +1,5 @@
 #define MyAppName "IPDK_plus"
-#define MyAppVersion "26.7.9"
+#define MyAppVersion "26.8.5"
 #define MyAppPublisher "박영문"
 #define MyAppExeName "IPDK_plus.exe"
 #define MyDistDir "..\\dist\\IPDK_plus"
@@ -23,7 +23,7 @@ OutputDir=..\dist\installer
 OutputBaseFilename=IPDK_plusSetup_{#MyAppVersion}
 SetupIconFile={#MyIconFile}
 UninstallDisplayIcon={app}\{#MyAppExeName}
-VersionInfoVersion=26.7.9.0
+VersionInfoVersion={#MyAppVersion}.0
 VersionInfoTextVersion={#MyAppVersion}
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible

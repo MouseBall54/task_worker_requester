@@ -155,7 +155,7 @@ PySide6 미설치 환경에서는 GUI 의존 테스트(`test_controller`)가 자
 - PyInstaller spec: [packaging/IPDK_plus.spec](.\packaging\IPDK_plus.spec)
 - Inno Setup 스크립트: [packaging/IPDK_plus.iss](.\packaging\IPDK_plus.iss)
 - 세부 절차 문서: [docs/build_windows.md](.\docs\build_windows.md)
-- 설치 프로그램 파일명은 버전을 포함한 `IPDK_plusSetup_26.7.9.exe` 형식입니다.
+- 설치 프로그램 파일명은 버전을 포함한 `IPDK_plusSetup_26.8.5.exe` 형식입니다.
 - 시작 메뉴의 `업데이트 확인`과 앱의 `도움말 > 업데이트 확인`은 GitHub 최신 릴리스 링크로 연결됩니다.
 
 기본 아이콘은 사용자 제공 [a5303f13-1f30-4cdd-9acb-964ee59596a7.png](.\a5303f13-1f30-4cdd-9acb-964ee59596a7.png)를 투명 배경으로 정리한 [assets/IPDK_plus.png](.\assets\IPDK_plus.png)와 Windows용 다중 해상도 [assets/IPDK_plus.ico](.\assets\IPDK_plus.ico)를 사용합니다.

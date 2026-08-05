@@ -49,6 +49,24 @@ from ui.models import FolderTableModel, ImageTableModel, ProgressBarDelegate
 from ui.widgets import MQButtonDelegate, StatusBadgeDelegate
 
 
+class FolderTreeView(QTreeView):
+    """Keep app-managed horizontal alignment during Qt selection scrolling."""
+
+    def scrollTo(  # noqa: N802
+        self,
+        index: QModelIndex,
+        hint: QAbstractItemView.ScrollHint = QAbstractItemView.EnsureVisible,
+    ) -> None:
+        horizontal_scrollbar = self.horizontalScrollBar()
+        preserve_horizontal_position = hint == QAbstractItemView.EnsureVisible
+        horizontal_value = horizontal_scrollbar.value()
+
+        super().scrollTo(index, hint)
+
+        if preserve_horizontal_position:
+            horizontal_scrollbar.setValue(horizontal_value)
+
+
 class MQPreviewDialog(QDialog):
     """Dialog displaying connection info and message payload previews."""
 
@@ -383,7 +401,7 @@ class MainWindow(QMainWindow):
         jump_row.addWidget(self.btn_path_jump, stretch=0)
         layout.addLayout(jump_row)
 
-        self.folder_tree = QTreeView()
+        self.folder_tree = FolderTreeView()
         self.folder_tree.setObjectName("folderTree")
         self.folder_tree.setHeaderHidden(True)
         self.folder_tree.setAnimated(True)

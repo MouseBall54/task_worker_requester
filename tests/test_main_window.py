@@ -9,9 +9,17 @@ from models.task_models import FolderSummary, TaskStatus
 
 try:
     from PySide6.QtCore import Qt
+    from PySide6.QtGui import QStandardItem, QStandardItemModel
     from PySide6.QtTest import QTest
-    from PySide6.QtWidgets import QApplication, QComboBox, QLabel, QSizePolicy, QToolButton
-    from ui.main_window import MainWindow, RecipePathRow, ResponsiveRecipeSettings
+    from PySide6.QtWidgets import (
+        QAbstractItemView,
+        QApplication,
+        QComboBox,
+        QLabel,
+        QSizePolicy,
+        QToolButton,
+    )
+    from ui.main_window import FolderTreeView, MainWindow, RecipePathRow, ResponsiveRecipeSettings
 
     PYSIDE_AVAILABLE = True
 except ImportError:  # pragma: no cover
@@ -235,6 +243,35 @@ class MainWindowTest(unittest.TestCase):
         self.assertEqual(anchor, 266)
         self.assertEqual(scroll_value, 126)
         self.assertEqual(anchor - scroll_value, 140)
+
+    def test_tree_ensure_visible_preserves_managed_horizontal_position(self) -> None:
+        tree = FolderTreeView()
+        model = QStandardItemModel(tree)
+        parent = model.invisibleRootItem()
+        target = None
+        for depth in range(10):
+            target = QStandardItem(f"Level {depth}")
+            parent.appendRow(target)
+            parent = target
+
+        tree.setModel(model)
+        tree.setColumnWidth(0, 620)
+        tree.resize(280, 320)
+        tree.expandAll()
+        tree.show()
+        self._app.processEvents()
+
+        try:
+            scrollbar = tree.horizontalScrollBar()
+            self.assertGreater(scrollbar.maximum(), scrollbar.minimum())
+            expected_value = min(180, scrollbar.maximum())
+            scrollbar.setValue(expected_value)
+
+            tree.scrollTo(target.index(), QAbstractItemView.EnsureVisible)
+
+            self.assertEqual(scrollbar.value(), expected_value)
+        finally:
+            tree.close()
 
     def test_set_runtime_options_enabled_toggles_recipe_and_priority(self) -> None:
         window = self._make_window()
