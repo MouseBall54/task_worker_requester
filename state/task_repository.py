@@ -12,6 +12,7 @@ from typing import Any
 from uuid import uuid4
 
 from models.task_models import FolderSummary, ImageTask, TaskStatus
+from utils.image_sort import compare_image_paths
 
 
 _COUNTER_COLUMN = {
@@ -562,7 +563,7 @@ class TaskRepository:
             rows = self._connection.execute(
                 """
                 SELECT * FROM tasks WHERE session_id = ? AND folder_path = ?
-                ORDER BY image_path COLLATE NOCASE, recipe_alias COLLATE NOCASE
+                ORDER BY image_path COLLATE IMAGE_FILENAME_ASC, recipe_alias COLLATE NOCASE
                 LIMIT ? OFFSET ?
                 """,
                 (self.session_id, folder_path, max(1, int(limit)), max(0, int(offset))),
@@ -637,6 +638,7 @@ class TaskRepository:
             return {str(row[0]) for row in self._connection.execute(query, params)}
 
     def _configure_connection(self) -> None:
+        self._connection.create_collation("IMAGE_FILENAME_ASC", compare_image_paths)
         self._connection.execute("PRAGMA foreign_keys = ON")
         self._connection.execute("PRAGMA busy_timeout = 30000")
         if self.database_path != ":memory:":

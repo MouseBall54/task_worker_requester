@@ -52,6 +52,27 @@ class TaskStoreTest(unittest.TestCase):
         self.assertEqual(len(grouped[1][1]), 1)
         self.assertTrue(all(len(message.IMG_LIST) == 1 for _, messages in grouped for message in messages))
 
+    def test_image_tasks_sort_numeric_filename_stems_by_value(self) -> None:
+        store = TaskStore()
+        store.register_folder_map(
+            {
+                "folder": [
+                    r"folder\10.jpg",
+                    r"folder\2.jpg",
+                    r"folder\001.jpg",
+                    r"folder\1.jpg",
+                    r"folder\sample.jpg",
+                ]
+            }
+        )
+
+        tasks = store.get_image_tasks("folder")
+
+        self.assertEqual(
+            [task.image_path.rsplit("\\", 1)[-1] for task in tasks],
+            ["1.jpg", "001.jpg", "2.jpg", "10.jpg", "sample.jpg"],
+        )
+
     def test_recipe_selections_create_independent_image_recipe_tasks(self) -> None:
         store = TaskStore()
 

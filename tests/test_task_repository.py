@@ -145,6 +145,27 @@ class TaskRepositoryTest(unittest.TestCase):
         finally:
             repository.close()
 
+    def test_detail_pages_sort_numeric_filename_stems_across_page_boundaries(self) -> None:
+        repository = TaskRepository()
+        try:
+            repository.register_folder_descriptors(["folder"], [("R", "r.json")])
+            repository.insert_task_batch(
+                "folder",
+                ["folder/20.jpg", "folder/3.jpg", "folder/10.jpg", "folder/2.jpg", "folder/1.jpg"],
+            )
+
+            first_page = repository.get_tasks_page("folder", offset=0, limit=2)
+            second_page = repository.get_tasks_page("folder", offset=2, limit=2)
+            third_page = repository.get_tasks_page("folder", offset=4, limit=2)
+
+            ordered_names = [
+                Path(task.image_path).name
+                for task in [*first_page, *second_page, *third_page]
+            ]
+            self.assertEqual(ordered_names, ["1.jpg", "2.jpg", "3.jpg", "10.jpg", "20.jpg"])
+        finally:
+            repository.close()
+
     def test_runtime_settings_survive_restart(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             database_path = Path(temp_dir) / "tasks.sqlite3"

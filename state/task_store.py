@@ -18,6 +18,7 @@ from models.task_models import (
 )
 from services.broker.result_queue import resolve_result_queue_name
 from services.broker.routing import resolve_publish_route
+from utils.image_sort import image_path_sort_key
 from utils.qt_compat import QObject, Signal
 
 
@@ -467,7 +468,10 @@ class TaskStore(QObject):
         tasks = [self._tasks[task_id] for task_id in group.task_ids if task_id in self._tasks]
         return sorted(
             tasks,
-            key=lambda task: (task.image_path.lower(), (task.recipe_alias or task.recipe_path).lower()),
+            key=lambda task: (
+                image_path_sort_key(task.image_path),
+                (task.recipe_alias or task.recipe_path).casefold(),
+            ),
         )
 
     def get_task(self, request_id: str) -> ImageTask | None:
