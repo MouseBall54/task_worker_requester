@@ -71,6 +71,34 @@ class MainWindowTest(unittest.TestCase):
         finally:
             window.close()
 
+    def test_overall_progress_hides_partial_ratio_until_total_is_final(self) -> None:
+        window = self._make_window()
+        try:
+            window.set_overall_stats(
+                {
+                    "total": 20,
+                    "total_final": False,
+                    "completed": 5,
+                    "progress": 25.0,
+                }
+            )
+
+            self.assertEqual(window.overall_progress.value(), 0)
+            self.assertIn("전체 모수 산정 중", window.overall_label.text())
+
+            window.set_overall_stats(
+                {
+                    "total": 20,
+                    "total_final": True,
+                    "completed": 5,
+                    "progress": 25.0,
+                }
+            )
+            self.assertEqual(window.overall_progress.value(), 25)
+            self.assertIn("전체 진행률 25.0% (5/20)", window.overall_label.text())
+        finally:
+            window.close()
+
     def test_window_uses_ipdk_branding_and_removes_drive_combo(self) -> None:
         window = self._make_window()
         try:

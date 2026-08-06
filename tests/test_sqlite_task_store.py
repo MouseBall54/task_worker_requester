@@ -23,8 +23,12 @@ class SqliteTaskStoreTest(unittest.TestCase):
                     1,
                 )
                 self.assertEqual(store.overall_stats()["total"], 0)
+                self.assertFalse(store.overall_stats()["total_final"])
 
                 self.assertEqual(store.insert_task_batch("folder", ["a.jpg", "b.jpg"]), 4)
+                self.assertFalse(store.overall_stats()["total_final"])
+                store.set_folder_scan_state("folder", "SCANNED")
+                self.assertTrue(store.overall_stats()["total_final"])
                 messages = store.claim_pending_messages(
                     ["folder"], "RUN", "result.queue", priority=3, limit=2
                 )

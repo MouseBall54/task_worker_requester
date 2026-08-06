@@ -154,6 +154,22 @@ class TaskRepository:
         with self._lock:
             return list(self._connection.execute(query, params).fetchall())
 
+    def any_folder_descriptors(self, states: Sequence[str]) -> bool:
+        """Check folder scan-state existence without materializing descriptor rows."""
+
+        if not states:
+            return False
+        placeholders = ",".join("?" for _ in states)
+        with self._lock:
+            row = self._connection.execute(
+                f"""
+                SELECT 1 FROM folders
+                WHERE session_id = ? AND scan_state IN ({placeholders}) LIMIT 1
+                """,
+                [self.session_id, *states],
+            ).fetchone()
+        return row is not None
+
     def set_folder_scan_state(self, folder_path: str, state: str) -> None:
         with self._transaction() as cursor:
             cursor.execute(

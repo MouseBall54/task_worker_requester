@@ -39,7 +39,7 @@ worker는 request queue에서 메시지를 가져가 작업을 수행하고, 메
 
 5. Priority는 RabbitMQ AMQP BasicProperties.priority로 전달됩니다. JSON payload 안에는 priority 필드가 들어가지 않습니다. 선택 가능한 범위는 request queue의 x-max-priority 설정을 기준으로 만들어집니다.
 
-6. 전송 시작을 누르면 initial_open_folders만큼의 폴더만 백그라운드에서 분할 스캔하고, max_active_open_folders 범위에서 다음 폴더를 순차 개방합니다. 열리지 않은 폴더의 이미지와 메시지는 메모리에 만들지 않습니다. 작업은 SQLite에 저장되고 publish_chunk_size 단위로만 메시지를 생성하며, queue와 처리 중 작업이 자동 상한에 도달하면 발행을 멈췄다가 여유가 생기면 재개합니다. 각 메시지의 RECIPE_PATH는 폴더 추가 시 저장된 Recipe를 사용합니다.
+6. 전송 시작을 누르면 전체 폴더를 백그라운드에서 분할 스캔하여 전체 작업 수를 먼저 확정합니다. 스캔 동시성은 max_active_open_folders로 제한되고 작업은 메모리 목록 대신 SQLite에 청크 저장됩니다. 집계 완료 후 진행 중/대기 표의 폴더 순서대로 publish_chunk_size 단위 메시지를 생성하며, queue와 처리 중 작업이 자동 상한에 도달하면 발행을 멈췄다가 여유가 생기면 재개합니다. 각 메시지의 RECIPE_PATH는 폴더 추가 시 저장된 Recipe를 사용합니다.
 
 7. 중지는 publish/poll worker를 정지시키는 동작입니다. 이미 broker에 발행된 메시지를 worker나 RabbitMQ에서 회수하는 기능은 아닙니다.
 
@@ -114,7 +114,7 @@ ERROR는 publish 실패나 처리 중 오류가 앱 내부 상태로 반영된 �
     HelpTopic(
         title="진행률과 통계",
         keywords=("진행률", "ETA", "Avg Time", "완료", "성공", "실패", "타임아웃"),
-        body="""전체 진행률은 전체 이미지 작업 수 대비 terminal 상태 작업 수를 기준으로 계산됩니다. terminal 상태에는 SUCCESS, FAIL, TIMEOUT, ERROR, CANCELLED가 포함됩니다.
+        body="""전체 진행률은 전송 전 백그라운드 집계로 확정한 전체 이미지 작업 수 대비 terminal 상태 작업 수를 기준으로 계산됩니다. 집계 중에는 임시 비율 대신 전체 모수 산정 중으로 표시하며, terminal 상태에는 SUCCESS, FAIL, TIMEOUT, ERROR, CANCELLED가 포함됩니다.
 
 폴더 단위 진행률은 해당 폴더에 묶인 이미지 작업 중 완료된 작업 수로 계산합니다. 폴더 안의 모든 작업이 terminal 상태가 되면 완료된 폴더 목록으로 이동합니다.
 

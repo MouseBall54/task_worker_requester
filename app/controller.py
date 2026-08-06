@@ -54,6 +54,7 @@ class TaskController(QObject):
         self._queue_metrics_worker: QueueMetricsWorker | None = None
         self._scan_threads: dict[str, QThread] = {}
         self._scan_workers: dict[str, ScanWorker] = {}
+        self._inventory_preparing = False
         self._discovery_thread: QThread | None = None
         self._discovery_worker: FolderDiscoveryWorker | None = None
         self._start_after_discovery = False
@@ -1139,12 +1140,6 @@ class TaskController(QObject):
         self._view.set_running_state(True)
         self._set_runtime_options_locked(True)
 
-        for folder_path in self._store.get_active_candidate_folder_paths():  # type: ignore[attr-defined]
-            summary = self._store.get_folder_summary(folder_path)
-            if summary is not None and not summary.status.is_done:
-                self._opened_folder_paths.add(folder_path)
-                self._active_folder_paths.add(folder_path)
-
         if self._store.has_inflight_tasks() and not self._is_poll_worker_running():
             self._start_polling_worker(
                 queue_name=queue_name,
@@ -1152,14 +1147,12 @@ class TaskController(QObject):
                 tracked_request_ids=None,
             )
 
-        initial_slots = max(0, self._max_initial_open_folders - len(self._active_folder_paths))
-        self._open_next_lazy_folders(initial_slots)
-        self._planned_publish_total = int(self._store.overall_stats()["total"] or 0)
         self._log(
-            f"대용량 전송 세션 시작 - Chunk {self._config.publish.publish_chunk_size}건, "
-            f"queue 상한 {self._config.publish.fallback_max_queued_messages}건"
+            f"전체 작업 집계 시작 - 최대 동시 스캔 {self._max_active_open_folders}개, "
+            f"메모리 적재 없이 SQLite에 청크 저장"
         )
-        self._maybe_dispatch_lazy()
+        self._inventory_preparing = True
+        self._continue_lazy_inventory()
 
     @Slot()
     def _resume_persisted_lazy_session(self) -> None:
@@ -1171,14 +1164,59 @@ class TaskController(QObject):
         self._start_lazy_session(self._store.get_runtime_settings())  # type: ignore[attr-defined]
 
     def _open_next_lazy_folders(self, count: int) -> None:
+        """Activate the next already-inventoried folders in display order."""
+
         if count <= 0:
             return
-        waiting = self._store.get_waiting_folder_paths()  # type: ignore[attr-defined]
-        for folder_path in waiting[:count]:
+        candidates = self._store.get_active_candidate_folder_paths()  # type: ignore[attr-defined]
+        opened = 0
+        for folder_path in candidates:
+            if opened >= count:
+                break
+            if folder_path in self._opened_folder_paths:
+                continue
+            summary = self._store.get_folder_summary(folder_path)
+            if summary is None or summary.status.is_done or summary.total <= 0:
+                continue
             self._opened_folder_paths.add(folder_path)
             self._active_folder_paths.add(folder_path)
-            self._store.set_folder_scan_state(folder_path, "SCANNING")  # type: ignore[attr-defined]
-            self._start_scan_worker(folder_path)
+            opened += 1
+
+    def _continue_lazy_inventory(self) -> None:
+        """Scan every waiting folder with bounded concurrency before publishing."""
+
+        if not self._inventory_preparing or not self._active:
+            return
+
+        while True:
+            waiting = self._store.get_waiting_folder_paths()  # type: ignore[attr-defined]
+            available = max(0, self._max_active_open_folders - len(self._scan_threads))
+            if not waiting or available <= 0:
+                break
+
+            launched_async = False
+            for folder_path in waiting[:available]:
+                self._store.set_folder_scan_state(folder_path, "SCANNING")  # type: ignore[attr-defined]
+                self._start_scan_worker(folder_path)
+                launched_async = launched_async or folder_path in self._scan_threads
+            if launched_async:
+                break
+
+        if self._store.get_waiting_folder_paths() or self._scan_threads:  # type: ignore[attr-defined]
+            return
+
+        self._inventory_preparing = False
+        self._planned_publish_total = int(self._store.overall_stats()["total"] or 0)
+        self._open_next_lazy_folders(self._max_initial_open_folders)
+        self._log(
+            f"전체 작업 집계 완료 - 총 {self._planned_publish_total}건, "
+            f"화면 폴더 순서대로 전송 시작"
+        )
+        self._log(
+            f"대용량 전송 - Chunk {self._config.publish.publish_chunk_size}건, "
+            f"queue 상한 {self._config.publish.fallback_max_queued_messages}건"
+        )
+        self._maybe_dispatch_lazy()
 
     def _start_scan_worker(self, folder_path: str) -> None:
         if folder_path in self._scan_threads:
@@ -1208,7 +1246,8 @@ class TaskController(QObject):
     def _on_scan_batch_inserted(self, folder_path: str, inserted: int, total_inserted: int) -> None:
         _ = folder_path, inserted, total_inserted
         self._planned_publish_total = int(self._store.overall_stats()["total"] or 0)
-        self._maybe_dispatch_lazy()
+        if not self._inventory_preparing:
+            self._maybe_dispatch_lazy()
 
     @Slot(str, int)
     def _on_scan_completed(self, folder_path: str, total_inserted: int) -> None:
@@ -1218,7 +1257,8 @@ class TaskController(QObject):
             "SCANNED" if total_inserted or (summary is not None and summary.total) else "EMPTY",
         )
         self._log(f"폴더 분할 스캔 완료 - {folder_path}: Task {total_inserted}건")
-        self._maybe_dispatch_lazy()
+        if not self._inventory_preparing:
+            self._maybe_dispatch_lazy()
 
     @Slot(str, int)
     def _on_scan_stopped(self, folder_path: str, total_inserted: int) -> None:
@@ -1231,11 +1271,14 @@ class TaskController(QObject):
         self._store.set_folder_scan_state(folder_path, "ERROR")  # type: ignore[attr-defined]
         self._active_folder_paths.discard(folder_path)
         self._log(f"폴더 스캔 실패 - {folder_path}: {error}")
-        self._open_next_lazy_folders(self._available_open_slots())
+        if not self._inventory_preparing:
+            self._open_next_lazy_folders(self._available_open_slots())
 
     def _on_scan_thread_finished(self, folder_path: str) -> None:
         self._scan_threads.pop(folder_path, None)
         self._scan_workers.pop(folder_path, None)
+        if self._inventory_preparing:
+            self._continue_lazy_inventory()
 
     def _lazy_queue_high_watermark(self) -> int:
         fallback = max(1, int(self._config.publish.fallback_max_queued_messages))
@@ -1249,7 +1292,12 @@ class TaskController(QObject):
     def _maybe_dispatch_lazy(self) -> None:
         """Publish only one bounded chunk when scan and broker capacity allow it."""
 
-        if not self._lazy_mode or not self._active or self._is_publish_worker_running():
+        if (
+            not self._lazy_mode
+            or not self._active
+            or self._inventory_preparing
+            or self._is_publish_worker_running()
+        ):
             return
         freed_slots = self._refresh_lazy_active_folders()
         if freed_slots:
@@ -1317,7 +1365,12 @@ class TaskController(QObject):
     def _maybe_expand_lazy_folders(self) -> None:
         if len(self._active_folder_paths) >= self._max_active_open_folders:
             return
-        if not self._store.get_waiting_folder_paths():  # type: ignore[attr-defined]
+        unopened = [
+            path
+            for path in self._store.get_active_candidate_folder_paths()  # type: ignore[attr-defined]
+            if path not in self._opened_folder_paths
+        ]
+        if not unopened:
             return
         if any(
             (summary := self._store.get_folder_summary(folder_path)) is not None
@@ -1474,6 +1527,7 @@ class TaskController(QObject):
     def _reset_publish_schedule_state(self) -> None:
         """Reset folder-based dispatch scheduling state."""
 
+        self._inventory_preparing = False
         self._folder_message_batches = []
         self._next_folder_batch_index = 0
         self._opened_folder_paths.clear()

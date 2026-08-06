@@ -208,6 +208,72 @@ class TaskControllerTest(unittest.TestCase):
             controller.shutdown()
             store.close()
 
+    def test_sqlite_runtime_fixes_total_before_publishing_in_folder_display_order(self) -> None:
+        config = AppConfig(
+            rabbitmq=RabbitMQConfig(host="127.0.0.1", port=5672, username="guest", password="guest"),
+            publish=PublishConfig(
+                image_extensions=[".jpg"],
+                initial_open_folders=2,
+                max_active_open_folders=2,
+                publish_chunk_size=10,
+                fallback_max_queued_messages=10,
+            ),
+            ui=UiConfig(),
+            mock_mode=True,
+        )
+        view = DummyView()
+        logger = logging.getLogger("controller_sqlite_total_and_order_test")
+        logger.handlers.clear()
+        logger.addHandler(logging.NullHandler())
+
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            first_folder = root / "z_first"
+            second_folder = root / "a_second"
+            first_folder.mkdir()
+            second_folder.mkdir()
+            for index in range(2):
+                (first_folder / f"{index}.jpg").write_text("x", encoding="utf-8")
+            for index in range(3):
+                (second_folder / f"{index}.jpg").write_text("x", encoding="utf-8")
+
+            store = SqliteTaskStore(root / "tasks.sqlite3")
+            controller = TaskController(
+                config=config,
+                view=view,  # type: ignore[arg-type]
+                store=store,
+                broker_provider=build_broker_provider(config),
+                logger=logger,
+            )
+            published: list = []
+            totals_at_publish: list[tuple[int, bool]] = []
+
+            def synchronous_scan(folder_path: str) -> None:
+                store.insert_task_batch(folder_path, list(controller._scanner.iter_images(folder_path)))
+                store.set_folder_scan_state(folder_path, "SCANNED")
+
+            def capture_publish(messages, _exchange, _routing_key) -> None:  # noqa: ANN001
+                stats = store.overall_stats()
+                totals_at_publish.append((int(stats["total"]), bool(stats["total_final"])))
+                published.extend(messages)
+
+            controller._start_scan_worker = synchronous_scan  # type: ignore[method-assign]
+            controller._start_publish_worker = capture_publish  # type: ignore[method-assign]
+            store.register_folder_descriptors(
+                [str(first_folder), str(second_folder)],
+                [("Recipe", "recipe.json")],
+            )
+
+            controller.on_start_requested()
+
+            self.assertEqual(totals_at_publish, [(5, True)])
+            self.assertEqual(
+                [Path(message.IMG_LIST[0]).parent.name for message in published],
+                ["z_first", "z_first", "a_second", "a_second", "a_second"],
+            )
+            controller.shutdown()
+            store.close()
+
     def test_sqlite_runtime_waits_when_broker_queue_reaches_high_watermark(self) -> None:
         config = AppConfig(
             rabbitmq=RabbitMQConfig(host="127.0.0.1", port=5672, username="guest", password="guest"),

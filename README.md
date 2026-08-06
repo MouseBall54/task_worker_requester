@@ -62,8 +62,8 @@ uv run python main.py --config config/app_config.yaml
 - Recipe 선택 메뉴에서 하나 이상을 체크할 수 있습니다. 폴더를 추가하는 순간 선택 목록이 폴더 descriptor에 저장되며, 활성 폴더를 스캔할 때 이미지 N개와 Recipe M개가 N×M개의 고유 request로 등록됩니다.
 - 같은 이미지와 같은 Recipe 조합은 중복 등록하지 않지만, 이미 등록된 이미지에 다른 Recipe를 추가하는 것은 허용합니다.
 - `rabbitmq.request_queue_declare`, `rabbitmq.result_queue_declare`로 queue declare 옵션을 각각 설정할 수 있습니다.
-- `publish.initial_open_folders`, `publish.max_active_open_folders`는 실제로 동시에 스캔·처리할 폴더 수를 제한합니다. 열리지 않은 폴더는 이미지/메시지를 메모리에 만들지 않습니다.
-- 작업 상태는 `%APPDATA%\IPDK_plus\runtime\task_state.sqlite3`에 저장되며, 앱은 `publish_chunk_size` 단위로만 메시지를 만들고 queue/inflight 상한에 따라 자동으로 발행을 멈췄다가 재개합니다.
+- `publish.max_active_open_folders`는 전체 모수 집계 시 동시에 스캔할 폴더 수와 전송 중 활성 폴더 수를 제한하고, `publish.initial_open_folders`는 집계 완료 후 처음 활성화할 폴더 수를 결정합니다. 이미지 작업은 전체 목록을 메모리에 유지하지 않고 SQLite에 청크 저장합니다.
+- 작업 상태는 `%APPDATA%\IPDK_plus\runtime\task_state.sqlite3`에 저장되며, 앱은 `publish_chunk_size` 단위로만 메시지를 만들고 queue/inflight 상한에 따라 자동으로 발행을 멈췄다가 재개합니다. CMD 조회 방법은 [SQLite 작업 상태 조회 가이드](.\docs\sqlite_state_query_guide.md)를 참고하세요.
 - 앱이 중단되면 미발행 CLAIMED 작업은 다시 대기로 돌리고, 저장된 Action·Priority·결과 큐를 사용해 미완료 스캔과 결과 polling을 다음 실행에서 자동 재개합니다.
 - 선택한 폴더의 상세 작업은 최초 500행만 읽고, 스크롤 끝에서 다음 500행을 추가로 조회합니다. 화면 로그는 설정된 최대 줄 수만 유지하고 파일 로그는 회전 보관합니다.
 - `publish.default_priority`는 기본 request MQ priority 입니다.

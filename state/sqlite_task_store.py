@@ -83,6 +83,7 @@ class SqliteTaskStore(QObject):
     def set_folder_scan_state(self, folder_path: str, state: str) -> None:
         self.repository.set_folder_scan_state(folder_path, state)
         self.folder_group_updated.emit(folder_path)
+        self._emit_overall()
 
     def folder_scan_state(self, folder_path: str) -> str | None:
         for row in self.repository.list_folder_descriptors():
@@ -314,6 +315,7 @@ class SqliteTaskStore(QObject):
                 eta_seconds = avg_seconds * remaining
         return {
             "total": total,
+            "total_final": not self.repository.any_folder_descriptors(["WAITING", "SCANNING"]),
             "completed": completed,
             "success": counts["success"],
             "fail": counts["fail"],

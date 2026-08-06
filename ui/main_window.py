@@ -913,6 +913,7 @@ class MainWindow(QMainWindow):
         progress = int(float(stats.get("progress", 0.0)))
         completed = int(stats.get("completed", 0))
         total = int(stats.get("total", 0))
+        total_final = bool(stats.get("total_final", True))
 
         avg_seconds = stats.get("avg_processing_seconds")
         avg_text = (
@@ -926,6 +927,13 @@ class MainWindow(QMainWindow):
             if isinstance(eta_seconds, (int, float)) and float(eta_seconds) >= 0
             else "-"
         )
+
+        if not total_final:
+            self.overall_progress.setValue(0)
+            self.overall_label.setText(
+                f"전체 진행률 집계 중 ({completed}/{total} 확인, 전체 모수 산정 중)"
+            )
+            return
 
         self.overall_progress.setValue(progress)
         self.overall_label.setText(
