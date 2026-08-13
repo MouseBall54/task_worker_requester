@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-import tempfile
-import unittest
+import json
 from pathlib import Path
 import sqlite3
+import tempfile
+import unittest
 
 from models.task_models import TaskStatus
 from state.task_repository import TaskRepository
@@ -33,15 +34,78 @@ class TaskRepositoryTest(unittest.TestCase):
         repository = TaskRepository()
         try:
             recipes = [("Recipe A", "recipes/a.json"), ("Recipe B", "recipes/b.json")]
-            repository.register_folder_descriptors(["folder"], recipes)
+            self.assertEqual(repository.register_folder_descriptors(["folder"], recipes), 2)
+            queue_rows = repository.list_folder_descriptors()
+            queue_keys = [str(row["folder_path"]) for row in queue_rows]
 
-            self.assertEqual(repository.insert_task_batch("folder", ["a.jpg", "b.jpg"]), 4)
+            self.assertEqual(repository.insert_task_batch(queue_keys[0], ["a.jpg", "b.jpg"]), 2)
+            self.assertEqual(repository.insert_task_batch(queue_keys[1], ["a.jpg", "b.jpg"]), 2)
             self.assertEqual(repository.insert_task_batch("folder", ["a.jpg"]), 0)
 
-            rows = repository.get_tasks_page("folder", limit=10)
-            self.assertEqual(len(rows), 4)
-            self.assertEqual({task.recipe_path for task in rows}, {"recipes/a.json", "recipes/b.json"})
+            first_rows = repository.get_tasks_page(queue_keys[0], limit=10)
+            second_rows = repository.get_tasks_page(queue_keys[1], limit=10)
+            self.assertEqual({task.recipe_path for task in first_rows}, {"recipes/a.json"})
+            self.assertEqual({task.recipe_path for task in second_rows}, {"recipes/b.json"})
+            self.assertTrue(all(row["source_path"] == "folder" for row in queue_rows))
             self.assertEqual(repository.overall_counts()["pending"], 4)
+        finally:
+            repository.close()
+
+    def test_existing_multi_recipe_folder_is_migrated_to_independent_queue_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database = Path(temp_dir) / "tasks.sqlite3"
+            repository = TaskRepository(database)
+            repository.register_folder_descriptors(["folder"], [("A", "a.json")])
+            repository.insert_task_batch("folder", ["a.jpg"])
+            session_id = repository.session_id
+            with repository._transaction() as cursor:  # noqa: SLF001
+                cursor.execute(
+                    """
+                    UPDATE folders SET source_path = '', recipe_alias = '', recipe_path = '',
+                        recipes_json = ?, total_count = 2, pending_count = 2
+                    WHERE session_id = ? AND folder_path = 'folder'
+                    """,
+                    (json.dumps([("A", "a.json"), ("B", "b.json")]), session_id),
+                )
+                cursor.execute(
+                    """
+                    INSERT INTO tasks(
+                        session_id, request_id, folder_path, image_path, recipe_alias,
+                        recipe_path, status, created_at
+                    ) VALUES (?, 'legacy-b', 'folder', 'a.jpg', 'B', 'b.json', 'PENDING', ?)
+                    """,
+                    (session_id, "2026-08-13T00:00:00+00:00"),
+                )
+            repository.close()
+
+            restored = TaskRepository(database, session_id=session_id)
+            try:
+                summaries = restored.get_folder_summaries()
+                self.assertEqual(len(summaries), 2)
+                self.assertEqual([row.source_path for row in summaries], ["folder", "folder"])
+                self.assertEqual([row.recipe_aliases for row in summaries], [("A",), ("B",)])
+                self.assertEqual([row.total for row in summaries], [1, 1])
+            finally:
+                restored.close()
+
+    def test_scanned_sibling_inventory_is_reused_for_another_recipe(self) -> None:
+        repository = TaskRepository()
+        try:
+            repository.register_folder_descriptors(
+                ["folder"], [("A", "a.json"), ("B", "b.json")]
+            )
+            first_key, second_key = [
+                str(row["folder_path"]) for row in repository.list_folder_descriptors()
+            ]
+            repository.insert_task_batch(first_key, ["1.jpg", "2.jpg"])
+            repository.set_folder_scan_state(first_key, "SCANNED")
+
+            self.assertTrue(repository.populate_folder_from_scanned_sibling(second_key))
+
+            second_tasks = repository.get_tasks_page(second_key, limit=10)
+            self.assertEqual([task.image_path for task in second_tasks], ["1.jpg", "2.jpg"])
+            self.assertEqual({task.recipe_path for task in second_tasks}, {"b.json"})
+            self.assertEqual(repository.get_folder_summary(second_key).total, 2)
         finally:
             repository.close()
 

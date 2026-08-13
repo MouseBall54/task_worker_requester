@@ -80,8 +80,25 @@ class SqliteTaskStore(QObject):
         normalized_paths = list(
             dict.fromkeys(str(path).strip() for path in folder_paths if str(path).strip())
         )
-        before = set(self.get_folder_paths())
-        duplicates = [path for path in normalized_paths if path in before]
+        normalized_recipes = list(
+            dict.fromkeys(
+                (str(alias).strip() or str(path).strip(), str(path).strip())
+                for alias, path in recipe_selections
+                if str(path).strip()
+            )
+        )
+        before_rows = self.repository.list_folder_descriptors()
+        before = {str(row["folder_path"]) for row in before_rows}
+        existing_by_identity = {
+            (str(row["source_path"]), str(row["recipe_path"])): str(row["folder_path"])
+            for row in before_rows
+        }
+        duplicates = [
+            existing_by_identity[(source_path, recipe_path)]
+            for source_path in normalized_paths
+            for _alias, recipe_path in normalized_recipes
+            if (source_path, recipe_path) in existing_by_identity
+        ]
         added = self.repository.register_folder_descriptors(folder_paths, recipe_selections)
         for folder_path in self.get_folder_paths():
             if folder_path not in before:
@@ -116,6 +133,16 @@ class SqliteTaskStore(QObject):
 
     def get_folder_paths(self) -> list[str]:
         return [str(row["folder_path"]) for row in self.repository.list_folder_descriptors()]
+
+    def get_folder_source_path(self, folder_path: str) -> str | None:
+        return self.repository.folder_source_path(folder_path)
+
+    def populate_folder_from_scanned_sibling(self, folder_path: str) -> bool:
+        populated = self.repository.populate_folder_from_scanned_sibling(folder_path)
+        if populated:
+            self.folder_group_updated.emit(folder_path)
+            self._emit_overall()
+        return populated
 
     def get_waiting_folder_paths(self) -> list[str]:
         return [

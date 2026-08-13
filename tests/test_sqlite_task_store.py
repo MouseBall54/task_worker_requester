@@ -29,6 +29,33 @@ class SqliteTaskStoreTest(unittest.TestCase):
             finally:
                 store.close()
 
+    def test_same_folder_with_a_different_recipe_creates_an_independent_queue(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = SqliteTaskStore(Path(temp_dir) / "tasks.sqlite3")
+            duplicates: list[list[str]] = []
+            store.duplicate_folders_detected.connect(duplicates.append)
+            try:
+                self.assertEqual(
+                    store.register_folder_descriptors(["folder"], [("A", "a.json")]),
+                    1,
+                )
+                self.assertEqual(
+                    store.register_folder_descriptors(["folder"], [("B", "b.json")]),
+                    1,
+                )
+                self.assertEqual(
+                    store.register_folder_descriptors(["folder"], [("A", "a.json")]),
+                    0,
+                )
+
+                summaries = store.get_folder_summaries()
+                self.assertEqual(len(summaries), 2)
+                self.assertEqual([row.source_path for row in summaries], ["folder", "folder"])
+                self.assertEqual([row.recipe_aliases for row in summaries], [("A",), ("B",)])
+                self.assertEqual(duplicates, [[summaries[0].folder_path]])
+            finally:
+                store.close()
+
     def test_lazy_descriptor_scan_claim_and_result_flow(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             store = SqliteTaskStore(Path(temp_dir) / "tasks.sqlite3")
@@ -38,17 +65,20 @@ class SqliteTaskStoreTest(unittest.TestCase):
                         ["folder"],
                         [("Recipe A", "recipes/a.json"), ("Recipe B", "recipes/b.json")],
                     ),
-                    1,
+                    2,
                 )
                 self.assertEqual(store.overall_stats()["total"], 0)
                 self.assertFalse(store.overall_stats()["total_final"])
 
-                self.assertEqual(store.insert_task_batch("folder", ["a.jpg", "b.jpg"]), 4)
+                queue_keys = store.get_folder_paths()
+                self.assertEqual(store.insert_task_batch(queue_keys[0], ["a.jpg", "b.jpg"]), 2)
+                self.assertEqual(store.insert_task_batch(queue_keys[1], ["a.jpg", "b.jpg"]), 2)
                 self.assertFalse(store.overall_stats()["total_final"])
-                store.set_folder_scan_state("folder", "SCANNED")
+                for queue_key in queue_keys:
+                    store.set_folder_scan_state(queue_key, "SCANNED")
                 self.assertTrue(store.overall_stats()["total_final"])
                 messages = store.claim_pending_messages(
-                    ["folder"], "RUN", "result.queue", priority=3, limit=2
+                    queue_keys, "RUN", "result.queue", priority=3, limit=2
                 )
                 self.assertEqual(len(messages), 2)
                 self.assertTrue(all(message.priority == 3 for message in messages))
@@ -64,7 +94,7 @@ class SqliteTaskStoreTest(unittest.TestCase):
                     store.apply_result(TaskResult(request_id=request_id, result=["PASS"]))
                 )
                 self.assertEqual(store.get_task(request_id).status, TaskStatus.SUCCESS)
-                self.assertEqual(store.get_folder_summary("folder").success, 1)
+                self.assertEqual(store.get_folder_summary(queue_keys[0]).success, 1)
             finally:
                 store.close()
 

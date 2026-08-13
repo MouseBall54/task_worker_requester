@@ -12,7 +12,7 @@ from models.task_models import FolderSummary
 class FolderTableModel(QAbstractTableModel):
     """Table model that tracks folder-level progress rows."""
 
-    HEADERS = ["우선순위", "진행률", "상태", "폴더", "Recipes", "총", "완료", "성공", "실패", "타임아웃"]
+    HEADERS = ["우선순위", "진행률", "상태", "폴더", "Recipe", "총", "완료", "성공", "실패", "타임아웃"]
 
     def __init__(self) -> None:
         super().__init__()
@@ -44,7 +44,7 @@ class FolderTableModel(QAbstractTableModel):
             if column == 2:
                 return row.stage_label or row.status.value
             if column == 3:
-                return row.folder_path
+                return row.source_path or row.folder_path
             if column == 4:
                 return ", ".join(row.recipe_aliases)
             if column == 5:
@@ -87,7 +87,7 @@ class FolderTableModel(QAbstractTableModel):
         """Replace all rows at once."""
 
         self.beginResetModel()
-        self._rows = list(rows)
+        self._rows = sorted(rows, key=self._priority_sort_key)
         self._index_map = {row.folder_path: idx for idx, row in enumerate(self._rows)}
         self.endResetModel()
 
@@ -96,11 +96,20 @@ class FolderTableModel(QAbstractTableModel):
 
         row_idx = self._index_map.get(summary.folder_path)
         if row_idx is None:
-            insert_at = len(self._rows)
+            insert_at = self._priority_insert_index(summary)
             self.beginInsertRows(QModelIndex(), insert_at, insert_at)
-            self._rows.append(summary)
-            self._index_map[summary.folder_path] = insert_at
+            self._rows.insert(insert_at, summary)
             self.endInsertRows()
+            self._rebuild_index_map()
+            return
+
+        previous = self._rows[row_idx]
+        if previous.queue_priority != summary.queue_priority:
+            self.beginResetModel()
+            self._rows[row_idx] = summary
+            self._rows.sort(key=self._priority_sort_key)
+            self._rebuild_index_map()
+            self.endResetModel()
             return
 
         self._rows[row_idx] = summary
@@ -118,6 +127,30 @@ class FolderTableModel(QAbstractTableModel):
         self.beginRemoveRows(QModelIndex(), row_idx, row_idx)
         self._rows.pop(row_idx)
         self.endRemoveRows()
+        self._rebuild_index_map()
+
+    @staticmethod
+    def _priority_sort_key(summary: FolderSummary) -> tuple[bool, int]:
+        """Sort persisted queue priorities first while keeping legacy zero rows stable."""
+
+        priority = int(summary.queue_priority)
+        return priority <= 0, priority if priority > 0 else 0
+
+    def _priority_insert_index(self, summary: FolderSummary) -> int:
+        """Find the ordered insertion point without reloading or sorting all rows."""
+
+        target_key = self._priority_sort_key(summary)
+        low = 0
+        high = len(self._rows)
+        while low < high:
+            middle = (low + high) // 2
+            if self._priority_sort_key(self._rows[middle]) <= target_key:
+                low = middle + 1
+            else:
+                high = middle
+        return low
+
+    def _rebuild_index_map(self) -> None:
         self._index_map = {row.folder_path: idx for idx, row in enumerate(self._rows)}
 
     def has_folder(self, folder_path: str) -> bool:
@@ -126,10 +159,18 @@ class FolderTableModel(QAbstractTableModel):
         return folder_path in self._index_map
 
     def folder_at(self, row: int) -> str | None:
-        """Return folder path for selected row."""
+        """Return the queue key for the selected row."""
 
         if 0 <= row < len(self._rows):
             return self._rows[row].folder_path
+        return None
+
+    def source_folder_at(self, row: int) -> str | None:
+        """Return the physical folder path shown for the selected row."""
+
+        if 0 <= row < len(self._rows):
+            summary = self._rows[row]
+            return summary.source_path or summary.folder_path
         return None
 
 

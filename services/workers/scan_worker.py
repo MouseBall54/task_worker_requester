@@ -26,10 +26,12 @@ class ScanWorker(QObject):
         folder_path: str,
         insert_batch: Callable[[str, list[str]], int],
         batch_size: int = 1000,
+        queue_key: str | None = None,
     ) -> None:
         super().__init__()
         self._scanner = scanner
-        self._folder_path = folder_path
+        self._scan_path = folder_path
+        self._folder_path = queue_key or folder_path
         self._insert_batch = insert_batch
         self._batch_size = max(1, int(batch_size))
         self._stop_requested = False
@@ -40,7 +42,7 @@ class ScanWorker(QObject):
         inaccessible_count = 0
         batch: list[str] = []
         try:
-            for image_path in self._scanner.iter_images(self._folder_path):
+            for image_path in self._scanner.iter_images(self._scan_path):
                 if self._stop_requested:
                     break
                 if os.path.exists(image_path) and not os.access(image_path, os.R_OK):

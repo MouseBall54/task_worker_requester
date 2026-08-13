@@ -113,6 +113,7 @@ class FolderSummary:
     stage_label: str = ""
     held: bool = False
     queue_priority: int = 0
+    source_path: str = ""
 
 
 @dataclass(slots=True)

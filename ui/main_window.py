@@ -132,17 +132,17 @@ class DuplicateFolderDialog(QDialog):
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("중복 폴더 안내")
+        self.setWindowTitle("중복 폴더+Recipe 안내")
         self.resize(820, 420)
 
         layout = QVBoxLayout(self)
         header = QLabel(
-            f"이미 등록되어 추가하지 않은 폴더가 {len(rows)}개 있습니다."
+            f"이미 등록되어 추가하지 않은 폴더+Recipe 조합이 {len(rows)}개 있습니다."
         )
         layout.addWidget(header)
 
         self.table = QTableWidget(len(rows), 2, self)
-        self.table.setHorizontalHeaderLabels(["폴더 경로", "현재 위치"])
+        self.table.setHorizontalHeaderLabels(["폴더 경로 + Recipe", "현재 위치"])
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setAlternatingRowColors(True)
@@ -186,7 +186,7 @@ class PreflightDialog(QDialog):
         summary.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         summary.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         summary_rows = [
-            ("폴더", f"{int(report.get('folder_count', 0)):,}개 (보류 {int(report.get('held_folder_count', 0)):,}개)"),
+            ("대기열", f"{int(report.get('folder_count', 0)):,}개 (보류 {int(report.get('held_folder_count', 0)):,}개)"),
             ("Recipe", f"{int(report.get('recipe_count', 0)):,}개"),
             ("고유 이미지", f"{int(report.get('image_count', 0)):,}개"),
             ("최종 메시지", f"{total:,}건"),
@@ -253,7 +253,7 @@ class RunHistoryDialog(QDialog):
         layout.addWidget(QLabel(f"보존된 실행 이력 {len(rows)}건"))
 
         headers = [
-            "시작", "종료", "상태", "폴더", "Recipe", "전체", "성공", "실패",
+            "시작", "종료", "상태", "대기열", "Recipe", "전체", "성공", "실패",
             "성공률", "평균 처리", "주요 오류",
         ]
         self.table = QTableWidget(len(rows), len(headers), self)
@@ -627,7 +627,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.folder_tree, stretch=1)
 
         self.btn_add_folder = QPushButton("폴더 추가")
-        self.btn_add_subfolders = QPushButton("sub_folder 추가")
+        self.btn_add_subfolders = QPushButton("하위 폴더 추가")
         self.btn_clear_selection = QPushButton("선택 해제")
 
         self.btn_add_folder.clicked.connect(self._on_add_folder_clicked)
@@ -1524,15 +1524,21 @@ class MainWindow(QMainWindow):
                 selection_model.setCurrentIndex(index, selection_flags | QItemSelectionModel.Current)
                 selection_model.select(index, selection_flags)
 
-        selected_paths = self._selected_folder_paths_from_table(table, model)
-        if not selected_paths:
+        selected_keys = self._selected_folder_paths_from_table(table, model)
+        if not selected_keys:
             return
 
         menu = QMenu(table)
         copy_action = menu.addAction("경로 복사")
         chosen = menu.exec(table.viewport().mapToGlobal(position))
         if chosen is copy_action:
-            self._copy_folder_paths_to_clipboard(selected_paths)
+            source_paths = [
+                model.source_folder_at(index.row())
+                for index in table.selectionModel().selectedRows()
+            ]
+            self._copy_folder_paths_to_clipboard(
+                list(dict.fromkeys(path for path in source_paths if path))
+            )
 
     def _copy_folder_paths_to_clipboard(self, folder_paths: list[str]) -> None:
         """Copy one or more folder paths to clipboard and append UI log."""

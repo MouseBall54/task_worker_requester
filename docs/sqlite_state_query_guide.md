@@ -63,15 +63,15 @@ python -c "import os,sqlite3; from pathlib import Path; c=sqlite3.connect(Path(o
 | `ERROR` | 전송 또는 내부 처리 오류 |
 | `CANCELLED` | 취소됨 |
 
-### 3.3 폴더별 진행 상황
+### 3.3 폴더+Recipe 대기열별 진행 상황
 
-폴더는 프로그램의 진행 중/대기 표와 같은 전송 우선순위인 `position` 순으로 출력한다. SQLite에는 0부터 저장되고 화면의 `우선순위` 열에는 `position + 1` 값이 표시된다. 폴더 추가 시 마지막 position 다음 값이 자동 배정되며 `맨 위/위/아래/맨 아래` 버튼을 누르면 같은 트랜잭션에서 연속된 position으로 다시 저장된다.
+각 행은 `source_path + recipe_path` 조합으로 구분되며 프로그램의 진행 중/대기 표와 같은 전송 우선순위인 `position` 순으로 출력한다. 내부 `folder_path`는 대기열 식별자이고 실제 폴더 경로는 `source_path`다. SQLite에는 우선순위가 0부터 저장되고 화면에는 `position + 1` 값이 표시된다.
 
 ```cmd
-python -c "import os,sqlite3; from pathlib import Path; c=sqlite3.connect(Path(os.environ['DB']).as_uri()+'?mode=ro',uri=True); sid=c.execute('SELECT session_id FROM sessions ORDER BY CASE WHEN state IN (?,?) THEN 0 ELSE 1 END,updated_at DESC LIMIT 1',('ACTIVE','PAUSED_BY_USER')).fetchone()[0]; q='SELECT position,held,scan_state,total_count,pending_count,claimed_count,sent_count,running_count,success_count,fail_count,timeout_count,error_count,cancelled_count,inaccessible_count,folder_path FROM folders WHERE session_id=? ORDER BY position'; print('POS | HELD | SCAN | TOTAL | PENDING | CLAIMED | SENT | RUNNING | SUCCESS | FAIL | TIMEOUT | ERROR | CANCELLED | INACCESSIBLE | FOLDER'); [print(*r,sep=' | ') for r in c.execute(q,(sid,))]"
+python -c "import os,sqlite3; from pathlib import Path; c=sqlite3.connect(Path(os.environ['DB']).as_uri()+'?mode=ro',uri=True); sid=c.execute('SELECT session_id FROM sessions ORDER BY CASE WHEN state IN (?,?) THEN 0 ELSE 1 END,updated_at DESC LIMIT 1',('ACTIVE','PAUSED_BY_USER')).fetchone()[0]; q='SELECT position,held,scan_state,total_count,pending_count,claimed_count,sent_count,running_count,success_count,fail_count,timeout_count,error_count,cancelled_count,inaccessible_count,recipe_alias,recipe_path,source_path FROM folders WHERE session_id=? ORDER BY position'; print('POS | HELD | SCAN | TOTAL | PENDING | CLAIMED | SENT | RUNNING | SUCCESS | FAIL | TIMEOUT | ERROR | CANCELLED | INACCESSIBLE | RECIPE | RECIPE_PATH | FOLDER'); [print(*r,sep=' | ') for r in c.execute(q,(sid,))]"
 ```
 
-`held=1`은 사용자가 보류한 폴더다. 전체 모수에는 포함되지만 보류 해제 전까지 publish 대상에서는 제외된다. `inaccessible_count`는 스캔 중 읽기 권한이 없어 제외한 이미지 수다.
+`held=1`은 사용자가 보류한 폴더+Recipe 대기열이다. 전체 모수에는 포함되지만 보류 해제 전까지 publish 대상에서는 제외된다. `inaccessible_count`는 스캔 중 읽기 권한이 없어 제외한 이미지 수다.
 
 `scan_state`의 주요 값은 다음과 같다.
 

@@ -220,11 +220,11 @@ class TaskControllerTest(unittest.TestCase):
                 self.assertEqual(
                     view.duplicate_folder_notifications,
                     [[
-                        (str(pending_folder), "진행중/대기 폴더"),
-                        (str(completed_folder), "완료된 폴더"),
+                        (f"{pending_folder} [Recipe]", "진행중/대기 폴더"),
+                        (f"{completed_folder} [Recipe]", "완료된 폴더"),
                     ]],
                 )
-                self.assertTrue(any("중복 폴더 2개" in message for message in view.logs))
+                self.assertTrue(any("중복 폴더+Recipe 2개" in message for message in view.logs))
             finally:
                 controller.shutdown()
                 store.close()
@@ -270,11 +270,11 @@ class TaskControllerTest(unittest.TestCase):
                 self.assertEqual(
                     view.duplicate_folder_notifications,
                     [[
-                        (str(folder_a), "진행중/대기 폴더"),
-                        (str(folder_b), "진행중/대기 폴더"),
+                        (f"{folder_a} [Recipe]", "진행중/대기 폴더"),
+                        (f"{folder_b} [Recipe]", "진행중/대기 폴더"),
                     ]],
                 )
-                self.assertTrue(any("신규 폴더 0개" in message for message in view.logs))
+                self.assertTrue(any("신규 대기열 0개" in message for message in view.logs))
             finally:
                 controller.shutdown()
                 self._app.processEvents()
@@ -699,6 +699,69 @@ class TaskControllerTest(unittest.TestCase):
 
         self.assertEqual(len(tasks), 4)
         self.assertEqual({task.recipe_path for task in tasks}, {"recipes/a.json", "recipes/b.json"})
+
+    def test_sqlite_add_folder_creates_one_ordered_queue_per_recipe(self) -> None:
+        config = AppConfig(
+            rabbitmq=RabbitMQConfig(host="127.0.0.1", port=5672, username="guest", password="guest"),
+            publish=PublishConfig(image_extensions=[".jpg"]),
+            ui=UiConfig(),
+            mock_mode=True,
+        )
+        view = DummyView()
+        view.recipe_selections = [("Recipe A", "recipes/a.json"), ("Recipe B", "recipes/b.json")]
+        logger = logging.getLogger("controller_sqlite_recipe_queue_test")
+        logger.handlers.clear()
+        logger.addHandler(logging.NullHandler())
+
+        with TemporaryDirectory() as temp_dir:
+            folder = Path(temp_dir) / "images"
+            folder.mkdir()
+            (folder / "1.jpg").write_text("x", encoding="utf-8")
+            (folder / "2.jpg").write_text("x", encoding="utf-8")
+            store = SqliteTaskStore(Path(temp_dir) / "tasks.sqlite3")
+            controller = TaskController(
+                config=config,
+                view=view,  # type: ignore[arg-type]
+                store=store,
+                broker_provider=build_broker_provider(config),
+                logger=logger,
+            )
+            try:
+                published: list = []
+
+                def synchronous_scan(queue_key: str) -> None:
+                    source_path = store.get_folder_source_path(queue_key)
+                    store.insert_task_batch(
+                        queue_key,
+                        list(controller._scanner.iter_images(source_path)),
+                    )
+                    store.set_folder_scan_state(queue_key, "SCANNED")
+
+                controller._start_scan_worker = synchronous_scan  # type: ignore[method-assign]
+                controller._start_publish_worker = (  # type: ignore[method-assign]
+                    lambda messages, _exchange, _routing_key: published.extend(messages)
+                )
+                controller.on_add_folder_requested([str(folder)])
+
+                summaries = store.get_folder_summaries()
+                self.assertEqual(len(summaries), 2)
+                self.assertEqual([row.source_path for row in summaries], [str(folder), str(folder)])
+                self.assertEqual(
+                    [row.recipe_aliases for row in summaries],
+                    [("Recipe A",), ("Recipe B",)],
+                )
+                self.assertEqual([row.queue_priority for row in summaries], [1, 2])
+
+                controller.on_start_requested()
+
+                self.assertEqual(store.overall_stats()["total"], 4)
+                self.assertEqual(
+                    [message.RECIPE_PATH for message in published],
+                    ["recipes/a.json", "recipes/a.json", "recipes/b.json", "recipes/b.json"],
+                )
+            finally:
+                controller.shutdown()
+                store.close()
 
     def test_recipe_change_between_folder_additions_keeps_each_snapshot(self) -> None:
         config = AppConfig(
@@ -1551,7 +1614,7 @@ class TaskControllerTest(unittest.TestCase):
         self.assertEqual(started.get("queue_name"), "result.q")
         self.assertEqual(started.get("polling_interval"), 1)
         self.assertIn(published_request_ids[0], started.get("tracked_request_ids", set()))
-        self.assertTrue(any("sub_folder 등록 완료" in log for log in view.logs))
+        self.assertTrue(any("하위 폴더 등록 완료" in log for log in view.logs))
 
     def test_on_queue_metrics_updated_updates_view_with_fallback(self) -> None:
         config = AppConfig(

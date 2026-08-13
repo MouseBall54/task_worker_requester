@@ -77,7 +77,7 @@ class MainWindowTest(unittest.TestCase):
             ]
         )
         try:
-            self.assertEqual(dialog.windowTitle(), "중복 폴더 안내")
+            self.assertEqual(dialog.windowTitle(), "중복 폴더+Recipe 안내")
             self.assertEqual(dialog.table.rowCount(), 2)
             self.assertEqual(dialog.table.columnCount(), 2)
             self.assertEqual(dialog.table.item(0, 0).text(), r"D:\data\pending")
@@ -265,6 +265,7 @@ class MainWindowTest(unittest.TestCase):
             self.assertFalse(hasattr(window, "drive_combo"))
             self.assertFalse(hasattr(window, "action_edit"))
             self.assertFalse(hasattr(window, "polling_combo"))
+            self.assertEqual(window.btn_add_subfolders.text(), "하위 폴더 추가")
             self.assertFalse(window.folder_tree.rootIndex().isValid())
             self.assertTrue(window.folder_tree.isHeaderHidden())
             self.assertTrue(hasattr(window, "main_splitter"))

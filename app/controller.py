@@ -202,7 +202,7 @@ class TaskController(QObject):
         if blocked_folders:
             self._log(
                 "삭제 차단 - 전송 중이거나 처리된 폴더는 삭제할 수 없습니다: "
-                + ", ".join(blocked_folders)
+                + ", ".join(self._folder_queue_label(path) for path in blocked_folders)
             )
         if not removed_folders and not blocked_folders:
             self._log("선택 삭제 대상이 없습니다.")
@@ -415,7 +415,10 @@ class TaskController(QObject):
             labels = {"top": "맨 위", "up": "위", "down": "아래", "bottom": "맨 아래"}
             self._log(f"대기 폴더 {len(moved)}개를 {labels.get(operation, operation)}로 이동했습니다.")
         if blocked:
-            self._log("폴더 이동 차단 - 스캔·전송·처리가 시작된 폴더입니다: " + ", ".join(blocked))
+            self._log(
+                "폴더 이동 차단 - 스캔·전송·처리가 시작된 폴더입니다: "
+                + ", ".join(self._folder_queue_label(path) for path in blocked)
+            )
 
     @Slot(list, bool)
     def on_hold_folders_requested(self, folder_paths: list[str], held: bool) -> None:
@@ -432,7 +435,10 @@ class TaskController(QObject):
             if self._active and not held:
                 self._maybe_dispatch_lazy()
         if blocked:
-            self._log("폴더 보류 변경 차단 - 스캔·전송·처리가 시작된 폴더입니다: " + ", ".join(blocked))
+            self._log(
+                "폴더 보류 변경 차단 - 스캔·전송·처리가 시작된 폴더입니다: "
+                + ", ".join(self._folder_queue_label(path) for path in blocked)
+            )
 
     @Slot()
     def on_history_requested(self) -> None:
@@ -1043,7 +1049,7 @@ class TaskController(QObject):
             folder_map,
             recipe_selections=recipe_selections,
         )
-        mode_label = "sub_folder" if include_subfolders else "폴더"
+        mode_label = "하위 폴더" if include_subfolders else "폴더"
         self._log(
             f"{mode_label} 등록 완료 - 스캔 대상 {len(normalized_paths)}개, "
             f"Recipe {len(recipe_selections)}개, 신규 폴더 {added_folders}개, 신규 작업 {added_images}개"
@@ -1130,13 +1136,13 @@ class TaskController(QObject):
             recipe_selections,
         )
         self._log(
-            f"폴더 대기열 등록 완료 - 폴더 {added}개, "
+            f"폴더 대기열 등록 완료 - 대기열 {added}개, "
             f"Recipe {len(recipe_selections)}개 (이미지는 활성 시점에 분할 스캔)"
         )
         self._show_duplicate_folder_notice()
         if self._active and added:
-            self._open_next_lazy_folders(self._available_open_slots())
-            self._maybe_dispatch_lazy()
+            self._inventory_preparing = True
+            self._continue_lazy_inventory()
 
     def _start_folder_discovery(
         self,
@@ -1177,24 +1183,23 @@ class TaskController(QObject):
 
     @Slot(int, int)
     def _on_discovery_batch_registered(self, added: int, total_added: int) -> None:
-        _ = added
-        if self._active:
-            self._open_next_lazy_folders(self._available_open_slots())
-            self._maybe_dispatch_lazy()
+        if self._active and added:
+            self._inventory_preparing = True
+            self._continue_lazy_inventory()
         if total_added and total_added % 500 == 0:
             self._log(f"하위 폴더 탐색 진행 - {total_added}개 등록")
 
     @Slot(int)
     def _on_discovery_completed(self, total_added: int) -> None:
-        self._log(f"하위 폴더 탐색 완료 - 신규 폴더 {total_added}개")
+        self._log(f"하위 폴더 탐색 완료 - 신규 대기열 {total_added}개")
         self._show_duplicate_folder_notice()
         if self._start_after_discovery:
             self._start_after_discovery = False
             self._start_lazy_session()
             return
         if self._active:
-            self._open_next_lazy_folders(self._available_open_slots())
-            self._maybe_dispatch_lazy()
+            self._inventory_preparing = True
+            self._continue_lazy_inventory()
 
     @Slot(str)
     def _on_discovery_failed(self, error: str) -> None:
@@ -1215,10 +1220,18 @@ class TaskController(QObject):
                 if summary is not None and summary.status.is_done
                 else "진행중/대기 폴더"
             )
-            rows.append((folder_path, location))
+            if summary is None:
+                display_name = folder_path
+            else:
+                source_path = summary.source_path or summary.folder_path
+                recipe_label = ", ".join(summary.recipe_aliases)
+                display_name = (
+                    f"{source_path} [{recipe_label}]" if recipe_label else source_path
+                )
+            rows.append((display_name, location))
 
         self._duplicate_folder_paths.clear()
-        self._log(f"중복 폴더 {len(rows)}개는 이미 등록되어 추가하지 않았습니다.")
+        self._log(f"중복 폴더+Recipe {len(rows)}개는 이미 등록되어 추가하지 않았습니다.")
         self._view.show_duplicate_folders(rows)
 
     @Slot()
@@ -1353,12 +1366,33 @@ class TaskController(QObject):
                 break
 
             launched_async = False
-            for folder_path in waiting[:available]:
+            reused_inventory = False
+            active_sources = {
+                self._store.get_folder_source_path(path)  # type: ignore[attr-defined]
+                for path in self._scan_threads
+            }
+            for folder_path in waiting:
+                if available <= 0:
+                    break
+                source_path = self._store.get_folder_source_path(folder_path)  # type: ignore[attr-defined]
+                if source_path in active_sources:
+                    continue
+                if self._store.populate_folder_from_scanned_sibling(folder_path):  # type: ignore[attr-defined]
+                    reused_inventory = True
+                    continue
                 self._store.set_folder_scan_state(folder_path, "SCANNING")  # type: ignore[attr-defined]
                 self._start_scan_worker(folder_path)
-                launched_async = launched_async or folder_path in self._scan_threads
+                if folder_path in self._scan_threads:
+                    launched_async = True
+                    active_sources.add(source_path)
+                    available -= 1
+                else:
+                    reused_inventory = True
             if launched_async:
                 break
+            if reused_inventory:
+                continue
+            break
 
         if self._store.get_waiting_folder_paths() or self._scan_threads:  # type: ignore[attr-defined]
             return
@@ -1398,12 +1432,17 @@ class TaskController(QObject):
     def _start_scan_worker(self, folder_path: str) -> None:
         if folder_path in self._scan_threads:
             return
+        source_path = self._store.get_folder_source_path(folder_path)  # type: ignore[attr-defined]
+        if not source_path:
+            self._on_scan_failed(folder_path, "원본 폴더 경로를 찾을 수 없습니다.")
+            return
         thread = QThread(self)
         worker = ScanWorker(
             scanner=self._scanner,
-            folder_path=folder_path,
+            folder_path=source_path,
             insert_batch=self._store.insert_task_batch,  # type: ignore[attr-defined]
             batch_size=min(1000, max(500, int(self._config.publish.publish_chunk_size))),
+            queue_key=folder_path,
         )
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
@@ -1434,7 +1473,10 @@ class TaskController(QObject):
             folder_path,
             "SCANNED" if total_inserted or (summary is not None and summary.total) else "EMPTY",
         )
-        self._log(f"폴더 분할 스캔 완료 - {folder_path}: Task {total_inserted}건")
+        self._log(
+            f"폴더 분할 스캔 완료 - {self._folder_queue_label(folder_path)}: "
+            f"Task {total_inserted}건"
+        )
         if not self._inventory_preparing:
             self._maybe_dispatch_lazy()
 
@@ -1442,19 +1484,25 @@ class TaskController(QObject):
     def _on_scan_access_issues(self, folder_path: str, inaccessible_count: int) -> None:
         self._store.set_folder_inaccessible_count(folder_path, inaccessible_count)  # type: ignore[attr-defined]
         if inaccessible_count:
-            self._log(f"접근할 수 없어 제외한 이미지 - {folder_path}: {inaccessible_count}건")
+            self._log(
+                f"접근할 수 없어 제외한 이미지 - {self._folder_queue_label(folder_path)}: "
+                f"{inaccessible_count}건"
+            )
 
     @Slot(str, int)
     def _on_scan_stopped(self, folder_path: str, total_inserted: int) -> None:
         self._store.set_folder_scan_state(folder_path, "WAITING")  # type: ignore[attr-defined]
         self._active_folder_paths.discard(folder_path)
-        self._log(f"폴더 스캔 중지 - {folder_path}: 이번 실행에서 Task {total_inserted}건 저장")
+        self._log(
+            f"폴더 스캔 중지 - {self._folder_queue_label(folder_path)}: "
+            f"이번 실행에서 Task {total_inserted}건 저장"
+        )
 
     @Slot(str, str)
     def _on_scan_failed(self, folder_path: str, error: str) -> None:
         self._store.set_folder_scan_state(folder_path, "ERROR")  # type: ignore[attr-defined]
         self._active_folder_paths.discard(folder_path)
-        self._log(f"폴더 스캔 실패 - {folder_path}: {error}")
+        self._log(f"폴더 스캔 실패 - {self._folder_queue_label(folder_path)}: {error}")
         if not self._inventory_preparing:
             self._open_next_lazy_folders(self._available_open_slots())
 
@@ -1463,6 +1511,16 @@ class TaskController(QObject):
         self._scan_workers.pop(folder_path, None)
         if self._inventory_preparing:
             self._continue_lazy_inventory()
+
+    def _folder_queue_label(self, folder_path: str) -> str:
+        """Return a user-facing physical path and Recipe label for a queue key."""
+
+        summary = self._store.get_folder_summary(folder_path)
+        if summary is None:
+            return folder_path
+        source_path = summary.source_path or summary.folder_path
+        recipe_label = ", ".join(summary.recipe_aliases)
+        return f"{source_path} [{recipe_label}]" if recipe_label else source_path
 
     def _lazy_queue_high_watermark(self) -> int:
         fallback = max(1, int(self._config.publish.fallback_max_queued_messages))

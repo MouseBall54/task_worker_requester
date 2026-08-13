@@ -9,7 +9,7 @@ from pathlib import Path
 import sqlite3
 import threading
 from typing import Any
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from models.task_models import FolderSummary, ImageTask, RunHistorySummary, TaskStatus
 from utils.image_sort import compare_image_paths
@@ -220,7 +220,6 @@ class TaskRepository:
         normalized_recipes = _normalize_recipes(recipe_selections)
         if not normalized_recipes:
             return 0
-        recipes_json = json.dumps(normalized_recipes, ensure_ascii=False)
         added = 0
         with self._transaction() as cursor:
             next_position = int(
@@ -229,19 +228,56 @@ class TaskRepository:
                     (self.session_id,),
                 ).fetchone()[0]
             )
-            for folder_path in dict.fromkeys(str(path).strip() for path in folder_paths if str(path).strip()):
-                cursor.execute(
-                    """
-                    INSERT OR IGNORE INTO folders(
-                        session_id, folder_path, position, recipes_json, scan_state
-                    ) VALUES (?, ?, ?, ?, 'WAITING')
-                    """,
-                    (self.session_id, folder_path, next_position, recipes_json),
-                )
-                if cursor.rowcount:
+            for source_path in dict.fromkeys(
+                str(path).strip() for path in folder_paths if str(path).strip()
+            ):
+                for recipe_alias, recipe_path in normalized_recipes:
+                    existing = cursor.execute(
+                        """
+                        SELECT 1 FROM folders
+                        WHERE session_id = ? AND source_path = ? AND recipe_path = ?
+                        """,
+                        (self.session_id, source_path, recipe_path),
+                    ).fetchone()
+                    if existing is not None:
+                        continue
+                    queue_key = self._available_folder_queue_key(cursor, source_path, recipe_path)
+                    cursor.execute(
+                        """
+                        INSERT INTO folders(
+                            session_id, folder_path, source_path, position, recipes_json,
+                            recipe_alias, recipe_path, scan_state
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'WAITING')
+                        """,
+                        (
+                            self.session_id,
+                            queue_key,
+                            source_path,
+                            next_position,
+                            json.dumps([(recipe_alias, recipe_path)], ensure_ascii=False),
+                            recipe_alias,
+                            recipe_path,
+                        ),
+                    )
                     added += 1
                     next_position += 1
         return added
+
+    def _available_folder_queue_key(
+        self,
+        cursor: sqlite3.Cursor,
+        source_path: str,
+        recipe_path: str,
+    ) -> str:
+        """Keep the first queue backward-compatible and key later recipes deterministically."""
+
+        source_key_used = cursor.execute(
+            "SELECT 1 FROM folders WHERE session_id = ? AND folder_path = ?",
+            (self.session_id, source_path),
+        ).fetchone()
+        if source_key_used is None:
+            return source_path
+        return f"recipe-queue:{uuid5(NAMESPACE_URL, source_path + chr(31) + recipe_path)}"
 
     def list_folder_descriptors(
         self,
@@ -260,6 +296,82 @@ class TaskRepository:
         query += " ORDER BY position"
         with self._lock:
             return list(self._connection.execute(query, params).fetchall())
+
+    def folder_source_path(self, folder_path: str) -> str | None:
+        """Resolve an opaque folder queue key to its physical source path."""
+
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT source_path FROM folders WHERE session_id = ? AND folder_path = ?",
+                (self.session_id, folder_path),
+            ).fetchone()
+        return str(row[0]) if row is not None else None
+
+    def populate_folder_from_scanned_sibling(self, folder_path: str) -> bool:
+        """Reuse an already inventoried physical folder for another recipe queue."""
+
+        with self._transaction(immediate=True) as cursor:
+            target = cursor.execute(
+                """
+                SELECT source_path, recipe_alias, recipe_path FROM folders
+                WHERE session_id = ? AND folder_path = ? AND scan_state = 'WAITING'
+                """,
+                (self.session_id, folder_path),
+            ).fetchone()
+            if target is None:
+                return False
+            sibling = cursor.execute(
+                """
+                SELECT folder_path, scan_state FROM folders
+                WHERE session_id = ? AND source_path = ? AND folder_path != ?
+                  AND scan_state IN ('SCANNED', 'EMPTY')
+                ORDER BY position LIMIT 1
+                """,
+                (self.session_id, target["source_path"], folder_path),
+            ).fetchone()
+            if sibling is None:
+                return False
+            if str(sibling["scan_state"]) == "EMPTY":
+                cursor.execute(
+                    """
+                    UPDATE folders SET scan_state = 'EMPTY'
+                    WHERE session_id = ? AND folder_path = ?
+                    """,
+                    (self.session_id, folder_path),
+                )
+                return True
+
+            before = self._connection.total_changes
+            cursor.execute(
+                """
+                INSERT OR IGNORE INTO tasks(
+                    session_id, request_id, folder_path, image_path, recipe_alias,
+                    recipe_path, status, created_at
+                )
+                SELECT session_id, lower(hex(randomblob(16))), ?, image_path, ?, ?, ?, ?
+                FROM tasks
+                WHERE session_id = ? AND folder_path = ?
+                GROUP BY image_path
+                """,
+                (
+                    folder_path,
+                    target["recipe_alias"],
+                    target["recipe_path"],
+                    TaskStatus.PENDING.value,
+                    _now_text(),
+                    self.session_id,
+                    sibling["folder_path"],
+                ),
+            )
+            inserted = self._connection.total_changes - before
+            cursor.execute(
+                """
+                UPDATE folders SET scan_state = 'SCANNED', total_count = ?, pending_count = ?
+                WHERE session_id = ? AND folder_path = ?
+                """,
+                (inserted, inserted, self.session_id, folder_path),
+            )
+        return True
 
     def any_folder_descriptors(self, states: Sequence[str]) -> bool:
         """Check folder scan-state existence without materializing descriptor rows."""
@@ -812,7 +924,7 @@ class TaskRepository:
         with self._lock:
             folder_rows = self._connection.execute(
                 """
-                SELECT folder_path, recipes_json, held, scan_state FROM folders
+                SELECT folder_path, source_path, recipes_json, held, scan_state FROM folders
                 WHERE session_id = ? ORDER BY position
                 """,
                 (self.session_id,),
@@ -848,9 +960,9 @@ class TaskRepository:
                 if recipe_path not in recipe_paths:
                     recipe_paths.append(str(recipe_path))
         return {
-            "folder_paths": [str(row["folder_path"]) for row in folder_rows],
+            "folder_paths": [str(row["source_path"]) for row in folder_rows],
             "scan_error_folders": [
-                str(row["folder_path"])
+                str(row["source_path"])
                 for row in folder_rows
                 if str(row["scan_state"]) == "ERROR"
             ],
@@ -941,12 +1053,16 @@ class TaskRepository:
             return list(
                 self._connection.execute(
                     """
-                    SELECT request_id, folder_path, image_path, recipe_alias, recipe_path,
+                    SELECT t.request_id, f.source_path AS folder_path, t.image_path,
+                           t.recipe_alias, t.recipe_path,
                            status, created_at, sent_at, completed_at, result_json, error_message
-                    FROM tasks WHERE session_id = ?
-                    ORDER BY folder_path COLLATE NOCASE,
-                             image_path COLLATE IMAGE_FILENAME_ASC,
-                             recipe_alias COLLATE NOCASE
+                    FROM tasks t
+                    JOIN folders f
+                      ON f.session_id = t.session_id AND f.folder_path = t.folder_path
+                    WHERE t.session_id = ?
+                    ORDER BY f.source_path COLLATE NOCASE,
+                             t.image_path COLLATE IMAGE_FILENAME_ASC,
+                             t.recipe_alias COLLATE NOCASE
                     """,
                     (session_id,),
                 ).fetchall()
@@ -1058,8 +1174,11 @@ class TaskRepository:
             CREATE TABLE IF NOT EXISTS folders(
                 session_id TEXT NOT NULL,
                 folder_path TEXT NOT NULL,
+                source_path TEXT NOT NULL,
                 position INTEGER NOT NULL,
                 recipes_json TEXT NOT NULL,
+                recipe_alias TEXT NOT NULL,
+                recipe_path TEXT NOT NULL,
                 scan_state TEXT NOT NULL,
                 total_count INTEGER NOT NULL DEFAULT 0,
                 pending_count INTEGER NOT NULL DEFAULT 0,
@@ -1108,6 +1227,13 @@ class TaskRepository:
         )
         self._migrate_session_columns()
         self._migrate_folder_columns()
+        self._migrate_recipe_queue_rows()
+        self._connection.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_folders_session_source_recipe
+            ON folders(session_id, source_path, recipe_path)
+            """
+        )
         self._connection.commit()
 
     def _migrate_session_columns(self) -> None:
@@ -1140,12 +1266,147 @@ class TaskRepository:
         definitions = {
             "held": "INTEGER NOT NULL DEFAULT 0",
             "inaccessible_count": "INTEGER NOT NULL DEFAULT 0",
+            "source_path": "TEXT NOT NULL DEFAULT ''",
+            "recipe_alias": "TEXT NOT NULL DEFAULT ''",
+            "recipe_path": "TEXT NOT NULL DEFAULT ''",
         }
         for column, definition in definitions.items():
             if column not in existing:
                 self._connection.execute(
                     f"ALTER TABLE folders ADD COLUMN {column} {definition}"
                 )
+
+    def _migrate_recipe_queue_rows(self) -> None:
+        """Split legacy multi-recipe folders into one persisted queue row per recipe."""
+
+        legacy_rows = self._connection.execute(
+            """
+            SELECT * FROM folders
+            WHERE source_path = '' OR recipe_path = ''
+            ORDER BY session_id, position
+            """
+        ).fetchall()
+        if not legacy_rows:
+            return
+
+        folder_columns = [
+            str(row["name"])
+            for row in self._connection.execute("PRAGMA table_info(folders)").fetchall()
+        ]
+        counter_columns = tuple(_COUNTER_COLUMN.values())
+        sessions_to_reposition: set[str] = set()
+        for row in legacy_rows:
+            session_id = str(row["session_id"])
+            legacy_key = str(row["folder_path"])
+            source_path = str(row["source_path"] or legacy_key)
+            loaded = json.loads(str(row["recipes_json"] or "[]"))
+            recipes = _normalize_recipes(
+                (str(item[0]), str(item[1]))
+                for item in loaded
+                if isinstance(item, (list, tuple)) and len(item) >= 2
+            )
+            if not recipes:
+                recipes = [(source_path, str(row["recipe_path"] or ""))]
+
+            for recipe_index, (recipe_alias, recipe_path) in enumerate(recipes):
+                queue_key = legacy_key
+                if recipe_index:
+                    queue_key = (
+                        f"recipe-queue:{uuid5(NAMESPACE_URL, source_path + chr(31) + recipe_path)}"
+                    )
+                    values = {column: row[column] for column in folder_columns}
+                    values.update(
+                        {
+                            "folder_path": queue_key,
+                            "source_path": source_path,
+                            "recipe_alias": recipe_alias,
+                            "recipe_path": recipe_path,
+                            "recipes_json": json.dumps(
+                                [(recipe_alias, recipe_path)], ensure_ascii=False
+                            ),
+                            "position": int(row["position"]) + recipe_index,
+                        }
+                    )
+                    for column in counter_columns:
+                        values[column] = 0
+                    values["inaccessible_count"] = 0
+                    placeholders = ", ".join("?" for _ in folder_columns)
+                    self._connection.execute(
+                        f"INSERT OR IGNORE INTO folders({', '.join(folder_columns)}) "
+                        f"VALUES ({placeholders})",
+                        [values[column] for column in folder_columns],
+                    )
+                    self._connection.execute(
+                        """
+                        UPDATE tasks SET folder_path = ?
+                        WHERE session_id = ? AND folder_path = ? AND recipe_path = ?
+                        """,
+                        (queue_key, session_id, legacy_key, recipe_path),
+                    )
+                else:
+                    self._connection.execute(
+                        """
+                        UPDATE folders
+                        SET source_path = ?, recipe_alias = ?, recipe_path = ?, recipes_json = ?
+                        WHERE session_id = ? AND folder_path = ?
+                        """,
+                        (
+                            source_path,
+                            recipe_alias,
+                            recipe_path,
+                            json.dumps([(recipe_alias, recipe_path)], ensure_ascii=False),
+                            session_id,
+                            legacy_key,
+                        ),
+                    )
+            sessions_to_reposition.add(session_id)
+
+        for session_id in sessions_to_reposition:
+            queue_rows = self._connection.execute(
+                """
+                SELECT folder_path FROM folders
+                WHERE session_id = ? ORDER BY position, rowid
+                """,
+                (session_id,),
+            ).fetchall()
+            for position, queue_row in enumerate(queue_rows):
+                self._connection.execute(
+                    "UPDATE folders SET position = ? WHERE session_id = ? AND folder_path = ?",
+                    (position, session_id, queue_row["folder_path"]),
+                )
+
+        self._rebuild_folder_counters()
+
+    def _rebuild_folder_counters(self) -> None:
+        """Recompute aggregate counters after splitting legacy folder rows."""
+
+        counter_columns = tuple(_COUNTER_COLUMN.values())
+        self._connection.execute(
+            "UPDATE folders SET " + ", ".join(f"{column} = 0" for column in counter_columns)
+        )
+        rows = self._connection.execute(
+            """
+            SELECT session_id, folder_path, status, COUNT(*) AS count
+            FROM tasks GROUP BY session_id, folder_path, status
+            """
+        ).fetchall()
+        for row in rows:
+            status = TaskStatus(str(row["status"]))
+            counter = _COUNTER_COLUMN[status]
+            self._connection.execute(
+                f"""
+                UPDATE folders SET {counter} = ?
+                WHERE session_id = ? AND folder_path = ?
+                """,
+                (int(row["count"]), row["session_id"], row["folder_path"]),
+            )
+        self._connection.execute(
+            """
+            UPDATE folders SET total_count = pending_count + claimed_count + sent_count
+                + running_count + success_count + fail_count + timeout_count
+                + error_count + cancelled_count
+            """
+        )
 
     def _resume_or_create_session(self) -> str:
         row = self._connection.execute(
@@ -1277,6 +1538,7 @@ def _folder_row_to_summary(row: sqlite3.Row) -> FolderSummary:
         stage_label=stage_label,
         held=held,
         queue_priority=int(row["position"]) + 1,
+        source_path=str(row["source_path"] or row["folder_path"]),
     )
 
 
