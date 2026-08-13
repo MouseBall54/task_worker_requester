@@ -31,17 +31,14 @@ class FolderScanner:
 
         normalized_folder = os.path.normpath(folder_path)
         if not os.path.isdir(normalized_folder):
-            return
-        try:
-            with os.scandir(normalized_folder) as entries:
-                for entry in entries:
-                    if not entry.is_file(follow_symlinks=False):
-                        continue
-                    _, extension = os.path.splitext(entry.name)
-                    if extension.lower() in self._extensions:
-                        yield os.path.normpath(entry.path)
-        except OSError:
-            return
+            raise FileNotFoundError(f"폴더에 접근할 수 없습니다: {normalized_folder}")
+        with os.scandir(normalized_folder) as entries:
+            for entry in entries:
+                if not entry.is_file(follow_symlinks=False):
+                    continue
+                _, extension = os.path.splitext(entry.name)
+                if extension.lower() in self._extensions:
+                    yield os.path.normpath(entry.path)
 
     def discover_image_folders(self, parent_folder: str, mode: str = "direct") -> Iterator[str]:
         """Yield image-containing child folders without materializing image lists."""

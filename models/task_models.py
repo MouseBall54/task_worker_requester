@@ -111,6 +111,36 @@ class FolderSummary:
     status: TaskStatus
     recipe_aliases: tuple[str, ...] = ()
     stage_label: str = ""
+    held: bool = False
+    queue_priority: int = 0
+
+
+@dataclass(slots=True)
+class RunHistorySummary:
+    """Compact aggregate for one persisted execution session."""
+
+    session_id: str
+    state: str
+    created_at: str
+    ended_at: str | None
+    folder_count: int
+    recipe_count: int
+    total: int
+    success: int
+    fail: int
+    timeout: int
+    error: int
+    cancelled: int
+    avg_processing_seconds: float | None = None
+    error_types: tuple[str, ...] = ()
+
+    @property
+    def completed(self) -> int:
+        return self.success + self.fail + self.timeout + self.error + self.cancelled
+
+    @property
+    def success_rate(self) -> float:
+        return (self.success / self.total * 100.0) if self.total else 0.0
 
 
 @dataclass(slots=True)

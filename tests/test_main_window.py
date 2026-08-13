@@ -5,10 +5,10 @@ from __future__ import annotations
 import unittest
 
 from config.models import AppConfig, PublishConfig, RabbitMQConfig, RecipeConfig, RecipeItem, UiConfig
-from models.task_models import FolderSummary, TaskStatus
+from models.task_models import FolderSummary, RunHistorySummary, TaskStatus
 
 try:
-    from PySide6.QtCore import Qt
+    from PySide6.QtCore import QItemSelectionModel, Qt
     from PySide6.QtGui import QStandardItem, QStandardItemModel
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import (
@@ -23,8 +23,10 @@ try:
         DuplicateFolderDialog,
         FolderTreeView,
         MainWindow,
+        PreflightDialog,
         RecipePathRow,
         ResponsiveRecipeSettings,
+        RunHistoryDialog,
     )
 
     PYSIDE_AVAILABLE = True
@@ -83,6 +85,139 @@ class MainWindowTest(unittest.TestCase):
             self.assertEqual(dialog.table.item(1, 1).text(), "완료된 폴더")
         finally:
             dialog.close()
+
+    def test_preflight_dialog_blocks_start_when_broker_is_unavailable(self) -> None:
+        report = {
+            "folder_count": 2,
+            "held_folder_count": 0,
+            "recipe_count": 1,
+            "image_count": 6000,
+            "message_count": 12000,
+            "dispatchable_message_count": 12000,
+            "missing_recipes": ["missing.json"],
+            "inaccessible_folders": [],
+            "inaccessible_image_count": 0,
+            "broker_connected": False,
+            "request_queue": "request.queue",
+            "priority": 2,
+            "initial_open_folders": 1,
+            "max_active_open_folders": 3,
+            "warning_threshold": 10000,
+            "threshold_exceeded": True,
+            "issues": ["RabbitMQ 연결 실패"],
+        }
+        dialog = PreflightDialog(report)
+        try:
+            self.assertEqual(dialog.windowTitle(), "전송 전 사전 점검")
+            self.assertEqual(dialog.summary_table.rowCount(), 10)
+            self.assertFalse(dialog.start_button.isEnabled())
+        finally:
+            dialog.close()
+
+    def test_run_history_dialog_lists_aggregates_and_export_selection(self) -> None:
+        row = RunHistorySummary(
+            session_id="session-1",
+            state="COMPLETED",
+            created_at="2026-08-13T01:00:00+00:00",
+            ended_at="2026-08-13T02:00:00+00:00",
+            folder_count=2,
+            recipe_count=1,
+            total=10,
+            success=8,
+            fail=1,
+            timeout=1,
+            error=0,
+            cancelled=0,
+        )
+        dialog = RunHistoryDialog([row])
+        exported: list[str] = []
+        dialog.export_requested.connect(exported.append)
+        try:
+            self.assertEqual(dialog.table.rowCount(), 1)
+            self.assertEqual(dialog.table.item(0, 8).text(), "80.0%")
+            dialog.export_button.click()
+            self.assertEqual(exported, ["session-1"])
+        finally:
+            dialog.close()
+
+    def test_paused_state_uses_explicit_resume_label(self) -> None:
+        window = self._make_window()
+        try:
+            window.set_paused_state(True)
+            self.assertEqual(window.btn_start.text(), "전송 재개")
+            self.assertTrue(window.btn_start.isEnabled())
+            self.assertFalse(window.btn_stop.isEnabled())
+            self.assertFalse(window.recipe_multi_button.isEnabled())
+        finally:
+            window.close()
+
+    def test_pending_folder_controls_emit_move_and_hold_requests(self) -> None:
+        window = self._make_window()
+        moves: list[tuple[list[str], str]] = []
+        holds: list[tuple[list[str], bool]] = []
+        window.move_folders_requested.connect(lambda paths, operation: moves.append((paths, operation)))
+        window.hold_folders_requested.connect(lambda paths, held: holds.append((paths, held)))
+        try:
+            window.show()
+            self._app.processEvents()
+            window.set_folder_rows(
+                [
+                    FolderSummary(
+                        folder_path="first",
+                        total=1,
+                        completed=0,
+                        success=0,
+                        fail=0,
+                        timeout=0,
+                        error=0,
+                        progress=0.0,
+                        status=TaskStatus.PENDING,
+                    ),
+                    FolderSummary(
+                        folder_path="second",
+                        total=1,
+                        completed=0,
+                        success=0,
+                        fail=0,
+                        timeout=0,
+                        error=0,
+                        progress=0.0,
+                        status=TaskStatus.PENDING,
+                    ),
+                ]
+            )
+            selected_index = window.active_folder_table_model.index(1, 0)
+            selection_model = window.active_folder_table.selectionModel()
+            selection_model.setCurrentIndex(
+                selected_index,
+                QItemSelectionModel.ClearAndSelect
+                | QItemSelectionModel.Rows
+                | QItemSelectionModel.Current,
+            )
+            self._app.processEvents()
+            self.assertEqual(
+                window._selected_folder_paths_from_table(
+                    window.active_folder_table,
+                    window.active_folder_table_model,
+                ),
+                ["second"],
+            )
+            for button in (
+                window.btn_move_folder_top,
+                window.btn_move_folder_bottom,
+                window.btn_hold_folders,
+                window.btn_release_folders,
+            ):
+                button.setEnabled(True)
+            window.btn_move_folder_top.click()
+            window.btn_move_folder_bottom.click()
+            window.btn_hold_folders.click()
+            window.btn_release_folders.click()
+
+            self.assertEqual(moves, [(["second"], "top"), (["second"], "bottom")])
+            self.assertEqual(holds, [(["second"], True), (["second"], False)])
+        finally:
+            window.close()
 
     def test_log_document_is_bounded_by_configuration(self) -> None:
         window = self._make_window()

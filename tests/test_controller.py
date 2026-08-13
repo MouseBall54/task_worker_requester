@@ -40,6 +40,10 @@ class DummyView(QObject if PYSIDE_AVAILABLE else object):
         reset_requested = Signal()
         folder_row_selected = Signal(str)
         mq_preview_requested = Signal(str)
+        move_folders_requested = Signal(list, str)
+        hold_folders_requested = Signal(list, bool)
+        history_requested = Signal()
+        history_export_requested = Signal(str, str)
 
     def __init__(self) -> None:
         if PYSIDE_AVAILABLE:
@@ -53,6 +57,12 @@ class DummyView(QObject if PYSIDE_AVAILABLE else object):
         self.runtime_options_enabled = True
         self.recipe_selections = [("Recipe", "recipe.json")]
         self.duplicate_folder_notifications: list[list[tuple[str, str]]] = []
+        self.preflight_reports: list[dict] = []
+        self.preflight_accepted = True
+        self.paused = False
+        self.resume_paused_accepted = False
+        self.paused_resume_counts: list[int] = []
+        self.history_rows: list = []
         self._disable_queue_metrics_monitor = True
 
     def set_running_state(self, running: bool) -> None:
@@ -60,6 +70,9 @@ class DummyView(QObject if PYSIDE_AVAILABLE else object):
 
     def set_runtime_options_enabled(self, enabled: bool) -> None:
         self.runtime_options_enabled = enabled
+
+    def set_paused_state(self, paused: bool) -> None:
+        self.paused = paused
 
     def set_connection_status(self, connected: bool, label: str) -> None:
         self.connection = (connected, label)
@@ -99,6 +112,20 @@ class DummyView(QObject if PYSIDE_AVAILABLE else object):
 
     def show_duplicate_folders(self, rows: list[tuple[str, str]]) -> None:
         self.duplicate_folder_notifications.append(list(rows))
+
+    def confirm_preflight(self, report: dict) -> bool:
+        self.preflight_reports.append(dict(report))
+        return self.preflight_accepted
+
+    def confirm_resume_paused(self, pending_count: int) -> bool:
+        self.paused_resume_counts.append(pending_count)
+        return self.resume_paused_accepted
+
+    def show_run_history(self, rows: list) -> None:
+        self.history_rows = list(rows)
+
+    def show_history_export_result(self, _destination: str, _row_count: int) -> None:
+        return
 
     def current_runtime_settings(self) -> tuple[str, str, int, int]:
         return ("RUN_RECIPE", "recipe.json", 1, 0)
@@ -1552,6 +1579,183 @@ class TaskControllerTest(unittest.TestCase):
 
         controller._on_queue_metrics_updated(-1, -1)
         self.assertEqual(view.queue_metrics, (None, None))
+
+    def test_user_stop_persists_pause_and_start_resumes_it(self) -> None:
+        config = AppConfig(
+            rabbitmq=RabbitMQConfig(host="127.0.0.1", port=5672, username="guest", password="guest"),
+            publish=PublishConfig(image_extensions=[".jpg"]),
+            ui=UiConfig(),
+            mock_mode=True,
+        )
+        view = DummyView()
+        logger = logging.getLogger("controller_user_pause_test")
+        logger.handlers.clear()
+        logger.addHandler(logging.NullHandler())
+        with TemporaryDirectory() as temp_dir:
+            store = SqliteTaskStore(Path(temp_dir) / "tasks.sqlite3")
+            store.register_folder_descriptors(["folder"], [("Recipe", "recipe.json")])
+            store.insert_task_batch("folder", ["a.jpg"])
+            store.set_folder_scan_state("folder", "SCANNED")
+            store.save_runtime_settings("RUN", "result.queue", 0, 1)
+            controller = TaskController(
+                config=config,
+                view=view,  # type: ignore[arg-type]
+                store=store,
+                broker_provider=build_broker_provider(config),
+                logger=logger,
+            )
+            try:
+                controller._active = True
+                controller.on_stop_requested()
+                self.assertTrue(store.is_paused_by_user())
+                self.assertFalse(store.should_auto_resume())
+                self.assertTrue(view.paused)
+
+                controller._start_lazy_session = lambda _settings=None: None  # type: ignore[method-assign]
+                controller.on_start_requested()
+                self.assertFalse(store.is_paused_by_user())
+                self.assertTrue(store.should_auto_resume())
+            finally:
+                controller.shutdown()
+                store.close()
+
+    def test_startup_keeps_user_paused_session_stopped_when_resume_is_declined(self) -> None:
+        config = AppConfig(
+            rabbitmq=RabbitMQConfig(host="127.0.0.1", port=5672, username="guest", password="guest"),
+            publish=PublishConfig(image_extensions=[".jpg"]),
+            ui=UiConfig(),
+            mock_mode=True,
+        )
+        view = DummyView()
+        view.resume_paused_accepted = False
+        logger = logging.getLogger("controller_startup_pause_prompt_test")
+        logger.handlers.clear()
+        logger.addHandler(logging.NullHandler())
+        with TemporaryDirectory() as temp_dir:
+            database = Path(temp_dir) / "tasks.sqlite3"
+            original = SqliteTaskStore(database)
+            original.register_folder_descriptors(["folder"], [("Recipe", "recipe.json")])
+            original.insert_task_batch("folder", ["a.jpg"])
+            original.save_runtime_settings("RUN", "result.queue", 0, 1)
+            original.pause_by_user()
+            original.close()
+
+            restored = SqliteTaskStore(database)
+            controller = TaskController(
+                config=config,
+                view=view,  # type: ignore[arg-type]
+                store=restored,
+                broker_provider=build_broker_provider(config),
+                logger=logger,
+            )
+            try:
+                self._app.processEvents()
+                self.assertEqual(view.paused_resume_counts, [1])
+                self.assertTrue(view.paused)
+                self.assertFalse(controller._active)
+                self.assertTrue(restored.is_paused_by_user())
+            finally:
+                controller.shutdown()
+                restored.close()
+
+    def test_preflight_cancel_stops_before_first_publish_and_persists_pause(self) -> None:
+        config = AppConfig(
+            rabbitmq=RabbitMQConfig(host="127.0.0.1", port=5672, username="guest", password="guest"),
+            publish=PublishConfig(
+                image_extensions=[".jpg"],
+                initial_open_folders=1,
+                max_active_open_folders=1,
+            ),
+            ui=UiConfig(),
+            mock_mode=True,
+        )
+        view = DummyView()
+        view.preflight_accepted = False
+        logger = logging.getLogger("controller_preflight_cancel_test")
+        logger.handlers.clear()
+        logger.addHandler(logging.NullHandler())
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            folder = root / "images"
+            folder.mkdir()
+            (folder / "1.jpg").write_text("x", encoding="utf-8")
+            store = SqliteTaskStore(root / "tasks.sqlite3")
+            controller = TaskController(
+                config=config,
+                view=view,  # type: ignore[arg-type]
+                store=store,
+                broker_provider=build_broker_provider(config),
+                logger=logger,
+            )
+            published: list = []
+
+            def synchronous_scan(folder_path: str) -> None:
+                store.insert_task_batch(folder_path, list(controller._scanner.iter_images(folder_path)))
+                store.set_folder_scan_state(folder_path, "SCANNED")
+
+            controller._start_scan_worker = synchronous_scan  # type: ignore[method-assign]
+            controller._start_publish_worker = lambda *args: published.append(args)  # type: ignore[method-assign]
+            try:
+                controller.on_add_folder_requested([str(folder)])
+                controller.on_start_requested()
+                self.assertEqual(published, [])
+                self.assertEqual(len(view.preflight_reports), 1)
+                self.assertEqual(view.preflight_reports[0]["message_count"], 1)
+                self.assertTrue(store.is_paused_by_user())
+            finally:
+                controller.shutdown()
+                store.close()
+
+    def test_paused_session_folder_priority_change_persists_without_publishing(self) -> None:
+        config = AppConfig(
+            rabbitmq=RabbitMQConfig(host="127.0.0.1", port=5672, username="guest", password="guest"),
+            publish=PublishConfig(image_extensions=[".jpg"]),
+            ui=UiConfig(),
+            mock_mode=True,
+        )
+        view = DummyView()
+        view.resume_paused_accepted = False
+        logger = logging.getLogger("controller_paused_priority_test")
+        logger.handlers.clear()
+        logger.addHandler(logging.NullHandler())
+        with TemporaryDirectory() as temp_dir:
+            database = Path(temp_dir) / "tasks.sqlite3"
+            store = SqliteTaskStore(database)
+            store.register_folder_descriptors(
+                ["first", "second", "third"], [("Recipe", "recipe.json")]
+            )
+            for folder in ("first", "second", "third"):
+                store.insert_task_batch(folder, [f"{folder}.jpg"])
+                store.set_folder_scan_state(folder, "SCANNED")
+            store.save_runtime_settings("RUN", "result.queue", 0, 1)
+            store.pause_by_user()
+            controller = TaskController(
+                config=config,
+                view=view,  # type: ignore[arg-type]
+                store=store,
+                broker_provider=build_broker_provider(config),
+                logger=logger,
+            )
+            try:
+                self._app.processEvents()
+                controller.on_move_folders_requested(["first"], "bottom")
+                self.assertTrue(store.is_paused_by_user())
+                self.assertFalse(controller._active)
+                self.assertEqual(store.get_folder_paths(), ["second", "third", "first"])
+                self.assertEqual(
+                    [summary.queue_priority for summary in store.get_folder_summaries()],
+                    [1, 2, 3],
+                )
+            finally:
+                controller.shutdown()
+                store.close()
+
+            restored = SqliteTaskStore(database)
+            try:
+                self.assertTrue(restored.is_paused_by_user())
+                self.assertEqual(restored.get_folder_paths(), ["second", "third", "first"])
+            finally:
+                restored.close()
 
     def test_start_requested_locks_runtime_options_and_stop_keeps_lock(self) -> None:
         config = AppConfig(

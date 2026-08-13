@@ -129,6 +129,82 @@ class SqliteTaskStoreTest(unittest.TestCase):
             finally:
                 store.close()
 
+    def test_preflight_uses_persisted_inventory_and_reports_hold_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            folder = root / "images"
+            folder.mkdir()
+            image = folder / "1.jpg"
+            image.write_text("x", encoding="utf-8")
+            recipe = root / "recipe.json"
+            recipe.write_text("{}", encoding="utf-8")
+            store = SqliteTaskStore(root / "tasks.sqlite3")
+            try:
+                store.register_folder_descriptors([str(folder)], [("R", str(recipe))])
+                store.insert_task_batch(str(folder), [str(image)])
+                store.set_folder_scan_state(str(folder), "SCANNED")
+                store.set_folders_held([str(folder)], True)
+
+                report = store.build_preflight_report(
+                    broker_connected=True,
+                    request_queue="request.queue",
+                    priority=3,
+                    initial_open_folders=1,
+                    max_active_open_folders=2,
+                    warning_threshold=1,
+                )
+
+                self.assertEqual(report["folder_count"], 1)
+                self.assertEqual(report["recipe_count"], 1)
+                self.assertEqual(report["image_count"], 1)
+                self.assertEqual(report["message_count"], 1)
+                self.assertEqual(report["dispatchable_message_count"], 0)
+                self.assertEqual(report["held_folder_count"], 1)
+                self.assertTrue(report["threshold_exceeded"])
+                self.assertEqual(report["issues"], [])
+            finally:
+                store.close()
+
+    def test_history_csv_export_preserves_archived_task_details(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store = SqliteTaskStore(root / "tasks.sqlite3")
+            try:
+                store.register_folder_descriptors(["folder"], [("R", "r.json")])
+                store.insert_task_batch("folder", ["a.jpg"])
+                session_id = store.repository.session_id
+                store.reset()
+                destination = root / "history.csv"
+
+                exported = store.export_run_history_csv(session_id, destination)
+
+                self.assertEqual(exported, 1)
+                text = destination.read_text(encoding="utf-8-sig")
+                self.assertIn("request_id,folder_path,image_path", text)
+                self.assertIn("folder,a.jpg,R,r.json,PENDING", text)
+            finally:
+                store.close()
+
+    def test_completed_session_allows_same_folder_in_a_new_run(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = SqliteTaskStore(Path(temp_dir) / "tasks.sqlite3")
+            try:
+                store.register_folder_descriptors(["folder"], [("R", "r.json")])
+                store.insert_task_batch("folder", ["a.jpg"])
+                original_session = store.repository.session_id
+                store.complete_session()
+
+                added = store.register_folder_descriptors(["folder"], [("R", "r.json")])
+
+                self.assertEqual(added, 1)
+                self.assertNotEqual(store.repository.session_id, original_session)
+                self.assertEqual(store.get_folder_paths(), ["folder"])
+                history = store.list_run_history()
+                self.assertEqual(history[-1].session_id, original_session)
+                self.assertEqual(history[-1].state, "COMPLETED")
+            finally:
+                store.close()
+
 
 if __name__ == "__main__":
     unittest.main()

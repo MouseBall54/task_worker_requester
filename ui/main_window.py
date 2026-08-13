@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QToolButton,
     QDialog,
+    QFileDialog,
     QFileSystemModel,
     QFrame,
     QGroupBox,
@@ -45,7 +46,7 @@ from PySide6.QtWidgets import (
 
 from app.runtime_paths import resolve_ui_icon_path
 from config.models import AppConfig
-from models.task_models import FolderSummary, ImageTask
+from models.task_models import FolderSummary, ImageTask, RunHistorySummary
 from ui.help_dialog import HelpDialog
 from ui.models import FolderTableModel, ImageTableModel, ProgressBarDelegate
 from ui.widgets import MQButtonDelegate, StatusBadgeDelegate
@@ -157,6 +158,149 @@ class DuplicateFolderDialog(QDialog):
         buttons.rejected.connect(self.reject)
         buttons.accepted.connect(self.accept)
         layout.addWidget(buttons)
+
+
+class PreflightDialog(QDialog):
+    """Confirm the fully inventoried workload immediately before publishing."""
+
+    def __init__(self, report: dict[str, Any], parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("전송 전 사전 점검")
+        self.resize(760, 560)
+        layout = QVBoxLayout(self)
+
+        total = int(report.get("message_count", 0))
+        threshold = int(report.get("warning_threshold", 0))
+        heading = QLabel(
+            f"전체 모수 산정이 완료되었습니다. 최종 MQ 메시지 {total:,}건을 확인하세요."
+        )
+        heading.setWordWrap(True)
+        layout.addWidget(heading)
+
+        summary = QTableWidget(10, 2, self)
+        self.summary_table = summary
+        summary.setHorizontalHeaderLabels(["점검 항목", "결과"])
+        summary.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        summary.setSelectionMode(QAbstractItemView.NoSelection)
+        summary.verticalHeader().setVisible(False)
+        summary.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        summary.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        summary_rows = [
+            ("폴더", f"{int(report.get('folder_count', 0)):,}개 (보류 {int(report.get('held_folder_count', 0)):,}개)"),
+            ("Recipe", f"{int(report.get('recipe_count', 0)):,}개"),
+            ("고유 이미지", f"{int(report.get('image_count', 0)):,}개"),
+            ("최종 메시지", f"{total:,}건"),
+            ("이번 전송 대상", f"{int(report.get('dispatchable_message_count', total)):,}건"),
+            ("Recipe 파일", f"누락 {len(report.get('missing_recipes', [])):,}개"),
+            ("폴더 접근", f"접근 불가 {len(report.get('inaccessible_folders', [])):,}개"),
+            ("이미지 접근", f"접근 불가 {int(report.get('inaccessible_image_count', 0)):,}개"),
+            (
+                "RabbitMQ",
+                (
+                    f"연결 가능 · Worker {report.get('worker_count', '-')} · "
+                    f"대기 메시지 {report.get('queued_message_count', '-')}"
+                    if report.get("broker_connected")
+                    else "연결 실패"
+                ),
+            ),
+            (
+                "전송 정책",
+                f"queue={report.get('request_queue', '')}, priority={report.get('priority', 0)}, "
+                f"초기 {report.get('initial_open_folders', 0)}개 / 최대 {report.get('max_active_open_folders', 0)}개",
+            ),
+        ]
+        for row_index, (label, value) in enumerate(summary_rows):
+            summary.setItem(row_index, 0, QTableWidgetItem(label))
+            summary.setItem(row_index, 1, QTableWidgetItem(value))
+        layout.addWidget(summary)
+
+        warnings: list[str] = []
+        if report.get("threshold_exceeded"):
+            warnings.append(f"설정된 대량 작업 확인 기준 {threshold:,}건 이상입니다.")
+        warnings.extend(str(item) for item in report.get("issues", []))
+        detail_paths = [
+            *(f"Recipe 누락: {path}" for path in report.get("missing_recipes", [])[:10]),
+            *(f"폴더 접근 불가: {path}" for path in report.get("inaccessible_folders", [])[:10]),
+        ]
+        notice = QTextEdit(self)
+        notice.setReadOnly(True)
+        notice.setPlainText("\n".join([*warnings, *detail_paths]) or "차단 또는 경고 항목이 없습니다.")
+        notice.setMaximumHeight(150)
+        layout.addWidget(notice)
+
+        buttons = QDialogButtonBox(parent=self)
+        self.start_button = buttons.addButton("확인 후 전송 시작", QDialogButtonBox.AcceptRole)
+        cancel_button = buttons.addButton("취소", QDialogButtonBox.RejectRole)
+        self.start_button.setEnabled(
+            bool(report.get("broker_connected"))
+            and int(report.get("dispatchable_message_count", total)) > 0
+        )
+        self.start_button.clicked.connect(self.accept)
+        cancel_button.clicked.connect(self.reject)
+        layout.addWidget(buttons)
+
+
+class RunHistoryDialog(QDialog):
+    """Browse persisted run aggregates and request CSV export."""
+
+    export_requested = Signal(str)
+
+    def __init__(self, rows: list[RunHistorySummary], parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("실행 이력")
+        self.resize(1100, 520)
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel(f"보존된 실행 이력 {len(rows)}건"))
+
+        headers = [
+            "시작", "종료", "상태", "폴더", "Recipe", "전체", "성공", "실패",
+            "성공률", "평균 처리", "주요 오류",
+        ]
+        self.table = QTableWidget(len(rows), len(headers), self)
+        self.table.setHorizontalHeaderLabels(headers)
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.table.verticalHeader().setVisible(False)
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        self._session_ids: list[str] = []
+        for row_index, item in enumerate(rows):
+            self._session_ids.append(item.session_id)
+            failed = item.fail + item.timeout + item.error + item.cancelled
+            values = [
+                item.created_at,
+                item.ended_at or "-",
+                item.state,
+                str(item.folder_count),
+                str(item.recipe_count),
+                str(item.total),
+                str(item.success),
+                str(failed),
+                f"{item.success_rate:.1f}%",
+                (
+                    f"{item.avg_processing_seconds:.1f}s"
+                    if item.avg_processing_seconds is not None
+                    else "-"
+                ),
+                "; ".join(item.error_types[:3]) or "-",
+            ]
+            for column, value in enumerate(values):
+                self.table.setItem(row_index, column, QTableWidgetItem(value))
+        if rows:
+            self.table.selectRow(0)
+        layout.addWidget(self.table, stretch=1)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Close, parent=self)
+        self.export_button = buttons.addButton("선택 이력 CSV 내보내기", QDialogButtonBox.ActionRole)
+        self.export_button.setEnabled(bool(rows))
+        self.export_button.clicked.connect(self._emit_export)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _emit_export(self) -> None:
+        row = self.table.currentRow()
+        if 0 <= row < len(self._session_ids):
+            self.export_requested.emit(self._session_ids[row])
 
 
 class ResponsiveRecipeSettings(QWidget):
@@ -338,6 +482,10 @@ class MainWindow(QMainWindow):
     folder_row_selected = Signal(str)
     mq_preview_requested = Signal(str)
     image_page_requested = Signal(int)
+    move_folders_requested = Signal(list, str)
+    hold_folders_requested = Signal(list, bool)
+    history_requested = Signal()
+    history_export_requested = Signal(str, str)
 
     def __init__(self, config: AppConfig) -> None:
         super().__init__()
@@ -352,6 +500,7 @@ class MainWindow(QMainWindow):
         self._initial_scroll_alignment_done = False
         self._last_status_sidebar_width = 440
         self._help_dialog: HelpDialog | None = None
+        self._history_dialog: RunHistoryDialog | None = None
         self._runtime_options_enabled = True
         self._image_page_has_more = False
         self._image_page_request_pending = False
@@ -362,6 +511,11 @@ class MainWindow(QMainWindow):
 
     def _build_menu_bar(self) -> None:
         """Build top-level app actions."""
+
+        task_menu = self.menuBar().addMenu("작업")
+        self.action_open_history = QAction("실행 이력", self)
+        self.action_open_history.triggered.connect(self.history_requested.emit)
+        task_menu.addAction(self.action_open_history)
 
         help_menu = self.menuBar().addMenu("도움말")
         self.action_open_help = QAction("도움말 열기", self)
@@ -667,6 +821,28 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.active_folder_table, stretch=11)
 
         action_row = QHBoxLayout()
+        self.btn_move_folder_top = QPushButton("맨 위")
+        self.btn_move_folder_up = QPushButton("위")
+        self.btn_move_folder_down = QPushButton("아래")
+        self.btn_move_folder_bottom = QPushButton("맨 아래")
+        self.btn_hold_folders = QPushButton("보류")
+        self.btn_release_folders = QPushButton("보류 해제")
+        for button in (
+            self.btn_move_folder_top,
+            self.btn_move_folder_up,
+            self.btn_move_folder_down,
+            self.btn_move_folder_bottom,
+            self.btn_hold_folders,
+            self.btn_release_folders,
+        ):
+            button.setEnabled(False)
+            action_row.addWidget(button)
+        self.btn_move_folder_top.clicked.connect(lambda: self._emit_folder_move("top"))
+        self.btn_move_folder_up.clicked.connect(lambda: self._emit_folder_move("up"))
+        self.btn_move_folder_down.clicked.connect(lambda: self._emit_folder_move("down"))
+        self.btn_move_folder_bottom.clicked.connect(lambda: self._emit_folder_move("bottom"))
+        self.btn_hold_folders.clicked.connect(lambda: self._emit_folder_hold(True))
+        self.btn_release_folders.clicked.connect(lambda: self._emit_folder_hold(False))
         action_row.addStretch(1)
         self.btn_delete_active_folders = QPushButton("선택 삭제")
         self.btn_delete_active_folders.setEnabled(False)
@@ -717,10 +893,11 @@ class MainWindow(QMainWindow):
         header.setMinimumSectionSize(56)
         header.setSectionResizeMode(0, QHeaderView.Interactive)
         header.setSectionResizeMode(1, QHeaderView.Interactive)
-        table.setColumnWidth(0, 190)
-        table.setColumnWidth(1, 120)
-        table.setItemDelegateForColumn(0, ProgressBarDelegate(table))
-        table.setItemDelegateForColumn(1, StatusBadgeDelegate(table))
+        table.setColumnWidth(0, 86)
+        table.setColumnWidth(1, 190)
+        table.setColumnWidth(2, 120)
+        table.setItemDelegateForColumn(1, ProgressBarDelegate(table))
+        table.setItemDelegateForColumn(2, StatusBadgeDelegate(table))
         return table
 
     def _build_bottom_panel(self) -> QWidget:
@@ -983,10 +1160,21 @@ class MainWindow(QMainWindow):
     def set_running_state(self, running: bool) -> None:
         """Toggle buttons based on active task flow."""
 
+        self.btn_start.setText("전송 시작")
+        self.btn_stop.setText("일시정지")
         self.btn_start.setEnabled(not running)
         self.btn_stop.setEnabled(running)
         self.btn_add_folder.setEnabled(True)
         self.btn_add_subfolders.setEnabled(True)
+
+    def set_paused_state(self, paused: bool) -> None:
+        """Render a persisted user pause independently from active worker state."""
+
+        self.btn_start.setText("전송 재개" if paused else "전송 시작")
+        self.btn_start.setEnabled(True)
+        self.btn_stop.setText("일시정지")
+        self.btn_stop.setEnabled(False)
+        self.set_runtime_options_enabled(not paused)
 
     def set_runtime_options_enabled(self, enabled: bool) -> None:
         """Enable/disable runtime-editable controls for session stability."""
@@ -1068,6 +1256,15 @@ class MainWindow(QMainWindow):
         self.completed_folder_table.clearSelection()
         self.image_table.clearSelection()
         self.btn_delete_active_folders.setEnabled(False)
+        for button in (
+            self.btn_move_folder_top,
+            self.btn_move_folder_up,
+            self.btn_move_folder_down,
+            self.btn_move_folder_bottom,
+            self.btn_hold_folders,
+            self.btn_release_folders,
+        ):
+            button.setEnabled(False)
 
     def set_active_result_queue(self, queue_name: str | None) -> None:
         """Track currently active result queue for MQ preview dialog."""
@@ -1085,6 +1282,47 @@ class MainWindow(QMainWindow):
 
         dialog = DuplicateFolderDialog(rows=rows, parent=self)
         dialog.exec()
+
+    def confirm_resume_paused(self, pending_count: int) -> bool:
+        result = QMessageBox.question(
+            self,
+            "중지된 작업 발견",
+            f"사용자가 일시정지한 작업 {max(0, int(pending_count)):,}건이 있습니다.\n전송을 재개할까요?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        return result == QMessageBox.Yes
+
+    def confirm_preflight(self, report: dict[str, Any]) -> bool:
+        dialog = PreflightDialog(report, self)
+        return dialog.exec() == QDialog.Accepted
+
+    def show_run_history(self, rows: list[RunHistorySummary]) -> None:
+        if self._history_dialog is not None:
+            self._history_dialog.close()
+        dialog = RunHistoryDialog(rows, self)
+        dialog.export_requested.connect(self._request_history_export)
+        dialog.finished.connect(lambda _result: setattr(self, "_history_dialog", None))
+        self._history_dialog = dialog
+        dialog.open()
+
+    def _request_history_export(self, session_id: str) -> None:
+        default_name = f"IPDK_plus_history_{session_id[:8]}.csv"
+        destination, _selected_filter = QFileDialog.getSaveFileName(
+            self,
+            "실행 이력 CSV 내보내기",
+            default_name,
+            "CSV 파일 (*.csv)",
+        )
+        if destination:
+            self.history_export_requested.emit(session_id, destination)
+
+    def show_history_export_result(self, destination: str, row_count: int) -> None:
+        QMessageBox.information(
+            self,
+            "CSV 내보내기 완료",
+            f"작업 {max(0, int(row_count)):,}건을 저장했습니다.\n{destination}",
+        )
 
     def confirm_reset(self) -> bool:
         """Show reset confirmation dialog."""
@@ -1197,6 +1435,15 @@ class MainWindow(QMainWindow):
             self.completed_folder_table.clearSelection()
             selected_paths = self._selected_folder_paths_from_table(self.active_folder_table, self.active_folder_table_model)
             self.btn_delete_active_folders.setEnabled(bool(selected_paths))
+            for button in (
+                self.btn_move_folder_top,
+                self.btn_move_folder_up,
+                self.btn_move_folder_down,
+                self.btn_move_folder_bottom,
+                self.btn_hold_folders,
+                self.btn_release_folders,
+            ):
+                button.setEnabled(bool(selected_paths))
             if len(selected_paths) == 1:
                 self.folder_row_selected.emit(selected_paths[0])
                 self._show_detail_status_tab()
@@ -1214,6 +1461,15 @@ class MainWindow(QMainWindow):
         try:
             self.active_folder_table.clearSelection()
             self.btn_delete_active_folders.setEnabled(False)
+            for button in (
+                self.btn_move_folder_top,
+                self.btn_move_folder_up,
+                self.btn_move_folder_down,
+                self.btn_move_folder_bottom,
+                self.btn_hold_folders,
+                self.btn_release_folders,
+            ):
+                button.setEnabled(False)
             self._emit_folder_selection(self.completed_folder_table, self.completed_folder_table_model)
         finally:
             self._is_syncing_folder_selection = False
@@ -1226,6 +1482,22 @@ class MainWindow(QMainWindow):
             model=self.active_folder_table_model,
             position=position,
         )
+
+    def _emit_folder_move(self, operation: str) -> None:
+        paths = self._selected_folder_paths_from_table(
+            self.active_folder_table,
+            self.active_folder_table_model,
+        )
+        if paths:
+            self.move_folders_requested.emit(paths, operation)
+
+    def _emit_folder_hold(self, held: bool) -> None:
+        paths = self._selected_folder_paths_from_table(
+            self.active_folder_table,
+            self.active_folder_table_model,
+        )
+        if paths:
+            self.hold_folders_requested.emit(paths, held)
 
     def _on_completed_folder_context_menu(self, position) -> None:  # noqa: ANN001
         """Open context menu for completed folder rows."""

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+import os
 
 from PySide6.QtCore import QObject, Signal, Slot
 
@@ -16,6 +17,7 @@ class ScanWorker(QObject):
     scan_completed = Signal(str, int)
     scan_stopped = Signal(str, int)
     scan_failed = Signal(str, str)
+    access_issues_found = Signal(str, int)
     finished = Signal()
 
     def __init__(
@@ -35,11 +37,15 @@ class ScanWorker(QObject):
     @Slot()
     def run(self) -> None:
         total_inserted = 0
+        inaccessible_count = 0
         batch: list[str] = []
         try:
             for image_path in self._scanner.iter_images(self._folder_path):
                 if self._stop_requested:
                     break
+                if os.path.exists(image_path) and not os.access(image_path, os.R_OK):
+                    inaccessible_count += 1
+                    continue
                 batch.append(image_path)
                 if len(batch) < self._batch_size:
                     continue
@@ -55,6 +61,7 @@ class ScanWorker(QObject):
             if self._stop_requested:
                 self.scan_stopped.emit(self._folder_path, total_inserted)
             else:
+                self.access_issues_found.emit(self._folder_path, inaccessible_count)
                 self.scan_completed.emit(self._folder_path, total_inserted)
         except Exception as exc:  # pylint: disable=broad-except
             self.scan_failed.emit(self._folder_path, str(exc))

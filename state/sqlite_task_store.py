@@ -3,12 +3,21 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import csv
 import json
+import os
 from pathlib import Path
 from typing import Any
 
 from config.models import AppConfig
-from models.task_models import FolderSummary, ImageTask, TaskMessage, TaskResult, TaskStatus
+from models.task_models import (
+    FolderSummary,
+    ImageTask,
+    RunHistorySummary,
+    TaskMessage,
+    TaskResult,
+    TaskStatus,
+)
 from services.broker.result_queue import resolve_result_queue_name
 from services.broker.routing import resolve_publish_route
 from state.task_repository import TaskRepository
@@ -64,6 +73,10 @@ class SqliteTaskStore(QObject):
         folder_paths: list[str],
         recipe_selections: list[tuple[str, str]],
     ) -> int:
+        created_new_session = self.repository.prepare_session_for_registration()
+        if created_new_session:
+            self._first_sent_at = None
+            self.store_reset.emit()
         normalized_paths = list(
             dict.fromkeys(str(path).strip() for path in folder_paths if str(path).strip())
         )
@@ -92,6 +105,9 @@ class SqliteTaskStore(QObject):
         self.folder_group_updated.emit(folder_path)
         self._emit_overall()
 
+    def set_folder_inaccessible_count(self, folder_path: str, count: int) -> None:
+        self.repository.set_folder_inaccessible_count(folder_path, count)
+
     def folder_scan_state(self, folder_path: str) -> str | None:
         for row in self.repository.list_folder_descriptors():
             if str(row["folder_path"]) == folder_path:
@@ -110,7 +126,9 @@ class SqliteTaskStore(QObject):
     def get_active_candidate_folder_paths(self) -> list[str]:
         return [
             str(row["folder_path"])
-            for row in self.repository.list_folder_descriptors(states=["SCANNING", "SCANNED"])
+            for row in self.repository.list_folder_descriptors(
+                states=["SCANNING", "SCANNED"], include_held=False
+            )
         ]
 
     def claim_pending_messages(
@@ -292,7 +310,30 @@ class SqliteTaskStore(QObject):
     def should_auto_resume(self) -> bool:
         """Return whether persisted work was explicitly started by the user."""
 
-        return self.repository.is_resume_enabled() and self.has_resumable_work()
+        return (
+            self.repository.session_state() == "ACTIVE"
+            and self.repository.is_resume_enabled()
+            and self.has_resumable_work()
+        )
+
+    def is_paused_by_user(self) -> bool:
+        return self.repository.session_state() == "PAUSED_BY_USER"
+
+    def paused_work_count(self) -> int:
+        return self.repository.paused_work_count()
+
+    def pause_by_user(self) -> None:
+        self.release_claimed()
+        self.repository.pause_by_user()
+
+    def resume_by_user(self) -> None:
+        self.repository.resume_by_user()
+
+    def complete_session(self) -> None:
+        self.repository.mark_completed()
+
+    def prune_history(self, max_sessions: int) -> int:
+        return self.repository.prune_history(max_sessions)
 
     def disable_auto_resume(self) -> None:
         """Prevent completed work from authorizing later folders to auto-start."""
@@ -317,6 +358,149 @@ class SqliteTaskStore(QObject):
         if removed:
             self._emit_overall()
         return removed, blocked, request_ids, sum(task_counts.get(path, 0) for path in removed)
+
+    def reorder_folders(
+        self,
+        folder_paths: list[str],
+        operation: str,
+    ) -> tuple[list[str], list[str]]:
+        moved, blocked = self.repository.reorder_folders(folder_paths, operation)
+        if moved:
+            self._emit_all_folders()
+        return moved, blocked
+
+    def set_folders_held(
+        self,
+        folder_paths: list[str],
+        held: bool,
+    ) -> tuple[list[str], list[str]]:
+        changed, blocked = self.repository.set_folders_held(folder_paths, held)
+        for folder_path in changed:
+            self.folder_group_updated.emit(folder_path)
+        return changed, blocked
+
+    def has_dispatchable_pending_tasks(self) -> bool:
+        return any(
+            summary.total > summary.completed and not summary.held
+            for summary in self.get_folder_summaries()
+        )
+
+    def held_pending_count(self) -> int:
+        return sum(
+            max(0, summary.total - summary.completed)
+            for summary in self.get_folder_summaries()
+            if summary.held
+        )
+
+    def build_preflight_report(
+        self,
+        *,
+        broker_connected: bool,
+        request_queue: str,
+        priority: int,
+        initial_open_folders: int,
+        max_active_open_folders: int,
+        warning_threshold: int,
+        worker_count: int | None = None,
+        queued_message_count: int | None = None,
+    ) -> dict[str, Any]:
+        snapshot = self.repository.preflight_snapshot()
+        folder_paths = list(snapshot["folder_paths"])
+        recipe_paths = list(snapshot["recipe_paths"])
+        scan_error_folders = set(snapshot["scan_error_folders"])
+        inaccessible_folders = list(
+            dict.fromkeys(
+                [
+                    folder_path
+                    for folder_path in folder_paths
+                    if folder_path in scan_error_folders
+                    or not Path(folder_path).is_dir()
+                    or not os.access(folder_path, os.R_OK)
+                ]
+            )
+        )
+        missing_recipes = [
+            recipe_path
+            for recipe_path in recipe_paths
+            if not Path(recipe_path).expanduser().is_file()
+        ]
+        total = int(snapshot["total"])
+        held_task_count = int(snapshot["held_task_count"])
+        dispatchable_total = max(0, total - held_task_count)
+        held_count = int(snapshot["held_folder_count"])
+        inaccessible_images = int(snapshot["inaccessible_image_count"])
+        issues: list[str] = []
+        if missing_recipes:
+            issues.append(f"존재하지 않는 Recipe {len(missing_recipes)}개")
+        if inaccessible_folders:
+            issues.append(f"접근할 수 없는 폴더 {len(inaccessible_folders)}개")
+        if inaccessible_images:
+            issues.append(f"접근할 수 없는 이미지 {inaccessible_images}개")
+        if not broker_connected:
+            issues.append("RabbitMQ 연결 실패")
+        return {
+            "folder_count": len(folder_paths),
+            "held_folder_count": held_count,
+            "recipe_count": len(recipe_paths),
+            "image_count": int(snapshot["image_count"]),
+            "message_count": total,
+            "dispatchable_message_count": dispatchable_total,
+            "missing_recipes": missing_recipes,
+            "inaccessible_folders": inaccessible_folders,
+            "inaccessible_image_count": inaccessible_images,
+            "broker_connected": bool(broker_connected),
+            "worker_count": worker_count,
+            "queued_message_count": queued_message_count,
+            "request_queue": request_queue,
+            "priority": max(0, int(priority)),
+            "initial_open_folders": max(1, int(initial_open_folders)),
+            "max_active_open_folders": max(1, int(max_active_open_folders)),
+            "warning_threshold": max(1, int(warning_threshold)),
+            "threshold_exceeded": total >= max(1, int(warning_threshold)),
+            "issues": issues,
+        }
+
+    def list_run_history(self) -> list[RunHistorySummary]:
+        return self.repository.list_run_history()
+
+    def export_run_history_csv(self, session_id: str, destination: str | Path) -> int:
+        rows = self.repository.get_history_task_rows(session_id)
+        destination_path = Path(destination)
+        destination_path.parent.mkdir(parents=True, exist_ok=True)
+        with destination_path.open("w", encoding="utf-8-sig", newline="") as stream:
+            writer = csv.writer(stream)
+            writer.writerow(
+                [
+                    "request_id",
+                    "folder_path",
+                    "image_path",
+                    "recipe_alias",
+                    "recipe_path",
+                    "status",
+                    "created_at",
+                    "sent_at",
+                    "completed_at",
+                    "result",
+                    "error_message",
+                ]
+            )
+            for row in rows:
+                writer.writerow(
+                    [
+                        row["request_id"],
+                        row["folder_path"],
+                        row["image_path"],
+                        row["recipe_alias"],
+                        row["recipe_path"],
+                        row["status"],
+                        row["created_at"],
+                        row["sent_at"],
+                        row["completed_at"],
+                        row["result_json"],
+                        row["error_message"],
+                    ]
+                )
+        return len(rows)
 
     def overall_stats(self) -> dict[str, float | int | None]:
         counts = self.repository.overall_counts()

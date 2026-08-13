@@ -15,6 +15,10 @@ RabbitMQ로 이미지 단위 작업 요청을 전송하고(`IMG_LIST` 1건), 전
 - 단일 또는 다중 Recipe를 폴더 추가 시점에 지정하고 이미지×Recipe별 독립 메시지 발행
 - request/result queue별 `queue_declare` 옵션 설정 지원
 - 폴더 동시 전송 수 설정 지원
+- 전체 모수 산정 후 RabbitMQ/Recipe/경로/작업량 사전 점검
+- 대기 폴더 순서 이동 및 보류/해제
+- 사용자 일시정지 상태 영속화와 확인 기반 재개
+- 실행 이력 조회 및 작업 상세 CSV 내보내기
 - request queue `x-max-priority` 기반 MQ priority 선택 지원
 - 중복 실행 차단(같은 PC에서 1개 인스턴스만 허용)
 
@@ -65,6 +69,10 @@ uv run python main.py --config config/app_config.yaml
 - `publish.max_active_open_folders`는 전체 모수 집계 시 동시에 스캔할 폴더 수와 전송 중 활성 폴더 수를 제한하고, `publish.initial_open_folders`는 집계 완료 후 처음 활성화할 폴더 수를 결정합니다. 이미지 작업은 전체 목록을 메모리에 유지하지 않고 SQLite에 청크 저장합니다.
 - 작업 상태는 `%APPDATA%\IPDK_plus\runtime\task_state.sqlite3`에 저장되며, 앱은 `publish_chunk_size` 단위로만 메시지를 만들고 queue/inflight 상한에 따라 자동으로 발행을 멈췄다가 재개합니다. CMD 조회 방법은 [SQLite 작업 상태 조회 가이드](.\docs\sqlite_state_query_guide.md)를 참고하세요.
 - 사용자가 `전송 시작`을 누른 작업이 앱 종료로 중단되면 미발행 CLAIMED 작업은 다시 대기로 돌리고, 저장된 Action·Priority·결과 큐를 사용해 미완료 스캔과 결과 polling을 다음 실행에서 자동 재개합니다. 시작하지 않고 쌓아둔 폴더는 목록만 복원되며 자동 전송되지 않습니다.
+- `일시정지`를 누른 작업은 `PAUSED_BY_USER`로 별도 저장되어 앱을 다시 실행해도 자동 전송하지 않습니다. 시작할 때 재개 확인창이 나타나며 `전송 재개`를 눌러 수동으로 이어갈 수도 있습니다.
+- 전체 폴더 스캔이 끝나면 최초 publish 전에 폴더·고유 이미지·Recipe·최종 메시지 수, 접근 불가 경로, RabbitMQ request queue 상태, Priority와 활성 폴더 정책을 사전 점검합니다. `preflight_warning_task_threshold` 이상이면 대량 작업 경고가 함께 표시됩니다.
+- 폴더를 추가하면 SQLite `folders.position`에 0부터 시작하는 폴더별 전송 우선순위가 등록 순서대로 저장되고, 진행중/대기 표에는 이를 1부터 시작하는 `우선순위`로 표시합니다. 아직 스캔·전송·처리가 시작되지 않은 폴더는 `맨 위/위/아래/맨 아래`로 이동하거나 보류할 수 있으며, 변경 즉시 SQLite 우선순위와 실제 publish 순서에 반영됩니다. 보류 폴더는 전체 모수에는 포함되지만 보류 해제 전까지 MQ 발행 대상에서는 제외됩니다.
+- `작업 > 실행 이력`에서 완료·초기화·현재 세션의 집계를 확인하고 선택 세션의 이미지×Recipe 작업 상세를 UTF-8 BOM CSV로 내보낼 수 있습니다. `history_max_sessions`를 넘은 오래된 완료/초기화 이력은 자동 정리됩니다.
 - 선택한 폴더의 상세 작업은 최초 500행만 읽고, 스크롤 끝에서 다음 500행을 추가로 조회합니다. 화면 로그는 설정된 최대 줄 수만 유지하고 파일 로그는 회전 보관합니다.
 - `publish.default_priority`는 기본 request MQ priority 입니다.
 - UI의 `Priority` 드롭다운 범위는 `rabbitmq.request_queue_declare.arguments.x-max-priority` 값을 기준으로 `0..max`로 생성됩니다.

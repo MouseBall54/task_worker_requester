@@ -11,7 +11,7 @@ import threading
 from typing import Any
 from uuid import uuid4
 
-from models.task_models import FolderSummary, ImageTask, TaskStatus
+from models.task_models import FolderSummary, ImageTask, RunHistorySummary, TaskStatus
 from utils.image_sort import compare_image_paths
 
 
@@ -53,19 +53,29 @@ class TaskRepository:
             self._connection.close()
 
     def clear_session(self) -> None:
-        """Delete all folders/tasks in the current session while keeping its identity."""
+        """Archive the current workload and switch to a fresh active session."""
 
-        with self._transaction() as cursor:
-            cursor.execute("DELETE FROM folders WHERE session_id = ?", (self.session_id,))
-            cursor.execute(
-                """
-                UPDATE sessions SET state = 'ACTIVE', updated_at = ?, action = NULL,
-                    result_queue = NULL, priority = NULL, polling_interval = NULL,
-                    resume_enabled = 0
-                WHERE session_id = ?
-                """,
-                (_now_text(), self.session_id),
-            )
+        if self.session_state() in {"COMPLETED", "RESET"}:
+            self.session_id = self._create_session()
+            return
+        with self._lock:
+            has_content = self._connection.execute(
+                "SELECT 1 FROM folders WHERE session_id = ? LIMIT 1",
+                (self.session_id,),
+            ).fetchone()
+        if has_content is None:
+            with self._transaction() as cursor:
+                cursor.execute(
+                    """
+                    UPDATE sessions SET state = 'ACTIVE', updated_at = ?, action = NULL,
+                        result_queue = NULL, priority = NULL, polling_interval = NULL,
+                        resume_enabled = 0, ended_at = NULL
+                    WHERE session_id = ?
+                    """,
+                    (_now_text(), self.session_id),
+                )
+            return
+        self._archive_and_create_session("RESET")
 
     def save_runtime_settings(
         self,
@@ -76,11 +86,13 @@ class TaskRepository:
     ) -> None:
         """Persist session-level settings needed for deterministic restart recovery."""
 
+        now = _now_text()
         with self._transaction() as cursor:
             cursor.execute(
                 """
                 UPDATE sessions SET action = ?, result_queue = ?, priority = ?,
-                    polling_interval = ?, resume_enabled = 1
+                    polling_interval = ?, resume_enabled = 1, state = 'ACTIVE',
+                    started_at = COALESCE(started_at, ?), updated_at = ?
                 WHERE session_id = ?
                 """,
                 (
@@ -88,6 +100,8 @@ class TaskRepository:
                     result_queue,
                     max(0, int(priority)),
                     max(1, int(polling_interval)),
+                    now,
+                    now,
                     self.session_id,
                 ),
             )
@@ -122,6 +136,63 @@ class TaskRepository:
             ).fetchone()
         return bool(row and row["resume_enabled"])
 
+    def session_state(self) -> str:
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT state FROM sessions WHERE session_id = ?",
+                (self.session_id,),
+            ).fetchone()
+        return str(row[0]) if row is not None else "ACTIVE"
+
+    def pause_by_user(self) -> None:
+        """Persist a user-requested pause without losing restart metadata."""
+
+        with self._transaction() as cursor:
+            cursor.execute(
+                """
+                UPDATE sessions SET state = 'PAUSED_BY_USER', updated_at = ?, resume_enabled = 1
+                WHERE session_id = ?
+                """,
+                (_now_text(), self.session_id),
+            )
+
+    def resume_by_user(self) -> None:
+        """Return a user-paused session to automatic recovery state."""
+
+        with self._transaction() as cursor:
+            cursor.execute(
+                """
+                UPDATE sessions SET state = 'ACTIVE', updated_at = ?, resume_enabled = 1,
+                    ended_at = NULL
+                WHERE session_id = ?
+                """,
+                (_now_text(), self.session_id),
+            )
+
+    def paused_work_count(self) -> int:
+        if self.session_state() != "PAUSED_BY_USER":
+            return 0
+        task_count = self.count_tasks(
+            [TaskStatus.PENDING, TaskStatus.CLAIMED, TaskStatus.SENT, TaskStatus.RUNNING]
+        )
+        if task_count:
+            return task_count
+        return len(self.list_folder_descriptors(states=["WAITING", "SCANNING"]))
+
+    def mark_completed(self) -> None:
+        """Close the current session while keeping its rows available to the UI."""
+
+        now = _now_text()
+        with self._transaction() as cursor:
+            cursor.execute(
+                """
+                UPDATE sessions SET state = 'COMPLETED', updated_at = ?, ended_at = ?,
+                    resume_enabled = 0
+                WHERE session_id = ?
+                """,
+                (now, now, self.session_id),
+            )
+
     def disable_auto_resume(self) -> None:
         """Mark the current workload as completed and not eligible for auto-resume."""
 
@@ -130,6 +201,14 @@ class TaskRepository:
                 "UPDATE sessions SET resume_enabled = 0 WHERE session_id = ?",
                 (self.session_id,),
             )
+
+    def prepare_session_for_registration(self) -> bool:
+        """Create a fresh session when the displayed workload is already archived."""
+
+        if self.session_state() in {"ACTIVE", "PAUSED_BY_USER"}:
+            return False
+        self.session_id = self._create_session()
+        return True
 
     def register_folder_descriptors(
         self,
@@ -164,13 +243,20 @@ class TaskRepository:
                     next_position += 1
         return added
 
-    def list_folder_descriptors(self, states: Sequence[str] | None = None) -> list[sqlite3.Row]:
+    def list_folder_descriptors(
+        self,
+        states: Sequence[str] | None = None,
+        *,
+        include_held: bool = True,
+    ) -> list[sqlite3.Row]:
         query = "SELECT * FROM folders WHERE session_id = ?"
         params: list[Any] = [self.session_id]
         if states:
             placeholders = ",".join("?" for _ in states)
             query += f" AND scan_state IN ({placeholders})"
             params.extend(states)
+        if not include_held:
+            query += " AND held = 0"
         query += " ORDER BY position"
         with self._lock:
             return list(self._connection.execute(query, params).fetchall())
@@ -197,6 +283,124 @@ class TaskRepository:
                 "UPDATE folders SET scan_state = ? WHERE session_id = ? AND folder_path = ?",
                 (state, self.session_id, folder_path),
             )
+
+    def set_folder_inaccessible_count(self, folder_path: str, count: int) -> None:
+        with self._transaction() as cursor:
+            cursor.execute(
+                """
+                UPDATE folders SET inaccessible_count = ?
+                WHERE session_id = ? AND folder_path = ?
+                """,
+                (max(0, int(count)), self.session_id, folder_path),
+            )
+
+    def set_folders_held(self, folder_paths: Sequence[str], held: bool) -> tuple[list[str], list[str]]:
+        """Hold or release folders only while every task remains unclaimed."""
+
+        changed: list[str] = []
+        blocked: list[str] = []
+        with self._transaction(immediate=True) as cursor:
+            for folder_path in dict.fromkeys(folder_paths):
+                row = cursor.execute(
+                    """
+                    SELECT held, total_count, pending_count, claimed_count, sent_count, running_count,
+                           success_count, fail_count, timeout_count, error_count, cancelled_count
+                    FROM folders WHERE session_id = ? AND folder_path = ?
+                    """,
+                    (self.session_id, folder_path),
+                ).fetchone()
+                if row is None:
+                    continue
+                if not _folder_is_controllable(row):
+                    blocked.append(folder_path)
+                    continue
+                if bool(row["held"]) == bool(held):
+                    continue
+                cursor.execute(
+                    "UPDATE folders SET held = ? WHERE session_id = ? AND folder_path = ?",
+                    (1 if held else 0, self.session_id, folder_path),
+                )
+                if cursor.rowcount:
+                    changed.append(folder_path)
+        return changed, blocked
+
+    def reorder_folders(
+        self,
+        folder_paths: Sequence[str],
+        operation: str,
+    ) -> tuple[list[str], list[str]]:
+        """Move controllable folders while preserving relative order."""
+
+        selected = list(dict.fromkeys(str(path) for path in folder_paths if str(path)))
+        if not selected:
+            return [], []
+        with self._transaction(immediate=True) as cursor:
+            rows = cursor.execute(
+                "SELECT * FROM folders WHERE session_id = ? ORDER BY position",
+                (self.session_id,),
+            ).fetchall()
+            row_by_path = {str(row["folder_path"]): row for row in rows}
+            blocked = [path for path in selected if path in row_by_path and not _folder_is_controllable(row_by_path[path])]
+            movable = [path for path in selected if path in row_by_path and path not in blocked]
+            if not movable:
+                return [], blocked
+            order = [str(row["folder_path"]) for row in rows]
+            original_order = list(order)
+            controllable_paths = [
+                str(row["folder_path"])
+                for row in rows
+                if _folder_is_controllable(row)
+            ]
+            controllable_slots = [
+                index
+                for index, row in enumerate(rows)
+                if _folder_is_controllable(row)
+            ]
+            selected_set = set(movable)
+            if operation == "top":
+                prefix = [path for path in controllable_paths if path in selected_set]
+                controllable_paths = [
+                    *prefix,
+                    *(path for path in controllable_paths if path not in selected_set),
+                ]
+            elif operation == "up":
+                for index in range(1, len(controllable_paths)):
+                    if (
+                        controllable_paths[index] in selected_set
+                        and controllable_paths[index - 1] not in selected_set
+                    ):
+                        controllable_paths[index - 1], controllable_paths[index] = (
+                            controllable_paths[index],
+                            controllable_paths[index - 1],
+                        )
+            elif operation == "down":
+                for index in range(len(controllable_paths) - 2, -1, -1):
+                    if (
+                        controllable_paths[index] in selected_set
+                        and controllable_paths[index + 1] not in selected_set
+                    ):
+                        controllable_paths[index], controllable_paths[index + 1] = (
+                            controllable_paths[index + 1],
+                            controllable_paths[index],
+                        )
+            elif operation == "bottom":
+                suffix = [path for path in controllable_paths if path in selected_set]
+                controllable_paths = [
+                    *(path for path in controllable_paths if path not in selected_set),
+                    *suffix,
+                ]
+            else:
+                raise ValueError(f"지원하지 않는 폴더 이동 작업입니다: {operation}")
+            for slot, folder_path in zip(controllable_slots, controllable_paths, strict=True):
+                order[slot] = folder_path
+            if order == original_order:
+                return [], blocked
+            for position, folder_path in enumerate(order):
+                cursor.execute(
+                    "UPDATE folders SET position = ? WHERE session_id = ? AND folder_path = ?",
+                    (position, self.session_id, folder_path),
+                )
+        return movable, blocked
 
     def folder_recipes(self, folder_path: str) -> list[tuple[str, str]]:
         with self._lock:
@@ -291,6 +495,7 @@ class TaskRepository:
                   ON f.session_id = t.session_id AND f.folder_path = t.folder_path
                 WHERE t.session_id = ? AND t.status = ?
                   AND t.folder_path IN ({placeholders})
+                  AND f.held = 0
                 ORDER BY f.position, t.rowid
                 LIMIT ?
                 """,
@@ -601,6 +806,175 @@ class TaskRepository:
             ).fetchone()
         return _folder_row_to_summary(row) if row is not None else None
 
+    def preflight_snapshot(self) -> dict[str, Any]:
+        """Return bounded aggregate and path data for the preflight dialog."""
+
+        with self._lock:
+            folder_rows = self._connection.execute(
+                """
+                SELECT folder_path, recipes_json, held, scan_state FROM folders
+                WHERE session_id = ? ORDER BY position
+                """,
+                (self.session_id,),
+            ).fetchall()
+            counts = self.overall_counts()
+            image_count = int(
+                self._connection.execute(
+                    "SELECT COUNT(DISTINCT image_path) FROM tasks WHERE session_id = ?",
+                    (self.session_id,),
+                ).fetchone()[0]
+            )
+            inaccessible_count = int(
+                self._connection.execute(
+                    """
+                    SELECT COALESCE(SUM(inaccessible_count), 0) FROM folders
+                    WHERE session_id = ?
+                    """,
+                    (self.session_id,),
+                ).fetchone()[0]
+            )
+            held_task_count = int(
+                self._connection.execute(
+                    """
+                    SELECT COALESCE(SUM(total_count), 0) FROM folders
+                    WHERE session_id = ? AND held = 1
+                    """,
+                    (self.session_id,),
+                ).fetchone()[0]
+            )
+        recipe_paths: list[str] = []
+        for row in folder_rows:
+            for _alias, recipe_path in json.loads(str(row["recipes_json"] or "[]")):
+                if recipe_path not in recipe_paths:
+                    recipe_paths.append(str(recipe_path))
+        return {
+            "folder_paths": [str(row["folder_path"]) for row in folder_rows],
+            "scan_error_folders": [
+                str(row["folder_path"])
+                for row in folder_rows
+                if str(row["scan_state"]) == "ERROR"
+            ],
+            "held_folder_count": sum(bool(row["held"]) for row in folder_rows),
+            "recipe_paths": recipe_paths,
+            "image_count": image_count,
+            "inaccessible_image_count": inaccessible_count,
+            "held_task_count": held_task_count,
+            "total": counts["total"],
+        }
+
+    def list_run_history(self) -> list[RunHistorySummary]:
+        """List non-empty current and archived sessions newest first."""
+
+        with self._lock:
+            sessions = self._connection.execute(
+                """
+                SELECT s.session_id, s.state, COALESCE(s.started_at, s.created_at) AS created_at,
+                       s.ended_at,
+                       COUNT(DISTINCT f.folder_path) AS folder_count,
+                       COALESCE(SUM(f.total_count), 0) AS total,
+                       COALESCE(SUM(f.success_count), 0) AS success,
+                       COALESCE(SUM(f.fail_count), 0) AS fail,
+                       COALESCE(SUM(f.timeout_count), 0) AS timeout,
+                       COALESCE(SUM(f.error_count), 0) AS error,
+                       COALESCE(SUM(f.cancelled_count), 0) AS cancelled,
+                       (
+                           SELECT AVG((julianday(t.completed_at) - julianday(t.sent_at)) * 86400.0)
+                           FROM tasks t
+                           WHERE t.session_id = s.session_id
+                             AND t.sent_at IS NOT NULL AND t.completed_at IS NOT NULL
+                       ) AS avg_processing_seconds
+                FROM sessions s
+                JOIN folders f ON f.session_id = s.session_id
+                GROUP BY s.session_id
+                ORDER BY s.created_at DESC
+                """
+            ).fetchall()
+            recipe_rows = self._connection.execute(
+                "SELECT session_id, recipes_json FROM folders ORDER BY session_id, position"
+            ).fetchall()
+            error_rows = self._connection.execute(
+                """
+                SELECT session_id, error_message, COUNT(*) AS count
+                FROM tasks
+                WHERE error_message IS NOT NULL AND TRIM(error_message) != ''
+                GROUP BY session_id, error_message
+                ORDER BY session_id, count DESC, error_message
+                """
+            ).fetchall()
+        recipe_paths_by_session: dict[str, set[str]] = {}
+        for row in recipe_rows:
+            paths = recipe_paths_by_session.setdefault(str(row["session_id"]), set())
+            for _alias, recipe_path in json.loads(str(row["recipes_json"] or "[]")):
+                paths.add(str(recipe_path))
+        errors_by_session: dict[str, list[str]] = {}
+        for row in error_rows:
+            errors = errors_by_session.setdefault(str(row["session_id"]), [])
+            errors.append(f"{row['error_message']} ({int(row['count'])})")
+        return [
+            RunHistorySummary(
+                session_id=str(row["session_id"]),
+                state=str(row["state"]),
+                created_at=str(row["created_at"]),
+                ended_at=str(row["ended_at"]) if row["ended_at"] else None,
+                folder_count=int(row["folder_count"]),
+                recipe_count=len(recipe_paths_by_session.get(str(row["session_id"]), set())),
+                total=int(row["total"]),
+                success=int(row["success"]),
+                fail=int(row["fail"]),
+                timeout=int(row["timeout"]),
+                error=int(row["error"]),
+                cancelled=int(row["cancelled"]),
+                avg_processing_seconds=(
+                    float(row["avg_processing_seconds"])
+                    if row["avg_processing_seconds"] is not None
+                    else None
+                ),
+                error_types=tuple(errors_by_session.get(str(row["session_id"]), [])),
+            )
+            for row in sessions
+        ]
+
+    def get_history_task_rows(self, session_id: str) -> list[sqlite3.Row]:
+        """Return one archived session's task records for explicit CSV export."""
+
+        with self._lock:
+            return list(
+                self._connection.execute(
+                    """
+                    SELECT request_id, folder_path, image_path, recipe_alias, recipe_path,
+                           status, created_at, sent_at, completed_at, result_json, error_message
+                    FROM tasks WHERE session_id = ?
+                    ORDER BY folder_path COLLATE NOCASE,
+                             image_path COLLATE IMAGE_FILENAME_ASC,
+                             recipe_alias COLLATE NOCASE
+                    """,
+                    (session_id,),
+                ).fetchall()
+            )
+
+    def prune_history(self, max_sessions: int) -> int:
+        """Delete the oldest archived sessions beyond the configured retention count."""
+
+        keep = max(1, int(max_sessions))
+        with self._transaction(immediate=True) as cursor:
+            rows = cursor.execute(
+                """
+                SELECT session_id FROM sessions
+                WHERE state IN ('COMPLETED', 'RESET')
+                ORDER BY COALESCE(ended_at, updated_at) DESC
+                LIMIT -1 OFFSET ?
+                """,
+                (keep,),
+            ).fetchall()
+            session_ids = [str(row[0]) for row in rows]
+            if session_ids:
+                placeholders = ",".join("?" for _ in session_ids)
+                cursor.execute(
+                    f"DELETE FROM sessions WHERE session_id IN ({placeholders})",
+                    session_ids,
+                )
+        return len(session_ids)
+
     def overall_counts(self) -> dict[str, int]:
         with self._lock:
             row = self._connection.execute(
@@ -677,7 +1051,9 @@ class TaskRepository:
                 result_queue TEXT,
                 priority INTEGER,
                 polling_interval INTEGER,
-                resume_enabled INTEGER NOT NULL DEFAULT 0
+                resume_enabled INTEGER NOT NULL DEFAULT 0,
+                started_at TEXT,
+                ended_at TEXT
             );
             CREATE TABLE IF NOT EXISTS folders(
                 session_id TEXT NOT NULL,
@@ -695,6 +1071,8 @@ class TaskRepository:
                 timeout_count INTEGER NOT NULL DEFAULT 0,
                 error_count INTEGER NOT NULL DEFAULT 0,
                 cancelled_count INTEGER NOT NULL DEFAULT 0,
+                held INTEGER NOT NULL DEFAULT 0,
+                inaccessible_count INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY(session_id, folder_path),
                 FOREIGN KEY(session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
             );
@@ -729,6 +1107,7 @@ class TaskRepository:
             """
         )
         self._migrate_session_columns()
+        self._migrate_folder_columns()
         self._connection.commit()
 
     def _migrate_session_columns(self) -> None:
@@ -744,6 +1123,8 @@ class TaskRepository:
             "priority": "INTEGER",
             "polling_interval": "INTEGER",
             "resume_enabled": "INTEGER NOT NULL DEFAULT 0",
+            "started_at": "TEXT",
+            "ended_at": "TEXT",
         }
         for column, definition in definitions.items():
             if column not in existing:
@@ -751,15 +1132,33 @@ class TaskRepository:
                     f"ALTER TABLE sessions ADD COLUMN {column} {definition}"
                 )
 
+    def _migrate_folder_columns(self) -> None:
+        existing = {
+            str(row["name"])
+            for row in self._connection.execute("PRAGMA table_info(folders)").fetchall()
+        }
+        definitions = {
+            "held": "INTEGER NOT NULL DEFAULT 0",
+            "inaccessible_count": "INTEGER NOT NULL DEFAULT 0",
+        }
+        for column, definition in definitions.items():
+            if column not in existing:
+                self._connection.execute(
+                    f"ALTER TABLE folders ADD COLUMN {column} {definition}"
+                )
+
     def _resume_or_create_session(self) -> str:
         row = self._connection.execute(
             """
             SELECT session_id FROM sessions
-            WHERE state = 'ACTIVE' ORDER BY updated_at DESC LIMIT 1
+            WHERE state IN ('ACTIVE', 'PAUSED_BY_USER') ORDER BY updated_at DESC LIMIT 1
             """
         ).fetchone()
         if row is not None:
             return str(row[0])
+        return self._create_session()
+
+    def _create_session(self) -> str:
         session_id = str(uuid4())
         now = _now_text()
         self._connection.execute(
@@ -768,6 +1167,18 @@ class TaskRepository:
         )
         self._connection.commit()
         return session_id
+
+    def _archive_and_create_session(self, state: str) -> None:
+        now = _now_text()
+        with self._transaction() as cursor:
+            cursor.execute(
+                """
+                UPDATE sessions SET state = ?, updated_at = ?, ended_at = ?, resume_enabled = 0
+                WHERE session_id = ?
+                """,
+                (state, now, now, self.session_id),
+            )
+        self.session_id = self._create_session()
 
     def _transaction(self, immediate: bool = False):
         return _RepositoryTransaction(self, immediate=immediate)
@@ -835,7 +1246,10 @@ def _folder_row_to_summary(row: sqlite3.Row) -> FolderSummary:
     recipes = json.loads(str(row["recipes_json"] or "[]"))
     aliases = tuple(dict.fromkeys(str(item[0]) for item in recipes if item and str(item[0])))
     scan_state = str(row["scan_state"])
-    if scan_state == "WAITING":
+    held = bool(row["held"])
+    if held:
+        stage_label = "보류"
+    elif scan_state == "WAITING":
         stage_label = "스캔 대기"
     elif scan_state == "SCANNING":
         stage_label = "스캔 중"
@@ -861,6 +1275,29 @@ def _folder_row_to_summary(row: sqlite3.Row) -> FolderSummary:
         status=status,
         recipe_aliases=aliases,
         stage_label=stage_label,
+        held=held,
+        queue_priority=int(row["position"]) + 1,
+    )
+
+
+def _folder_is_controllable(row: sqlite3.Row) -> bool:
+    """Return whether a folder has not entered publish/result processing."""
+
+    return (
+        int(row["total_count"]) == int(row["pending_count"])
+        and not any(
+            int(row[column])
+            for column in (
+                "claimed_count",
+                "sent_count",
+                "running_count",
+                "success_count",
+                "fail_count",
+                "timeout_count",
+                "error_count",
+                "cancelled_count",
+            )
+        )
     )
 
 

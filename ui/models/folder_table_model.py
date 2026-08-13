@@ -12,7 +12,7 @@ from models.task_models import FolderSummary
 class FolderTableModel(QAbstractTableModel):
     """Table model that tracks folder-level progress rows."""
 
-    HEADERS = ["진행률", "상태", "폴더", "Recipes", "총", "완료", "성공", "실패", "타임아웃"]
+    HEADERS = ["우선순위", "진행률", "상태", "폴더", "Recipes", "총", "완료", "성공", "실패", "타임아웃"]
 
     def __init__(self) -> None:
         super().__init__()
@@ -38,22 +38,24 @@ class FolderTableModel(QAbstractTableModel):
 
         if role == Qt.DisplayRole:
             if column == 0:
-                return round(row.progress, 1)
+                return row.queue_priority if row.queue_priority > 0 else "-"
             if column == 1:
-                return row.stage_label or row.status.value
+                return round(row.progress, 1)
             if column == 2:
-                return row.folder_path
+                return row.stage_label or row.status.value
             if column == 3:
-                return ", ".join(row.recipe_aliases)
+                return row.folder_path
             if column == 4:
-                return row.total
+                return ", ".join(row.recipe_aliases)
             if column == 5:
-                return row.completed
+                return row.total
             if column == 6:
-                return row.success
+                return row.completed
             if column == 7:
-                return row.fail + row.error
+                return row.success
             if column == 8:
+                return row.fail + row.error
+            if column == 9:
                 return row.timeout
 
         if role == Qt.UserRole:

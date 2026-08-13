@@ -97,6 +97,8 @@ publish:
   fallback_max_queued_messages: 2000
   ui_refresh_interval_ms: 500
   ui_log_max_lines: 5000
+  preflight_warning_task_threshold: 10000
+  history_max_sessions: 100
   image_extensions: [".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"]
   scan_mode: "direct"
 
@@ -199,10 +201,12 @@ recipes:
 | `publish.fallback_max_queued_messages` | `2000` | broker 메트릭이 없을 때도 적용되는 CLAIMED/SENT/RUNNING 상한 | worker가 느리거나 0명일 때 무제한 발행 방지 | 1 이상 |
 | `publish.ui_refresh_interval_ms` | `500` | 대량 상태 UI 갱신을 묶는 목표 주기 | 값이 작을수록 UI 갱신량 증가 | 100 이상 |
 | `publish.ui_log_max_lines` | `5000` | 화면 로그 최대 줄 수 | 오래된 화면 로그 자동 제거 | 100 이상, 파일 로그는 별도 회전 |
-
-작업 세션은 `%APPDATA%\IPDK_plus\runtime\task_state.sqlite3`에 WAL 모드로 저장됩니다. 사용자가 `전송 시작`을 누른 세션이 비정상 종료된 경우에는 미발행 `CLAIMED` 작업을 `PENDING`으로 복구하고, 세션에 저장된 Action·Priority·결과 큐·polling 주기를 사용해 스캔과 결과 수신을 자동 재개합니다. 전송을 시작하지 않은 세션은 폴더 목록과 설정만 복원하며 자동으로 MQ 전송을 시작하지 않습니다.
+| `publish.preflight_warning_task_threshold` | `10000` | 사전 점검 대량 작업 경고 기준 | 최종 메시지가 기준 이상이면 확인 경고 표시 | 1 이상 |
+| `publish.history_max_sessions` | `100` | 완료·초기화 실행 이력 보존 개수 | 초과한 오래된 이력을 자동 삭제 | 현재/일시정지 세션은 삭제 대상 아님 |
 | `publish.image_extensions` | `[".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"]` | 이미지 스캔 대상 확장자 | 등록되는 이미지 파일 종류가 바뀜 | 확장자는 점 포함 문자열로 관리 |
 | `publish.scan_mode` | `"direct"` | 폴더 스캔 방식 | `"direct"`는 선택 폴더 직접 이미지, `"recursive"`는 하위까지 스캔 | 지원값은 `direct`, `recursive` |
+
+작업 세션은 `%APPDATA%\IPDK_plus\runtime\task_state.sqlite3`에 WAL 모드로 저장됩니다. 사용자가 `전송 시작`을 누른 ACTIVE 세션이 비정상 종료된 경우에는 미발행 `CLAIMED` 작업을 `PENDING`으로 복구하고, 세션에 저장된 Action·Priority·결과 큐·polling 주기를 사용해 스캔과 결과 수신을 자동 재개합니다. 사용자가 `일시정지`를 누른 세션은 `PAUSED_BY_USER`로 저장되어 자동 재개되지 않으며 확인창 또는 `전송 재개` 버튼으로만 이어갑니다. 완료 세션은 `COMPLETED`, 초기화한 세션은 `RESET` 이력으로 보존됩니다.
 
 ### 5.6 ui
 

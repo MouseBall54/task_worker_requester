@@ -128,6 +128,8 @@ class PublishConfig:
     fallback_max_queued_messages: int = 2000
     ui_refresh_interval_ms: int = 500
     ui_log_max_lines: int = 5000
+    preflight_warning_task_threshold: int = 10000
+    history_max_sessions: int = 100
     image_extensions: list[str] = field(
         default_factory=lambda: [".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"]
     )

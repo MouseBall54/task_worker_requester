@@ -97,6 +97,7 @@ class TaskController(QObject):
         self._dirty_task_ids: set[str] = set()
         self._latest_overall_stats: dict[str, float | int | None] | None = None
         self._duplicate_folder_paths: dict[str, None] = {}
+        self._preflight_confirmed = False
         self._ui_refresh_timer = QTimer(self)
         self._ui_refresh_timer.setInterval(max(100, int(config.publish.ui_refresh_interval_ms)))
         self._ui_refresh_timer.timeout.connect(self._flush_ui_updates)
@@ -111,7 +112,11 @@ class TaskController(QObject):
         self._check_connection_once()
         if not getattr(self._view, "_disable_queue_metrics_monitor", False):
             self._start_queue_metrics_monitor()
-        if self._lazy_mode and self._store.should_auto_resume():  # type: ignore[attr-defined]
+        if self._lazy_mode and self._store.is_paused_by_user():  # type: ignore[attr-defined]
+            self._view.set_paused_state(True)
+            self._set_runtime_options_locked(True)
+            QTimer.singleShot(0, self._offer_paused_session_resume)
+        elif self._lazy_mode and self._store.should_auto_resume():  # type: ignore[attr-defined]
             QTimer.singleShot(0, self._resume_persisted_lazy_session)
 
     def _wire_signals(self) -> None:
@@ -127,6 +132,18 @@ class TaskController(QObject):
         page_signal = getattr(self._view, "image_page_requested", None)
         if page_signal is not None:
             page_signal.connect(self._on_image_page_requested)
+        move_signal = getattr(self._view, "move_folders_requested", None)
+        if move_signal is not None:
+            move_signal.connect(self.on_move_folders_requested)
+        hold_signal = getattr(self._view, "hold_folders_requested", None)
+        if hold_signal is not None:
+            hold_signal.connect(self.on_hold_folders_requested)
+        history_signal = getattr(self._view, "history_requested", None)
+        if history_signal is not None:
+            history_signal.connect(self.on_history_requested)
+        history_export_signal = getattr(self._view, "history_export_requested", None)
+        if history_export_signal is not None:
+            history_export_signal.connect(self.on_history_export_requested)
 
         self._store.folder_group_added.connect(self._on_folder_group_changed)
         self._store.folder_group_updated.connect(self._on_folder_group_changed)
@@ -233,6 +250,12 @@ class TaskController(QObject):
             self._log("이미 작업이 실행 중입니다.")
             return
         if self._lazy_mode:
+            if self._store.is_paused_by_user():  # type: ignore[attr-defined]
+                self._store.resume_by_user()  # type: ignore[attr-defined]
+                self._view.set_paused_state(False)
+                self._log("사용자 일시정지 작업을 재개합니다.")
+                self._start_lazy_session(self._store.get_runtime_settings())  # type: ignore[attr-defined]
+                return
             self._start_lazy_session()
             return
 
@@ -342,9 +365,17 @@ class TaskController(QObject):
 
     @Slot()
     def on_stop_requested(self) -> None:
-        """Stop publish/poll workers gracefully."""
+        """Persist an explicit user pause after stopping active workers."""
 
-        self._stop_workers("사용자 중지 요청")
+        if not self._active:
+            self._log("현재 실행 중인 작업이 없습니다.")
+            return
+        self._stop_workers("사용자 일시정지 요청")
+        if self._lazy_mode and self._store.has_resumable_work():  # type: ignore[attr-defined]
+            self._store.pause_by_user()  # type: ignore[attr-defined]
+            self._view.set_paused_state(True)
+            self._set_runtime_options_locked(True)
+            self._log("사용자 일시정지 상태를 저장했습니다. 앱을 다시 실행해도 자동 전송하지 않습니다.")
 
     @Slot()
     def on_reset_requested(self) -> None:
@@ -363,10 +394,63 @@ class TaskController(QObject):
             self._log(f"워커 중지 중 오류가 발생했지만 초기화를 계속 진행합니다: {exc}")
 
         self._store.reset()
+        if self._lazy_mode:
+            self._store.prune_history(self._config.publish.history_max_sessions)  # type: ignore[attr-defined]
         self._active_result_queue = None
         self._view.set_active_result_queue(None)
         self._set_runtime_options_locked(False)
         self._log("작업 상태를 초기화했습니다.")
+
+    @Slot(list, str)
+    def on_move_folders_requested(self, folder_paths: list[str], operation: str) -> None:
+        if not self._lazy_mode:
+            return
+        running_paths = set(self._active_folder_paths) | set(self._scan_threads)
+        allowed = [path for path in folder_paths if path not in running_paths]
+        blocked = [path for path in folder_paths if path in running_paths]
+        moved, store_blocked = self._store.reorder_folders(allowed, operation)  # type: ignore[attr-defined]
+        blocked.extend(store_blocked)
+        if moved:
+            self._view.set_folder_rows(self._store.get_folder_summaries())
+            labels = {"top": "맨 위", "up": "위", "down": "아래", "bottom": "맨 아래"}
+            self._log(f"대기 폴더 {len(moved)}개를 {labels.get(operation, operation)}로 이동했습니다.")
+        if blocked:
+            self._log("폴더 이동 차단 - 스캔·전송·처리가 시작된 폴더입니다: " + ", ".join(blocked))
+
+    @Slot(list, bool)
+    def on_hold_folders_requested(self, folder_paths: list[str], held: bool) -> None:
+        if not self._lazy_mode:
+            return
+        running_paths = set(self._active_folder_paths) | set(self._scan_threads)
+        allowed = [path for path in folder_paths if path not in running_paths]
+        blocked = [path for path in folder_paths if path in running_paths]
+        changed, store_blocked = self._store.set_folders_held(allowed, held)  # type: ignore[attr-defined]
+        blocked.extend(store_blocked)
+        if changed:
+            self._view.set_folder_rows(self._store.get_folder_summaries())
+            self._log(f"대기 폴더 {len(changed)}개를 {'보류' if held else '보류 해제'}했습니다.")
+            if self._active and not held:
+                self._maybe_dispatch_lazy()
+        if blocked:
+            self._log("폴더 보류 변경 차단 - 스캔·전송·처리가 시작된 폴더입니다: " + ", ".join(blocked))
+
+    @Slot()
+    def on_history_requested(self) -> None:
+        if not self._lazy_mode:
+            return
+        self._view.show_run_history(self._store.list_run_history())  # type: ignore[attr-defined]
+
+    @Slot(str, str)
+    def on_history_export_requested(self, session_id: str, destination: str) -> None:
+        if not self._lazy_mode:
+            return
+        try:
+            count = self._store.export_run_history_csv(session_id, destination)  # type: ignore[attr-defined]
+        except OSError as exc:
+            self._log(f"실행 이력 CSV 저장 실패: {exc}")
+            return
+        self._view.show_history_export_result(destination, count)
+        self._log(f"실행 이력 CSV 저장 완료 - {destination}: {count}건")
 
     @Slot(str)
     def on_mq_preview_requested(self, request_id: str) -> None:
@@ -663,7 +747,8 @@ class TaskController(QObject):
             self._view.set_running_state(False)
             if self._store.all_tasks_terminal():
                 if self._lazy_mode:
-                    self._store.disable_auto_resume()  # type: ignore[attr-defined]
+                    self._store.complete_session()  # type: ignore[attr-defined]
+                    self._store.prune_history(self._config.publish.history_max_sessions)  # type: ignore[attr-defined]
                 self._set_runtime_options_locked(False)
 
     @Slot(int, int)
@@ -878,6 +963,24 @@ class TaskController(QObject):
         except Exception as exc:  # pylint: disable=broad-except
             self._view.set_connection_status(False, "연결 실패")
             self._log(f"RabbitMQ 연결 확인 실패: {exc}")
+        finally:
+            try:
+                broker.close()
+            except Exception:  # pragma: no cover
+                pass
+
+    def _check_broker_for_preflight(self) -> tuple[bool, int | None, int | None]:
+        """Verify broker connectivity and the configured request queue once."""
+
+        broker = self._broker_provider()
+        try:
+            broker.connect()
+            stats = broker.get_queue_stats(self._config.rabbitmq.request_queue)
+            return True, stats.consumer_count, stats.message_count
+        except Exception as exc:  # pylint: disable=broad-except
+            self._view.set_connection_status(False, "사전 점검 연결 실패")
+            self._log(f"사전 점검 RabbitMQ 연결 실패: {exc}")
+            return False, None, None
         finally:
             try:
                 broker.close()
@@ -1172,6 +1275,7 @@ class TaskController(QObject):
             polling_interval,
         )
         self._publish_exchange, self._publish_routing_key = resolve_publish_route(self._config.rabbitmq)
+        self._preflight_confirmed = self._store.has_inflight_tasks()
         self._active = True
         self._publish_finished = True
         self._view.set_active_result_queue(queue_name)
@@ -1200,6 +1304,22 @@ class TaskController(QObject):
             return
         self._log("미완료 대용량 세션을 복구하여 자동으로 재개합니다.")
         self._start_lazy_session(self._store.get_runtime_settings())  # type: ignore[attr-defined]
+
+    @Slot()
+    def _offer_paused_session_resume(self) -> None:
+        """Ask before resuming a session explicitly paused by the user."""
+
+        if not self._store.is_paused_by_user():  # type: ignore[attr-defined]
+            return
+        pending_count = self._store.paused_work_count()  # type: ignore[attr-defined]
+        if self._view.confirm_resume_paused(pending_count):
+            self._store.resume_by_user()  # type: ignore[attr-defined]
+            self._view.set_paused_state(False)
+            self._log("중지된 작업 재개를 사용자가 확인했습니다.")
+            self._resume_persisted_lazy_session()
+            return
+        self._view.set_paused_state(True)
+        self._log("중지된 작업을 재개하지 않고 일시정지 상태로 유지합니다.")
 
     def _open_next_lazy_folders(self, count: int) -> None:
         """Activate the next already-inventoried folders in display order."""
@@ -1245,6 +1365,25 @@ class TaskController(QObject):
 
         self._inventory_preparing = False
         self._planned_publish_total = int(self._store.overall_stats()["total"] or 0)
+        if not self._preflight_confirmed:
+            broker_connected, worker_count, queued_message_count = self._check_broker_for_preflight()
+            report = self._store.build_preflight_report(  # type: ignore[attr-defined]
+                broker_connected=broker_connected,
+                request_queue=self._config.rabbitmq.request_queue,
+                priority=self._lazy_priority,
+                initial_open_folders=self._max_initial_open_folders,
+                max_active_open_folders=self._max_active_open_folders,
+                warning_threshold=self._config.publish.preflight_warning_task_threshold,
+                worker_count=worker_count,
+                queued_message_count=queued_message_count,
+            )
+            if not self._view.confirm_preflight(report):
+                self._stop_workers("사전 점검에서 전송 시작을 취소했습니다.")
+                self._store.pause_by_user()  # type: ignore[attr-defined]
+                self._view.set_paused_state(True)
+                self._set_runtime_options_locked(True)
+                return
+            self._preflight_confirmed = True
         self._open_next_lazy_folders(self._max_initial_open_folders)
         self._log(
             f"전체 작업 집계 완료 - 총 {self._planned_publish_total}건, "
@@ -1272,6 +1411,7 @@ class TaskController(QObject):
         worker.scan_completed.connect(self._on_scan_completed)
         worker.scan_stopped.connect(self._on_scan_stopped)
         worker.scan_failed.connect(self._on_scan_failed)
+        worker.access_issues_found.connect(self._on_scan_access_issues)
         worker.finished.connect(thread.quit)
         worker.finished.connect(worker.deleteLater)
         thread.finished.connect(thread.deleteLater)
@@ -1297,6 +1437,12 @@ class TaskController(QObject):
         self._log(f"폴더 분할 스캔 완료 - {folder_path}: Task {total_inserted}건")
         if not self._inventory_preparing:
             self._maybe_dispatch_lazy()
+
+    @Slot(str, int)
+    def _on_scan_access_issues(self, folder_path: str, inaccessible_count: int) -> None:
+        self._store.set_folder_inaccessible_count(folder_path, inaccessible_count)  # type: ignore[attr-defined]
+        if inaccessible_count:
+            self._log(f"접근할 수 없어 제외한 이미지 - {folder_path}: {inaccessible_count}건")
 
     @Slot(str, int)
     def _on_scan_stopped(self, folder_path: str, total_inserted: int) -> None:
@@ -1373,6 +1519,20 @@ class TaskController(QObject):
         if self._scan_threads:
             return
         if self._store.has_pending_tasks() or self._store.has_inflight_tasks():
+            if (
+                not self._store.has_inflight_tasks()
+                and not self._store.has_dispatchable_pending_tasks()  # type: ignore[attr-defined]
+                and self._store.held_pending_count() > 0  # type: ignore[attr-defined]
+            ):
+                self._active = False
+                self._publish_finished = True
+                self._view.set_running_state(False)
+                self._store.pause_by_user()  # type: ignore[attr-defined]
+                self._view.set_paused_state(True)
+                self._set_runtime_options_locked(True)
+                if self._is_poll_worker_running():
+                    self._stop_polling_only("보류 작업만 남아 결과 polling을 종료합니다.")
+                self._log("전송 가능한 작업이 없고 남은 폴더가 모두 보류 상태입니다.")
             return
         if self._store.get_waiting_folder_paths():  # type: ignore[attr-defined]
             return
@@ -1383,7 +1543,8 @@ class TaskController(QObject):
         else:
             self._active = False
             self._view.set_running_state(False)
-            self._store.disable_auto_resume()  # type: ignore[attr-defined]
+            self._store.complete_session()  # type: ignore[attr-defined]
+            self._store.prune_history(self._config.publish.history_max_sessions)  # type: ignore[attr-defined]
             self._set_runtime_options_locked(False)
             self._log("모든 대용량 작업이 완료되었습니다.")
 

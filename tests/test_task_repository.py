@@ -229,6 +229,160 @@ class TaskRepositoryTest(unittest.TestCase):
         finally:
             repository.close()
 
+    def test_user_pause_survives_restart_without_auto_resume_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = Path(temp_dir) / "tasks.sqlite3"
+            first = TaskRepository(database_path)
+            first.register_folder_descriptors(["folder"], [("R", "r.json")])
+            first.insert_task_batch("folder", ["a.jpg", "b.jpg"])
+            first.save_runtime_settings("RUN", "result.queue", 1, 5)
+            first.pause_by_user()
+            session_id = first.session_id
+            first.close()
+
+            restored = TaskRepository(database_path)
+            try:
+                self.assertEqual(restored.session_id, session_id)
+                self.assertEqual(restored.session_state(), "PAUSED_BY_USER")
+                self.assertTrue(restored.is_resume_enabled())
+                self.assertEqual(restored.paused_work_count(), 2)
+                restored.resume_by_user()
+                self.assertEqual(restored.session_state(), "ACTIVE")
+            finally:
+                restored.close()
+
+    def test_folder_reorder_and_hold_only_allow_unclaimed_work(self) -> None:
+        repository = TaskRepository()
+        try:
+            repository.register_folder_descriptors(
+                ["first", "second", "third"], [("R", "r.json")]
+            )
+            for folder in ("first", "second", "third"):
+                repository.insert_task_batch(folder, [f"{folder}.jpg"])
+
+            moved, blocked = repository.reorder_folders(["third"], "top")
+            self.assertEqual(moved, ["third"])
+            self.assertEqual(blocked, [])
+            self.assertEqual(
+                [row["folder_path"] for row in repository.list_folder_descriptors()],
+                ["third", "first", "second"],
+            )
+
+            held, blocked = repository.set_folders_held(["second"], True)
+            self.assertEqual(held, ["second"])
+            self.assertEqual(blocked, [])
+            claimed = repository.claim_pending(["second", "third"], limit=2)
+            self.assertEqual([task.folder_path for task in claimed], ["third"])
+
+            moved, blocked = repository.reorder_folders(["third"], "down")
+            self.assertEqual(moved, [])
+            self.assertEqual(blocked, ["third"])
+        finally:
+            repository.close()
+
+    def test_folder_priority_persists_and_bottom_keeps_running_slots_fixed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = Path(temp_dir) / "tasks.sqlite3"
+            repository = TaskRepository(database_path)
+            try:
+                repository.register_folder_descriptors(
+                    ["first", "running", "third", "fourth"], [("R", "r.json")]
+                )
+                for folder in ("first", "running", "third", "fourth"):
+                    repository.insert_task_batch(folder, [f"{folder}.jpg"])
+                task = repository.claim_pending(["running"], limit=1)[0]
+                repository.transition_task(
+                    task.request_id,
+                    TaskStatus.SENT,
+                    {TaskStatus.CLAIMED},
+                    sent_at="2026-08-13T00:00:00+00:00",
+                )
+
+                moved, blocked = repository.reorder_folders(["first"], "bottom")
+
+                self.assertEqual(moved, ["first"])
+                self.assertEqual(blocked, [])
+                self.assertEqual(
+                    [row["folder_path"] for row in repository.list_folder_descriptors()],
+                    ["third", "running", "fourth", "first"],
+                )
+                priorities = {
+                    summary.folder_path: summary.queue_priority
+                    for summary in repository.get_folder_summaries()
+                }
+                self.assertEqual(
+                    priorities,
+                    {"third": 1, "running": 2, "fourth": 3, "first": 4},
+                )
+            finally:
+                repository.close()
+
+            restored = TaskRepository(database_path)
+            try:
+                self.assertEqual(
+                    [row["folder_path"] for row in restored.list_folder_descriptors()],
+                    ["third", "running", "fourth", "first"],
+                )
+                self.assertEqual(
+                    [summary.queue_priority for summary in restored.get_folder_summaries()],
+                    [1, 2, 3, 4],
+                )
+            finally:
+                restored.close()
+
+    def test_reset_archives_history_and_starts_fresh_session(self) -> None:
+        repository = TaskRepository()
+        try:
+            original_session = repository.session_id
+            repository.register_folder_descriptors(["folder"], [("R", "r.json")])
+            repository.insert_task_batch("folder", ["a.jpg"])
+
+            repository.clear_session()
+
+            self.assertNotEqual(repository.session_id, original_session)
+            self.assertEqual(repository.list_folder_descriptors(), [])
+            history = repository.list_run_history()
+            self.assertEqual(len(history), 1)
+            self.assertEqual(history[0].session_id, original_session)
+            self.assertEqual(history[0].state, "RESET")
+            self.assertEqual(history[0].total, 1)
+            self.assertEqual(len(repository.get_history_task_rows(original_session)), 1)
+        finally:
+            repository.close()
+
+    def test_history_reports_average_and_error_types_and_prunes_oldest(self) -> None:
+        repository = TaskRepository()
+        try:
+            for index in range(3):
+                folder = f"folder-{index}"
+                repository.register_folder_descriptors([folder], [("R", "r.json")])
+                repository.insert_task_batch(folder, [f"{index}.jpg"])
+                task = repository.claim_pending([folder], limit=1)[0]
+                repository.transition_task(
+                    task.request_id,
+                    TaskStatus.SENT,
+                    {TaskStatus.CLAIMED},
+                    sent_at="2026-08-13T00:00:00+00:00",
+                )
+                repository.transition_task(
+                    task.request_id,
+                    TaskStatus.ERROR,
+                    {TaskStatus.SENT},
+                    completed_at="2026-08-13T00:00:10+00:00",
+                    error_message="worker unavailable",
+                )
+                repository.clear_session()
+
+            history = repository.list_run_history()
+            self.assertEqual(len(history), 3)
+            self.assertAlmostEqual(history[0].avg_processing_seconds or 0.0, 10.0, places=2)
+            self.assertEqual(history[0].error_types, ("worker unavailable (1)",))
+
+            self.assertEqual(repository.prune_history(1), 2)
+            self.assertEqual(len(repository.list_run_history()), 1)
+        finally:
+            repository.close()
+
 
 if __name__ == "__main__":
     unittest.main()
