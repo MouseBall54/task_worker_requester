@@ -186,9 +186,10 @@ QListWidget#folderSearchResults {
 
 QListWidget#favoriteRootList::item,
 QListWidget#folderSearchResults::item {
-    padding: 6px 8px;
-    margin: 1px;
-    border-radius: 5px;
+    height: 26px;
+    margin: 1px 2px;
+    padding: 0 8px;
+    border-radius: 6px;
 }
 
 QListWidget#favoriteRootList::item:hover,

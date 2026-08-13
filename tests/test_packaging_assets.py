@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 import unittest
 
 
@@ -33,6 +34,25 @@ class PackagingAssetsTest(unittest.TestCase):
 
         for icon_name in required_icons:
             self.assertIn(icon_name, script_text)
+
+    def test_favorite_and_search_rows_match_folder_tree_density(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        stylesheet = (project_root / "ui" / "styles.qss").read_text(encoding="utf-8")
+        list_rule = re.search(
+            r"QListWidget#favoriteRootList::item,\s*"
+            r"QListWidget#folderSearchResults::item\s*\{(?P<body>[^}]*)\}",
+            stylesheet,
+        )
+        tree_rule = re.search(
+            r"QTreeView#folderTree::item\s*\{(?P<body>[^}]*)\}", stylesheet
+        )
+
+        self.assertIsNotNone(list_rule)
+        self.assertIsNotNone(tree_rule)
+        assert list_rule is not None and tree_rule is not None
+        for declaration in ("height: 26px", "margin: 1px 2px", "padding: 0 8px"):
+            self.assertIn(declaration, list_rule.group("body"))
+            self.assertIn(declaration, tree_rule.group("body"))
 
 
 if __name__ == "__main__":

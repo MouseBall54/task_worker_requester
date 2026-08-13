@@ -1291,6 +1291,8 @@ class MainWindow(QMainWindow):
 
     def _build_ui(self) -> None:
         self.setWindowTitle(self._config.ui.app_name)
+        # Keep the existing layout-derived minimum while leaving expansion unrestricted.
+        self.setMaximumSize(16_777_215, 16_777_215)
         self.resize(self._config.ui.window_width, self._config.ui.window_height)
 
         root = QWidget(self)
@@ -2035,13 +2037,67 @@ class MainWindow(QMainWindow):
     def set_folder_rows(self, rows: list[FolderSummary]) -> None:
         """Replace folder table rows."""
 
+        selected_paths, current_path = self._active_folder_selection_state()
         active_rows = [row for row in rows if not row.status.is_done]
         completed_rows = [row for row in rows if row.status.is_done]
-        self.active_folder_table_model.set_rows(active_rows)
-        self.completed_folder_table_model.set_rows(completed_rows)
+        self._is_syncing_folder_selection = True
+        try:
+            self.active_folder_table_model.set_rows(active_rows)
+            self.completed_folder_table_model.set_rows(completed_rows)
+            self._restore_active_folder_selection(selected_paths, current_path)
+        finally:
+            self._is_syncing_folder_selection = False
+        if selected_paths:
+            self._on_active_folder_selection_changed()
         if not rows:
             self.active_folder_table.clearSelection()
             self.completed_folder_table.clearSelection()
+
+    def _active_folder_selection_state(self) -> tuple[list[str], str | None]:
+        """Capture selected queue keys and the current key before a model reset."""
+
+        selected_paths = self._selected_folder_paths_from_table(
+            self.active_folder_table, self.active_folder_table_model
+        )
+        current_index = self.active_folder_table.currentIndex()
+        current_path = (
+            self.active_folder_table_model.folder_at(current_index.row())
+            if current_index.isValid()
+            else None
+        )
+        return selected_paths, current_path
+
+    def _restore_active_folder_selection(
+        self,
+        selected_paths: list[str],
+        current_path: str | None,
+    ) -> list[str]:
+        """Re-select active folders at their new sorted rows and keep them visible."""
+
+        selection_model = self.active_folder_table.selectionModel()
+        if selection_model is None or not selected_paths:
+            return []
+        restored_paths: list[str] = []
+        indexes: dict[str, QModelIndex] = {}
+        for folder_path in selected_paths:
+            row = self.active_folder_table_model.row_for_folder_path(folder_path)
+            if row is None:
+                continue
+            index = self.active_folder_table_model.index(row, 0)
+            selection_model.select(
+                index, QItemSelectionModel.Select | QItemSelectionModel.Rows
+            )
+            indexes[folder_path] = index
+            restored_paths.append(folder_path)
+        if not restored_paths:
+            return []
+        focused_path = current_path if current_path in indexes else restored_paths[0]
+        focused_index = indexes[focused_path]
+        selection_model.setCurrentIndex(focused_index, QItemSelectionModel.NoUpdate)
+        self.active_folder_table.scrollTo(
+            focused_index, QAbstractItemView.EnsureVisible
+        )
+        return restored_paths
 
     def upsert_folder_row(self, row: FolderSummary) -> None:
         """Insert or update one folder row."""

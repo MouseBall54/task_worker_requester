@@ -158,6 +158,11 @@ class FolderTableModel(QAbstractTableModel):
 
         return folder_path in self._index_map
 
+    def row_for_folder_path(self, folder_path: str) -> int | None:
+        """Return the current row for a stable folder queue key."""
+
+        return self._index_map.get(folder_path)
+
     def folder_at(self, row: int) -> str | None:
         """Return the queue key for the selected row."""
 

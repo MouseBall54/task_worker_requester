@@ -650,6 +650,94 @@ class MainWindowTest(unittest.TestCase):
         finally:
             window.close()
 
+    def test_pending_folder_selection_follows_move_and_hold_refresh(self) -> None:
+        window = self._make_window()
+
+        def summary(path: str, priority: int, *, held: bool = False) -> FolderSummary:
+            return FolderSummary(
+                folder_path=path,
+                total=1,
+                completed=0,
+                success=0,
+                fail=0,
+                timeout=0,
+                error=0,
+                progress=0.0,
+                status=TaskStatus.PENDING,
+                held=held,
+                queue_priority=priority,
+            )
+
+        try:
+            window.show()
+            self._app.processEvents()
+            window.set_folder_rows(
+                [summary("first", 1), summary("second", 2), summary("third", 3)]
+            )
+            selection_model = window.active_folder_table.selectionModel()
+            second_index = window.active_folder_table_model.index(1, 0)
+            selection_model.setCurrentIndex(
+                second_index,
+                QItemSelectionModel.ClearAndSelect
+                | QItemSelectionModel.Rows
+                | QItemSelectionModel.Current,
+            )
+
+            # Emulate the controller response after moving the selected row upward.
+            window.set_folder_rows(
+                [summary("second", 1), summary("first", 2), summary("third", 3)]
+            )
+
+            self.assertEqual(
+                window._selected_folder_paths_from_table(
+                    window.active_folder_table, window.active_folder_table_model
+                ),
+                ["second"],
+            )
+            self.assertEqual(window.active_folder_table.currentIndex().row(), 0)
+            self.assertEqual(
+                window.active_folder_table_model.folder_at(
+                    window.active_folder_table.currentIndex().row()
+                ),
+                "second",
+            )
+
+            # Multi-selection must also survive a hold-state refresh.
+            first_index = window.active_folder_table_model.index(1, 0)
+            third_index = window.active_folder_table_model.index(2, 0)
+            selection_model.setCurrentIndex(
+                first_index,
+                QItemSelectionModel.ClearAndSelect
+                | QItemSelectionModel.Rows
+                | QItemSelectionModel.Current,
+            )
+            selection_model.select(
+                third_index, QItemSelectionModel.Select | QItemSelectionModel.Rows
+            )
+            selection_model.setCurrentIndex(third_index, QItemSelectionModel.NoUpdate)
+            window.set_folder_rows(
+                [
+                    summary("second", 1),
+                    summary("first", 2, held=True),
+                    summary("third", 3, held=True),
+                ]
+            )
+
+            self.assertEqual(
+                window._selected_folder_paths_from_table(
+                    window.active_folder_table, window.active_folder_table_model
+                ),
+                ["first", "third"],
+            )
+            self.assertEqual(
+                window.active_folder_table_model.folder_at(
+                    window.active_folder_table.currentIndex().row()
+                ),
+                "third",
+            )
+        finally:
+            window.close()
+
     def test_log_document_is_bounded_by_configuration(self) -> None:
         window = self._make_window()
         try:
@@ -692,6 +780,9 @@ class MainWindowTest(unittest.TestCase):
         window = self._make_window()
         try:
             self.assertEqual(window.windowTitle(), "IPDK_plus")
+            self.assertEqual((window.width(), window.height()), (1920, 1080))
+            self.assertEqual(window.maximumWidth(), 16_777_215)
+            self.assertEqual(window.maximumHeight(), 16_777_215)
             self.assertFalse(hasattr(window, "brand_icon_label"))
             self.assertFalse(hasattr(window, "drive_combo"))
             self.assertFalse(hasattr(window, "action_edit"))
