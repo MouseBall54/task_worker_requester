@@ -8,6 +8,7 @@ import os
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt
 
 from models.task_models import ImageTask
+from utils.time_utils import format_seoul_display
 
 
 class ImageTableModel(QAbstractTableModel):
@@ -117,4 +118,4 @@ class ImageTableModel(QAbstractTableModel):
     def _format_datetime(value: datetime | None) -> str:
         if value is None:
             return ""
-        return value.astimezone().strftime("%Y-%m-%d %H:%M:%S")
+        return format_seoul_display(value)

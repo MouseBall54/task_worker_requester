@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import datetime
 import logging
 from pathlib import Path
 import time
@@ -22,6 +21,7 @@ from services.workers.queue_metrics_worker import QueueMetricsWorker
 from state.task_store import TaskStore
 from state.sqlite_task_store import SqliteTaskStore
 from ui.main_window import MainWindow
+from utils.time_utils import format_seoul_iso, now_seoul
 
 
 class TaskController(QObject):
@@ -666,7 +666,7 @@ class TaskController(QObject):
                 "message_id": str(envelope.message_id or ""),
                 "correlation_id": str(envelope.correlation_id or ""),
                 "matched_by": matched_by,
-                "received_at": datetime.now().astimezone().isoformat(),
+                "received_at": format_seoul_iso(),
             },
         )
 
@@ -996,7 +996,7 @@ class TaskController(QObject):
     def _log(self, message: str) -> None:
         """Write timestamped logs to UI and logger."""
 
-        timestamped = f"[{datetime.now().strftime('%H:%M:%S')}] {message}"
+        timestamped = f"[{now_seoul().strftime('%H:%M:%S.%f')[:-5]}] {message}"
         self._view.append_log(timestamped)
         self._logger.info(message)
 

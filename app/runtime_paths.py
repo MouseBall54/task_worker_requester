@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
 import hashlib
 import os
 from pathlib import Path
 import shutil
 import sys
+
+from utils.time_utils import now_seoul
 
 
 APPDATA_DIR_NAME = "IPDK_plus"
@@ -351,7 +352,8 @@ def _replace_seeded_file_with_backup(target_path: Path, seed_path: Path) -> None
 def _next_backup_path(target_path: Path) -> Path:
     """Build a non-conflicting backup path next to a refreshed config file."""
 
-    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    now = now_seoul()
+    timestamp = f"{now.strftime('%Y%m%d%H%M%S')}{now.microsecond // 100_000}"
     for index in range(0, 100):
         suffix = f".bak.{timestamp}" if index == 0 else f".bak.{timestamp}.{index}"
         candidate = target_path.with_name(f"{target_path.name}{suffix}")

@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime
 from enum import StrEnum
 from typing import Any
+
+from utils.time_utils import now_seoul
 
 
 class TaskStatus(StrEnum):
@@ -84,7 +86,7 @@ class ImageTask:
     recipe_alias: str = ""
     recipe_path: str = ""
     status: TaskStatus = TaskStatus.PENDING
-    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = field(default_factory=now_seoul)
     sent_at: datetime | None = None
     completed_at: datetime | None = None
     result: list[str] = field(default_factory=list)

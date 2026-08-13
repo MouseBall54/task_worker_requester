@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
 import os
 from pathlib import Path
 import sqlite3
@@ -11,6 +10,8 @@ import stat
 import threading
 from typing import Callable
 from uuid import uuid4
+
+from utils.time_utils import format_seoul_iso
 
 
 INDEX_EMPTY = "EMPTY"
@@ -1329,4 +1330,4 @@ def _escape_like(value: str) -> str:
 
 
 def _now_text() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return format_seoul_iso()

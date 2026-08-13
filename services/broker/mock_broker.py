@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections import defaultdict, deque
 from dataclasses import dataclass
-from datetime import datetime, timezone
 import threading
 import time
 
@@ -16,6 +15,7 @@ from services.broker.base import (
     BrokerQueueStats,
     BrokerResultEnvelope,
 )
+from utils.time_utils import format_seoul_iso
 
 
 @dataclass(slots=True)
@@ -55,7 +55,7 @@ class _MockBackend:
             "result": ["PASS", "mock_label_ok"] if is_pass else ["FAIL", "mock_rule_ng"],
             "status": "DONE" if is_pass else "FAILED",
             "error": None if is_pass else "Mock validation failed",
-            "completed_at": datetime.now(timezone.utc).isoformat(),
+            "completed_at": format_seoul_iso(),
         }
 
         envelope = BrokerResultEnvelope(

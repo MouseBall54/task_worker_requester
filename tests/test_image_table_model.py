@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import unittest
 
 from models.task_models import ImageTask, TaskStatus
@@ -56,6 +57,17 @@ class ImageTableModelTest(unittest.TestCase):
 
         self.assertEqual(model.rowCount(), 2)
         self.assertEqual(model.data(model.index(1, 1), Qt.DisplayRole), "b.jpg")
+
+    def test_task_times_are_displayed_in_seoul_to_one_decimal_place(self) -> None:
+        task = ImageTask(request_id="req-1", image_path="a.jpg", folder_path="folder")
+        task.sent_at = datetime(2026, 8, 13, 1, 2, 3, 456_789, tzinfo=timezone.utc)
+        model = ImageTableModel()
+        model.set_tasks([task])
+
+        self.assertEqual(
+            model.data(model.index(0, 4), Qt.DisplayRole),
+            "2026-08-13 10:02:03.4",
+        )
 
 
 if __name__ == "__main__":

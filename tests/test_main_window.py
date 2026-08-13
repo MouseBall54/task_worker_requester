@@ -316,6 +316,17 @@ class MainWindowTest(unittest.TestCase):
             try:
                 self.assertEqual(dialog.add_button.text(), "폴더 추가")
                 self.assertEqual(dialog.scope_combo.currentData(), SCOPE_DEPTH)
+                self.assertEqual(
+                    dialog.scope_combo.currentData(dialog.SCOPE_DEPTH_ROLE), 5
+                )
+                self.assertEqual(
+                    [
+                        dialog.scope_combo.itemData(index, dialog.SCOPE_DEPTH_ROLE)
+                        for index in range(dialog.scope_combo.count())
+                        if dialog.scope_combo.itemData(index) == SCOPE_DEPTH
+                    ],
+                    [3, 4, 5, 6],
+                )
                 with patch(
                     "ui.main_window.QFileDialog.getExistingDirectory",
                     return_value=str(root),
@@ -356,20 +367,25 @@ class MainWindowTest(unittest.TestCase):
             dialog.changed.connect(lambda action, path: changes.append((action, path)))
             try:
                 dialog._reload(selected_path=str(root))
-                dialog.scope_combo.setCurrentIndex(dialog.scope_combo.findData(SCOPE_DEPTH))
-                dialog._apply_scope()
-                favorite = window._folder_index_repository.get_favorite(str(root))
-                assert favorite is not None
-                self.assertEqual(favorite.scope_mode, SCOPE_DEPTH)
-                self.assertEqual(favorite.max_depth, 5)
-                self.assertEqual(dialog.root_table.item(0, 1).text(), "하위 5계층")
+                for depth in (3, 4, 5, 6):
+                    dialog.scope_combo.setCurrentIndex(
+                        dialog._find_scope_index(SCOPE_DEPTH, depth)
+                    )
+                    dialog._apply_scope()
+                    favorite = window._folder_index_repository.get_favorite(str(root))
+                    assert favorite is not None
+                    self.assertEqual(favorite.scope_mode, SCOPE_DEPTH)
+                    self.assertEqual(favorite.max_depth, depth)
+                    self.assertEqual(
+                        dialog.root_table.item(0, 1).text(), f"하위 {depth}계층"
+                    )
 
                 dialog.scope_combo.setCurrentIndex(dialog.scope_combo.findData(SCOPE_EXCLUDED))
                 dialog._apply_scope()
                 favorite = window._folder_index_repository.get_favorite(str(root))
                 assert favorite is not None
                 self.assertEqual(favorite.scope_mode, SCOPE_EXCLUDED)
-                self.assertEqual(changes, [("scope", str(root)), ("scope", str(root))])
+                self.assertEqual(changes, [("scope", str(root))] * 5)
             finally:
                 dialog.close()
                 window.close()
@@ -383,7 +399,7 @@ class MainWindowTest(unittest.TestCase):
             dialog = FavoriteRootManagerDialog(window._folder_index_repository, window)
             try:
                 dialog._reload(selected_path=str(root))
-                depth_index = dialog.scope_combo.findData(SCOPE_DEPTH)
+                depth_index = dialog._find_scope_index(SCOPE_DEPTH, 6)
                 dialog.scope_combo.setCurrentIndex(depth_index)
 
                 # The one-second status refresh must not overwrite an unapplied edit.
@@ -394,7 +410,7 @@ class MainWindowTest(unittest.TestCase):
                 favorite = window._folder_index_repository.get_favorite(str(root))
                 assert favorite is not None
                 self.assertEqual(favorite.scope_mode, SCOPE_DEPTH)
-                self.assertEqual(favorite.max_depth, 5)
+                self.assertEqual(favorite.max_depth, 6)
             finally:
                 dialog.close()
                 window.close()
@@ -534,6 +550,8 @@ class MainWindowTest(unittest.TestCase):
         dialog.export_requested.connect(exported.append)
         try:
             self.assertEqual(dialog.table.rowCount(), 1)
+            self.assertEqual(dialog.table.item(0, 0).text(), "2026-08-13 10:00:00.0")
+            self.assertEqual(dialog.table.item(0, 1).text(), "2026-08-13 11:00:00.0")
             self.assertEqual(dialog.table.item(0, 8).text(), "80.0%")
             dialog.export_button.click()
             self.assertEqual(exported, ["session-1"])

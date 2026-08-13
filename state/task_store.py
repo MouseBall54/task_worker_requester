@@ -18,6 +18,7 @@ from models.task_models import (
 )
 from services.broker.result_queue import resolve_result_queue_name
 from services.broker.routing import resolve_publish_route
+from utils.time_utils import format_seoul_iso, now_seoul, parse_datetime, to_seoul
 from utils.image_sort import image_path_sort_key
 from utils.qt_compat import QObject, Signal
 
@@ -287,7 +288,7 @@ class TaskStore(QObject):
         if not task or task.status != TaskStatus.PENDING:
             return
         task.status = TaskStatus.SENT
-        task.sent_at = datetime.now(timezone.utc)
+        task.sent_at = now_seoul()
         self.task_updated.emit(request_id)
         self.folder_group_updated.emit(task.folder_path)
         self._emit_overall()
@@ -381,7 +382,7 @@ class TaskStore(QObject):
 
         task.status = TaskStatus.ERROR
         task.error_message = message
-        task.completed_at = datetime.now(timezone.utc)
+        task.completed_at = now_seoul()
         self.task_updated.emit(request_id)
         self.folder_group_updated.emit(task.folder_path)
         self._emit_overall()
@@ -425,7 +426,7 @@ class TaskStore(QObject):
     def mark_timeouts(self, timeout_seconds: int) -> list[str]:
         """Mark non-terminal sent tasks as timeout after threshold."""
 
-        now = datetime.now(timezone.utc)
+        now = now_seoul()
         timed_out_request_ids: list[str] = []
 
         for task in self._tasks.values():
@@ -641,7 +642,7 @@ class TaskStore(QObject):
         progress = (completed / total * 100.0) if total else 0.0
 
         first_sent_at: datetime | None = None
-        now_utc = datetime.now(timezone.utc)
+        now_utc = now_seoul().astimezone(timezone.utc)
 
         for task in self._tasks.values():
             sent_at = self._to_utc_datetime(task.sent_at)
@@ -687,24 +688,18 @@ class TaskStore(QObject):
         """Parse completed timestamp from message or fallback to now."""
 
         if not raw_completed_at:
-            return datetime.now(timezone.utc)
+            return now_seoul()
         try:
-            parsed = datetime.fromisoformat(raw_completed_at)
-            normalized = TaskStore._to_utc_datetime(parsed)
-            if normalized is not None:
-                return normalized
-            return datetime.now(timezone.utc)
+            parsed = parse_datetime(raw_completed_at)
+            return to_seoul(parsed) if parsed is not None else now_seoul()
         except ValueError:
-            return datetime.now(timezone.utc)
+            return now_seoul()
 
     @staticmethod
     def _datetime_to_str(value: datetime | None) -> str:
         """Format datetime for preview output."""
 
-        normalized = TaskStore._to_utc_datetime(value)
-        if normalized is None:
-            return ""
-        return normalized.astimezone().isoformat()
+        return format_seoul_iso(value) if value is not None else ""
 
     @staticmethod
     def _to_utc_datetime(value: datetime | None) -> datetime | None:

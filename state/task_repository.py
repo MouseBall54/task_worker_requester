@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
-from datetime import datetime, timezone
+from datetime import datetime
 import json
 from pathlib import Path
 import sqlite3
@@ -13,6 +13,7 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from models.task_models import FolderSummary, ImageTask, RunHistorySummary, TaskStatus
 from utils.image_sort import compare_image_paths
+from utils.time_utils import format_seoul_iso, now_seoul, parse_datetime
 
 
 _COUNTER_COLUMN = {
@@ -800,7 +801,7 @@ class TaskRepository:
                 """
                 SELECT request_id, folder_path, status FROM tasks
                 WHERE session_id = ? AND status IN (?, ?)
-                  AND sent_at IS NOT NULL AND sent_at <= ?
+                  AND sent_at IS NOT NULL AND julianday(sent_at) <= julianday(?)
                 """,
                 (self.session_id, *sources, cutoff_iso),
             ).fetchall()
@@ -998,7 +999,7 @@ class TaskRepository:
                 FROM sessions s
                 JOIN folders f ON f.session_id = s.session_id
                 GROUP BY s.session_id
-                ORDER BY s.created_at DESC
+                ORDER BY julianday(s.created_at) DESC, s.rowid DESC
                 """
             ).fetchall()
             recipe_rows = self._connection.execute(
@@ -1077,7 +1078,7 @@ class TaskRepository:
                 """
                 SELECT session_id FROM sessions
                 WHERE state IN ('COMPLETED', 'RESET')
-                ORDER BY COALESCE(ended_at, updated_at) DESC
+                ORDER BY julianday(COALESCE(ended_at, updated_at)) DESC, rowid DESC
                 LIMIT -1 OFFSET ?
                 """,
                 (keep,),
@@ -1412,7 +1413,8 @@ class TaskRepository:
         row = self._connection.execute(
             """
             SELECT session_id FROM sessions
-            WHERE state IN ('ACTIVE', 'PAUSED_BY_USER') ORDER BY updated_at DESC LIMIT 1
+            WHERE state IN ('ACTIVE', 'PAUSED_BY_USER')
+            ORDER BY julianday(updated_at) DESC, rowid DESC LIMIT 1
             """
         ).fetchone()
         if row is not None:
@@ -1477,7 +1479,7 @@ def _row_to_task(row: sqlite3.Row, status: TaskStatus | None = None) -> ImageTas
         recipe_alias=str(row["recipe_alias"]),
         recipe_path=str(row["recipe_path"]),
         status=status or TaskStatus(str(row["status"])),
-        created_at=_parse_datetime(row["created_at"]) or datetime.now(timezone.utc),
+        created_at=_parse_datetime(row["created_at"]) or now_seoul(),
         sent_at=_parse_datetime(row["sent_at"]),
         completed_at=_parse_datetime(row["completed_at"]),
         result=list(json.loads(str(row["result_json"] or "[]"))),
@@ -1584,11 +1586,8 @@ def _count_by_folder(rows: Sequence[sqlite3.Row]) -> dict[str, int]:
 
 
 def _now_text() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return format_seoul_iso()
 
 
 def _parse_datetime(value: Any) -> datetime | None:
-    if value is None or not str(value):
-        return None
-    parsed = datetime.fromisoformat(str(value))
-    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+    return parse_datetime(value)

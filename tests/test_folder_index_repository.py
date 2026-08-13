@@ -112,7 +112,11 @@ class FolderIndexRepositoryTest(unittest.TestCase):
 
                 new_folder = root / "beta" / "new_target"
                 new_folder.mkdir(parents=True)
-                os.utime(root, None)
+                root_stat = os.stat(root)
+                os.utime(
+                    root,
+                    ns=(root_stat.st_atime_ns, root_stat.st_mtime_ns + 1_000_000_000),
+                )
                 refreshed = repository.refresh_root(str(root), full=False)
                 self.assertTrue(refreshed.complete)
                 self.assertEqual(
@@ -121,7 +125,14 @@ class FolderIndexRepositoryTest(unittest.TestCase):
                 )
 
                 new_folder.rmdir()
-                os.utime(new_folder.parent, None)
+                parent_stat = os.stat(new_folder.parent)
+                os.utime(
+                    new_folder.parent,
+                    ns=(
+                        parent_stat.st_atime_ns,
+                        parent_stat.st_mtime_ns + 1_000_000_000,
+                    ),
+                )
                 repository.refresh_root(str(root), full=False)
                 self.assertEqual(repository.search("new_target"), [])
             finally:

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 import csv
 import json
 import os
@@ -21,6 +21,7 @@ from models.task_models import (
 from services.broker.result_queue import resolve_result_queue_name
 from services.broker.routing import resolve_publish_route
 from state.task_repository import TaskRepository
+from utils.time_utils import format_seoul_display, format_seoul_iso, now_seoul
 from utils.qt_compat import QObject, Signal
 
 
@@ -200,12 +201,12 @@ class SqliteTaskStore(QObject):
         return changed
 
     def mark_task_sent(self, request_id: str) -> None:
-        sent_at = datetime.now(timezone.utc)
+        sent_at = now_seoul()
         changed = self.repository.transition_task(
             request_id,
             TaskStatus.SENT,
             {TaskStatus.CLAIMED, TaskStatus.PENDING},
-            sent_at=sent_at.isoformat(),
+            sent_at=format_seoul_iso(sent_at),
         )
         if not changed:
             return
@@ -257,7 +258,7 @@ class SqliteTaskStore(QObject):
             request_id,
             TaskStatus.ERROR,
             {TaskStatus.PENDING, TaskStatus.CLAIMED, TaskStatus.SENT, TaskStatus.RUNNING},
-            completed_at=datetime.now(timezone.utc).isoformat(),
+            completed_at=format_seoul_iso(),
             error_message=message,
         )
         if changed:
@@ -265,7 +266,10 @@ class SqliteTaskStore(QObject):
 
     def apply_result(self, task_result: TaskResult) -> bool:
         target = TaskStatus.SUCCESS if task_result.is_success else TaskStatus.FAIL
-        completed_at = task_result.completed_at or datetime.now(timezone.utc).isoformat()
+        try:
+            completed_at = format_seoul_iso(task_result.completed_at)
+        except ValueError:
+            completed_at = format_seoul_iso()
         changed = self.repository.transition_task(
             task_result.request_id,
             target,
@@ -279,10 +283,10 @@ class SqliteTaskStore(QObject):
         return changed
 
     def mark_timeouts(self, timeout_seconds: int) -> list[str]:
-        now = datetime.now(timezone.utc)
+        now = now_seoul()
         request_ids = self.repository.timeout_before(
-            (now - timedelta(seconds=max(1, int(timeout_seconds)))).isoformat(),
-            now.isoformat(),
+            format_seoul_iso(now - timedelta(seconds=max(1, int(timeout_seconds)))),
+            format_seoul_iso(now),
         )
         if request_ids:
             for request_id in request_ids:
@@ -520,9 +524,9 @@ class SqliteTaskStore(QObject):
                         row["recipe_alias"],
                         row["recipe_path"],
                         row["status"],
-                        row["created_at"],
-                        row["sent_at"],
-                        row["completed_at"],
+                        format_seoul_display(row["created_at"]),
+                        format_seoul_display(row["sent_at"]),
+                        format_seoul_display(row["completed_at"]),
                         row["result_json"],
                         row["error_message"],
                     ]
@@ -537,7 +541,7 @@ class SqliteTaskStore(QObject):
         avg_seconds: float | None = None
         eta_seconds: float | None = 0.0 if remaining == 0 else None
         if self._first_sent_at is not None and completed > 0:
-            elapsed = (datetime.now(timezone.utc) - self._first_sent_at).total_seconds()
+            elapsed = (now_seoul() - self._first_sent_at).total_seconds()
             if elapsed > 0:
                 avg_seconds = elapsed / completed
                 eta_seconds = avg_seconds * remaining

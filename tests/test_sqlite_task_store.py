@@ -212,6 +212,7 @@ class SqliteTaskStoreTest(unittest.TestCase):
                 text = destination.read_text(encoding="utf-8-sig")
                 self.assertIn("request_id,folder_path,image_path", text)
                 self.assertIn("folder,a.jpg,R,r.json,PENDING", text)
+                self.assertRegex(text, r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d")
             finally:
                 store.close()
 

@@ -13,6 +13,22 @@ from state.task_repository import TaskRepository
 
 
 class TaskRepositoryTest(unittest.TestCase):
+    def test_generated_session_times_use_seoul_and_tenth_second_precision(self) -> None:
+        repository = TaskRepository()
+        try:
+            row = repository._connection.execute(
+                "SELECT created_at, updated_at FROM sessions WHERE session_id = ?",
+                (repository.session_id,),
+            ).fetchone()
+            assert row is not None
+            for value in row:
+                self.assertRegex(
+                    str(value),
+                    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d\+09:00$",
+                )
+        finally:
+            repository.close()
+
     def test_descriptors_do_not_create_tasks_until_images_are_inserted(self) -> None:
         repository = TaskRepository()
         try:
