@@ -10,6 +10,8 @@ from unittest.mock import Mock, patch
 
 from config.models import AppConfig, PublishConfig, RabbitMQConfig, RecipeConfig, RecipeItem, UiConfig
 from models.task_models import FolderSummary, RunHistorySummary, TaskStatus
+from state.folder_index_repository import SCOPE_DEPTH, SCOPE_EXCLUDED
+from state.folder_index_repository import FolderIndexRepository, INDEX_READY
 
 try:
     from PySide6.QtCore import QItemSelectionModel, Qt
@@ -19,6 +21,7 @@ try:
         QAbstractItemView,
         QApplication,
         QComboBox,
+        QHeaderView,
         QLabel,
         QListWidgetItem,
         QSizePolicy,
@@ -52,7 +55,11 @@ class MainWindowTest(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls._app = QApplication.instance() or QApplication([])
 
-    def _make_window(self, folder_index_database_path=None) -> MainWindow:  # noqa: ANN001
+    def _make_window(
+        self,
+        folder_index_database_path=None,
+        ui_settings_path=None,
+    ) -> MainWindow:  # noqa: ANN001
         config = AppConfig(
             rabbitmq=RabbitMQConfig(host="127.0.0.1", port=5672, username="guest", password="guest"),
             publish=PublishConfig(image_extensions=[".jpg"]),
@@ -66,7 +73,43 @@ class MainWindowTest(unittest.TestCase):
             ui=UiConfig(),
             mock_mode=True,
         )
-        return MainWindow(config, folder_index_database_path=folder_index_database_path)
+        return MainWindow(
+            config,
+            folder_index_database_path=folder_index_database_path,
+            ui_settings_path=ui_settings_path,
+        )
+
+    def test_folder_table_columns_are_resizable_and_persist_independently(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            settings_path = root / "ui_state.ini"
+            first = self._make_window(root / "first.sqlite3", settings_path)
+            try:
+                self.assertEqual(first.active_folder_table.columnWidth(2), 180)
+                self.assertEqual(first.active_folder_table.columnWidth(3), 380)
+                self.assertEqual(first.active_folder_table.columnWidth(4), 240)
+                self.assertEqual(first.active_folder_table.columnWidth(9), 110)
+                for column in range(first.active_folder_table_model.columnCount()):
+                    self.assertEqual(
+                        first.active_folder_table.horizontalHeader().sectionResizeMode(column),
+                        QHeaderView.Interactive,
+                    )
+                first.active_folder_table.setColumnWidth(3, 520)
+                first.active_folder_table.setColumnWidth(4, 330)
+                first.completed_folder_table.setColumnWidth(2, 275)
+                first.completed_folder_table.setColumnWidth(9, 145)
+            finally:
+                first.close()
+
+            restored = self._make_window(root / "second.sqlite3", settings_path)
+            try:
+                self.assertEqual(restored.active_folder_table.columnWidth(3), 520)
+                self.assertEqual(restored.active_folder_table.columnWidth(4), 330)
+                self.assertEqual(restored.completed_folder_table.columnWidth(2), 275)
+                self.assertEqual(restored.completed_folder_table.columnWidth(9), 145)
+                self.assertEqual(restored.completed_folder_table.columnWidth(3), 380)
+            finally:
+                restored.close()
 
     def test_favorite_root_cache_search_renders_actual_folder_path(self) -> None:
         with TemporaryDirectory() as temp_dir:
@@ -134,7 +177,7 @@ class MainWindowTest(unittest.TestCase):
         worker = Mock()
         try:
             window._folder_index_worker = worker
-            window._pending_folder_index_job = ([r"D:\root"], False, "target")
+            window._pending_folder_index_job = ([r"D:\root"], False, None, False)
             window.folder_search_results.addItem("cached result")
             window.btn_cancel_folder_search.setEnabled(True)
 
@@ -144,7 +187,21 @@ class MainWindowTest(unittest.TestCase):
             self.assertIsNone(window._pending_folder_index_job)
             self.assertFalse(window.btn_cancel_folder_search.isEnabled())
             self.assertEqual(window.folder_search_results.count(), 1)
-            self.assertIn("취소 요청", window.folder_search_status.text())
+            self.assertIn("일시정지 요청", window.folder_search_status.text())
+        finally:
+            window._folder_index_worker = None
+            window.close()
+
+    def test_typing_search_does_not_cancel_active_full_index(self) -> None:
+        window = self._make_window()
+        worker = Mock()
+        try:
+            window._folder_index_worker = worker
+            window.folder_search_edit.setText("needle")
+            window._on_folder_search_changed("needle")
+
+            worker.cancel.assert_not_called()
+            self.assertTrue(window._folder_search_debounce.isActive())
         finally:
             window._folder_index_worker = None
             window.close()
@@ -162,7 +219,6 @@ class MainWindowTest(unittest.TestCase):
                 window._start_folder_index_job(
                     [str(root)],
                     full=True,
-                    query="background_target",
                 )
                 deadline = time.monotonic() + 5.0
                 while time.monotonic() < deadline and window._folder_index_thread is not None:
@@ -176,7 +232,37 @@ class MainWindowTest(unittest.TestCase):
                     window.folder_search_results.item(0).data(Qt.UserRole),
                     str(target),
                 )
-                self.assertIn("최신 결과", window.folder_search_status.text())
+                self.assertIn("캐시 결과", window.folder_search_status.text())
+            finally:
+                window.close()
+
+    def test_startup_automatically_resumes_incomplete_persistent_index(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "root"
+            for index in range(6):
+                (root / f"folder-{index}").mkdir(parents=True)
+            database = Path(temp_dir) / "folder_index.sqlite3"
+            repository = FolderIndexRepository(database)
+            repository.add_favorite(str(root))
+            repository.prepare_full_scan(str(root))
+            repository.resume_scan(str(root), max_folders=2)
+            repository.close()
+
+            window = self._make_window(database)
+            try:
+                deadline = time.monotonic() + 5.0
+                while time.monotonic() < deadline:
+                    self._app.processEvents()
+                    favorite = window._folder_index_repository.get_favorite(str(root))
+                    if favorite and favorite.index_status == INDEX_READY:
+                        break
+                    time.sleep(0.01)
+
+                favorite = window._folder_index_repository.get_favorite(str(root))
+                assert favorite is not None
+                self.assertEqual(favorite.index_status, INDEX_READY)
+                self.assertEqual(favorite.pending_count, 0)
+                self.assertEqual(favorite.indexed_count, 7)
             finally:
                 window.close()
 
@@ -236,22 +322,74 @@ class MainWindowTest(unittest.TestCase):
                     dialog._add_root()
 
                 self.assertEqual(dialog.root_table.rowCount(), 1)
-                self.assertEqual(dialog.root_table.columnCount(), 4)
+                self.assertEqual(dialog.root_table.columnCount(), 7)
                 self.assertEqual(
                     [
                         dialog.root_table.horizontalHeaderItem(column).text()
                         for column in range(dialog.root_table.columnCount())
                     ],
-                    ["순서", "Root 경로", "상태", "마지막 확인"],
+                    ["Root 경로", "색인 범위", "상태", "색인됨", "대기", "오류", "마지막 완료"],
                 )
                 self.assertEqual(
-                    dialog.root_table.item(0, 1).data(Qt.UserRole),
+                    dialog.root_table.item(0, 0).data(Qt.UserRole),
                     str(root),
                 )
-                self.assertEqual(dialog.root_table.item(0, 2).text(), "온라인")
+                self.assertEqual(dialog.root_table.item(0, 1).text(), "전체 계층")
                 self.assertEqual(changes, [("add", str(root))])
             finally:
                 dialog.close()
+                window.close()
+
+    def test_favorite_root_manager_applies_depth_and_excluded_scope(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "root"
+            root.mkdir()
+            window = self._make_window(Path(temp_dir) / "folder_index.sqlite3")
+            window._folder_index_repository.add_favorite(str(root))
+            dialog = FavoriteRootManagerDialog(window._folder_index_repository, window)
+            changes: list[tuple[str, str]] = []
+            dialog.changed.connect(lambda action, path: changes.append((action, path)))
+            try:
+                dialog._reload(selected_path=str(root))
+                dialog.scope_combo.setCurrentIndex(dialog.scope_combo.findData(SCOPE_DEPTH))
+                dialog._apply_scope()
+                favorite = window._folder_index_repository.get_favorite(str(root))
+                assert favorite is not None
+                self.assertEqual(favorite.scope_mode, SCOPE_DEPTH)
+                self.assertEqual(favorite.max_depth, 5)
+                self.assertEqual(dialog.root_table.item(0, 1).text(), "하위 5계층")
+
+                dialog.scope_combo.setCurrentIndex(dialog.scope_combo.findData(SCOPE_EXCLUDED))
+                dialog._apply_scope()
+                favorite = window._folder_index_repository.get_favorite(str(root))
+                assert favorite is not None
+                self.assertEqual(favorite.scope_mode, SCOPE_EXCLUDED)
+                self.assertEqual(changes, [("scope", str(root)), ("scope", str(root))])
+            finally:
+                dialog.close()
+                window.close()
+
+    def test_folder_search_more_appends_next_page_and_shows_total(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "root"
+            for index in range(205):
+                (root / f"page-target-{index:03d}").mkdir(parents=True)
+            window = self._make_window(Path(temp_dir) / "folder_index.sqlite3")
+            try:
+                window._folder_index_repository.add_favorite(str(root))
+                window._folder_index_repository.refresh_root(str(root), full=True)
+                window.folder_search_edit.setText("page-target")
+
+                self.assertEqual(window.folder_search_results.count(), 200)
+                self.assertFalse(window.btn_more_folder_search.isHidden())
+                self.assertIn("200/205", window.folder_search_status.text())
+
+                window._load_more_folder_search_results()
+
+                self.assertEqual(window.folder_search_results.count(), 205)
+                self.assertFalse(window.btn_more_folder_search.isVisible())
+                self.assertIn("205/205", window.folder_search_status.text())
+            finally:
                 window.close()
 
     def test_favorite_click_navigates_and_offline_root_is_marked(self) -> None:
@@ -282,20 +420,15 @@ class MainWindowTest(unittest.TestCase):
     def test_missing_search_result_is_verified_before_navigation(self) -> None:
         window = self._make_window()
         errors: list[str] = []
-        refreshes: list[tuple[list[str], bool, str]] = []
         try:
             item = QListWidgetItem("missing")
             item.setData(Qt.UserRole, r"Z:\missing\target")
             item.setData(Qt.UserRole + 1, r"Z:\missing")
             window._show_path_error = errors.append  # type: ignore[method-assign]
-            window._start_folder_index_job = (  # type: ignore[method-assign]
-                lambda roots, full, query: refreshes.append((roots, full, query))
-            )
-
             window._on_folder_search_result_clicked(item)
 
             self.assertEqual(len(errors), 1)
-            self.assertEqual(refreshes, [([r"Z:\missing"], False, "")])
+            self.assertEqual(window._folder_index_repository.search("target"), [])
         finally:
             window.close()
 

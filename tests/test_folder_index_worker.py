@@ -11,7 +11,7 @@ from state.folder_index_repository import FolderIndexRepository
 
 
 class FolderIndexWorkerTest(unittest.TestCase):
-    def test_worker_refreshes_then_returns_latest_search_results(self) -> None:
+    def test_worker_refreshes_index_without_owning_search_results(self) -> None:
         with TemporaryDirectory() as temp_dir:
             root = Path(temp_dir) / "root"
             target = root / "fresh_target"
@@ -22,7 +22,6 @@ class FolderIndexWorkerTest(unittest.TestCase):
                 repository,
                 [str(root)],
                 full=True,
-                query="fresh_target",
             )
             payloads: list[dict] = []
             failures: list[str] = []
@@ -33,10 +32,8 @@ class FolderIndexWorkerTest(unittest.TestCase):
 
                 self.assertEqual(failures, [])
                 self.assertEqual(len(payloads), 1)
-                self.assertEqual(
-                    [result.path for result in payloads[0]["results"]],
-                    [str(target)],
-                )
+                self.assertNotIn("results", payloads[0])
+                self.assertEqual(repository.search("fresh_target")[0].path, str(target))
                 self.assertFalse(payloads[0]["cancelled"])
             finally:
                 repository.close()
@@ -48,7 +45,7 @@ class FolderIndexWorkerTest(unittest.TestCase):
             repository = FolderIndexRepository()
             repository.add_favorite(str(root))
             repository.refresh_root(str(root), full=True)
-            worker = FolderIndexWorker(repository, [str(root)], full=True, query="cached")
+            worker = FolderIndexWorker(repository, [str(root)], full=True)
             payloads: list[dict] = []
             worker.completed.connect(payloads.append)
             try:

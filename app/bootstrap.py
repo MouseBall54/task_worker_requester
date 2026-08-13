@@ -16,6 +16,7 @@ from app.runtime_paths import (
     resolve_logs_dir,
     resolve_stylesheet_path,
     resolve_task_database_path,
+    resolve_ui_settings_path,
 )
 from app.single_instance import SingleInstanceGuard, ensure_single_instance
 from app.version import APP_VERSION
@@ -71,6 +72,7 @@ def run_app(config_path: str | None = None) -> int:
     window = MainWindow(
         config=app_config,
         folder_index_database_path=resolve_folder_index_database_path(),
+        ui_settings_path=resolve_ui_settings_path(),
     )
     controller = TaskController(
         config=app_config,

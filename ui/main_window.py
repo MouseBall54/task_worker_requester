@@ -8,11 +8,13 @@ from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import (
+    QByteArray,
     QDir,
     QFileSystemWatcher,
     QItemSelectionModel,
     QModelIndex,
     QSize,
+    QSettings,
     Qt,
     QThread,
     QTimer,
@@ -61,7 +63,20 @@ from app.runtime_paths import resolve_ui_icon_path
 from config.models import AppConfig
 from models.task_models import FolderSummary, ImageTask, RunHistorySummary
 from services.workers.folder_index_worker import FolderIndexWorker
-from state.folder_index_repository import FolderIndexRepository, FolderSearchResult
+from state.folder_index_repository import (
+    INDEX_EMPTY,
+    INDEX_EXCLUDED,
+    INDEX_INCOMPLETE,
+    INDEX_INDEXING,
+    INDEX_OFFLINE,
+    INDEX_PAUSED,
+    INDEX_READY,
+    SCOPE_DEPTH,
+    SCOPE_EXCLUDED,
+    SCOPE_FULL,
+    FolderIndexRepository,
+    FolderSearchResult,
+)
 from ui.help_dialog import HelpDialog
 from ui.models import FolderTableModel, ImageTableModel, ProgressBarDelegate
 from ui.widgets import MQButtonDelegate, StatusBadgeDelegate
@@ -83,6 +98,26 @@ class FolderTreeView(QTreeView):
 
         if preserve_horizontal_position:
             horizontal_scrollbar.setValue(horizontal_value)
+
+
+def _folder_index_status_label(status: str) -> str:
+    return {
+        INDEX_EMPTY: "미색인",
+        INDEX_INDEXING: "색인 중",
+        INDEX_PAUSED: "일시정지",
+        INDEX_INCOMPLETE: "미완료",
+        INDEX_READY: "완료",
+        INDEX_OFFLINE: "오프라인",
+        INDEX_EXCLUDED: "색인 제외",
+    }.get(status, status)
+
+
+def _folder_scope_label(scope_mode: str, max_depth: int | None) -> str:
+    if scope_mode == SCOPE_DEPTH:
+        return f"하위 {max_depth or 5}계층"
+    if scope_mode == SCOPE_EXCLUDED:
+        return "색인 제외"
+    return "전체 계층"
 
 
 class MQPreviewDialog(QDialog):
@@ -188,7 +223,7 @@ class FavoriteRootManagerDialog(QDialog):
         super().__init__(parent)
         self._repository = repository
         self.setWindowTitle("즐겨찾기 Root 관리")
-        self.resize(720, 420)
+        self.resize(1120, 520)
 
         layout = QVBoxLayout(self)
         description = QLabel(
@@ -197,10 +232,10 @@ class FavoriteRootManagerDialog(QDialog):
         description.setWordWrap(True)
         layout.addWidget(description)
 
-        self.root_table = QTableWidget(0, 4, self)
+        self.root_table = QTableWidget(0, 7, self)
         self.root_table.setObjectName("favoriteRootManagerTable")
         self.root_table.setHorizontalHeaderLabels(
-            ["순서", "Root 경로", "상태", "마지막 확인"]
+            ["Root 경로", "색인 범위", "상태", "색인됨", "대기", "오류", "마지막 완료"]
         )
         self.root_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.root_table.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -208,15 +243,14 @@ class FavoriteRootManagerDialog(QDialog):
         self.root_table.setAlternatingRowColors(True)
         self.root_table.verticalHeader().setVisible(False)
         self.root_table.horizontalHeader().setSectionResizeMode(
-            0, QHeaderView.ResizeToContents
+            0, QHeaderView.Stretch
         )
-        self.root_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
-        self.root_table.horizontalHeader().setSectionResizeMode(
-            2, QHeaderView.ResizeToContents
-        )
-        self.root_table.horizontalHeader().setSectionResizeMode(
-            3, QHeaderView.ResizeToContents
-        )
+        for column in range(1, 6):
+            self.root_table.horizontalHeader().setSectionResizeMode(
+                column, QHeaderView.ResizeToContents
+            )
+        self.root_table.horizontalHeader().setSectionResizeMode(6, QHeaderView.Interactive)
+        self.root_table.setColumnWidth(6, 190)
         self.root_table.itemSelectionChanged.connect(self._sync_buttons)
         layout.addWidget(self.root_table, stretch=1)
 
@@ -225,10 +259,26 @@ class FavoriteRootManagerDialog(QDialog):
         self.remove_button = QPushButton("삭제", self)
         self.up_button = QPushButton("위로", self)
         self.down_button = QPushButton("아래로", self)
+        self.scope_combo = QComboBox(self)
+        self.scope_combo.addItem("전체 계층", SCOPE_FULL)
+        self.scope_combo.addItem("하위 5계층", SCOPE_DEPTH)
+        self.scope_combo.addItem("색인 제외", SCOPE_EXCLUDED)
+        self.apply_scope_button = QPushButton("범위 적용", self)
+        self.reindex_button = QPushButton("전체 재색인", self)
+        self.refresh_button = QPushButton("증분 갱신", self)
+        self.pause_button = QPushButton("색인 일시정지", self)
+        self.resume_button = QPushButton("색인 재개", self)
+        self.errors_button = QPushButton("오류 보기", self)
         self.add_button.clicked.connect(self._add_root)
         self.remove_button.clicked.connect(self._remove_root)
         self.up_button.clicked.connect(lambda: self._move_root("up"))
         self.down_button.clicked.connect(lambda: self._move_root("down"))
+        self.apply_scope_button.clicked.connect(self._apply_scope)
+        self.reindex_button.clicked.connect(lambda: self._emit_action("reindex"))
+        self.refresh_button.clicked.connect(lambda: self._emit_action("refresh"))
+        self.pause_button.clicked.connect(self._pause_root)
+        self.resume_button.clicked.connect(self._resume_root)
+        self.errors_button.clicked.connect(self._show_errors)
         action_row.addWidget(self.add_button)
         action_row.addWidget(self.remove_button)
         action_row.addStretch(1)
@@ -236,37 +286,64 @@ class FavoriteRootManagerDialog(QDialog):
         action_row.addWidget(self.down_button)
         layout.addLayout(action_row)
 
+        index_row = QHBoxLayout()
+        index_row.addWidget(QLabel("선택 Root 색인 범위", self))
+        index_row.addWidget(self.scope_combo)
+        index_row.addWidget(self.apply_scope_button)
+        index_row.addSpacing(12)
+        index_row.addWidget(self.reindex_button)
+        index_row.addWidget(self.refresh_button)
+        index_row.addWidget(self.pause_button)
+        index_row.addWidget(self.resume_button)
+        index_row.addWidget(self.errors_button)
+        index_row.addStretch(1)
+        layout.addLayout(index_row)
+
         buttons = QDialogButtonBox(QDialogButtonBox.Close, parent=self)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
         self._reload()
+        self._status_timer = QTimer(self)
+        self._status_timer.setInterval(1000)
+        self._status_timer.timeout.connect(
+            lambda: self._reload(selected_path=self._selected_path())
+        )
+        self.finished.connect(lambda _result: self._status_timer.stop())
+        self._status_timer.start()
 
     def _reload(self, selected_path: str | None = None) -> None:
         favorites = self._repository.list_favorites()
         self.root_table.setRowCount(len(favorites))
         for row, favorite in enumerate(favorites):
-            order_item = QTableWidgetItem(str(row + 1))
-            order_item.setTextAlignment(Qt.AlignCenter)
             path_item = QTableWidgetItem(favorite.path)
             path_item.setData(Qt.UserRole, favorite.path)
-            status_item = QTableWidgetItem("온라인" if favorite.online else "오프라인")
+            scope_item = QTableWidgetItem(_folder_scope_label(favorite.scope_mode, favorite.max_depth))
+            status_item = QTableWidgetItem(_folder_index_status_label(favorite.index_status))
             status_item.setTextAlignment(Qt.AlignCenter)
+            indexed_item = QTableWidgetItem(f"{favorite.indexed_count:,}")
+            pending_item = QTableWidgetItem(f"{favorite.pending_count:,}")
+            error_item = QTableWidgetItem(f"{favorite.error_count:,}")
+            completed_item = QTableWidgetItem(favorite.last_completed or "-")
+            for item in (indexed_item, pending_item, error_item):
+                item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
             checked = favorite.last_checked or "아직 확인하지 않음"
-            checked_item = QTableWidgetItem(checked)
-            for item in (order_item, path_item, status_item, checked_item):
+            for item in (path_item, scope_item, status_item, indexed_item, pending_item, error_item, completed_item):
                 item.setToolTip(f"{favorite.path}\n마지막 확인: {checked}")
-            self.root_table.setItem(row, 0, order_item)
-            self.root_table.setItem(row, 1, path_item)
+            self.root_table.setItem(row, 0, path_item)
+            self.root_table.setItem(row, 1, scope_item)
             self.root_table.setItem(row, 2, status_item)
-            self.root_table.setItem(row, 3, checked_item)
+            self.root_table.setItem(row, 3, indexed_item)
+            self.root_table.setItem(row, 4, pending_item)
+            self.root_table.setItem(row, 5, error_item)
+            self.root_table.setItem(row, 6, completed_item)
             if favorite.path == selected_path:
-                self.root_table.setCurrentCell(row, 1)
+                self.root_table.setCurrentCell(row, 0)
                 self.root_table.selectRow(row)
         self._sync_buttons()
 
     def _selected_path(self) -> str | None:
         row = self.root_table.currentRow()
-        item = self.root_table.item(row, 1) if row >= 0 else None
+        item = self.root_table.item(row, 0) if row >= 0 else None
         if item is None:
             return None
         return str(item.data(Qt.UserRole) or "").strip() or None
@@ -277,6 +354,28 @@ class FavoriteRootManagerDialog(QDialog):
         self.remove_button.setEnabled(row >= 0)
         self.up_button.setEnabled(row > 0)
         self.down_button.setEnabled(row >= 0 and row < count - 1)
+        path = self._selected_path()
+        favorite = self._repository.get_favorite(path) if path else None
+        selected = favorite is not None
+        for button in (
+            self.apply_scope_button,
+            self.reindex_button,
+            self.refresh_button,
+            self.pause_button,
+            self.resume_button,
+            self.errors_button,
+        ):
+            button.setEnabled(selected)
+        if favorite is not None:
+            combo_index = self.scope_combo.findData(favorite.scope_mode)
+            if combo_index >= 0:
+                self.scope_combo.setCurrentIndex(combo_index)
+            self.pause_button.setEnabled(favorite.index_status == INDEX_INDEXING)
+            self.resume_button.setEnabled(
+                favorite.index_status in {INDEX_PAUSED, INDEX_INCOMPLETE, INDEX_OFFLINE, INDEX_EMPTY}
+                and favorite.scope_mode != SCOPE_EXCLUDED
+            )
+            self.errors_button.setEnabled(favorite.error_count > 0)
 
     def _add_root(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "즐겨찾기 Root 선택")
@@ -300,6 +399,61 @@ class FavoriteRootManagerDialog(QDialog):
         if path and self._repository.move_favorite(path, operation):
             self._reload(selected_path=path)
             self.changed.emit("move", path)
+
+    def _apply_scope(self) -> None:
+        path = self._selected_path()
+        mode = str(self.scope_combo.currentData() or SCOPE_FULL)
+        if path and self._repository.set_scope(
+            path, mode, 5 if mode == SCOPE_DEPTH else None
+        ):
+            self._reload(selected_path=path)
+            self.changed.emit("scope", path)
+
+    def _emit_action(self, action: str) -> None:
+        path = self._selected_path()
+        if path:
+            self.changed.emit(action, path)
+
+    def _pause_root(self) -> None:
+        path = self._selected_path()
+        if path and self._repository.pause_root(path):
+            self._reload(selected_path=path)
+            self.changed.emit("pause", path)
+
+    def _resume_root(self) -> None:
+        path = self._selected_path()
+        if path and self._repository.resume_root(path):
+            self._reload(selected_path=path)
+            self.changed.emit("resume", path)
+
+    def _show_errors(self) -> None:
+        path = self._selected_path()
+        if not path:
+            return
+        errors = self._repository.list_errors(path)
+        dialog = QDialog(self)
+        dialog.setWindowTitle("폴더 색인 오류")
+        dialog.resize(920, 430)
+        layout = QVBoxLayout(dialog)
+        table = QTableWidget(len(errors), 4, dialog)
+        table.setHorizontalHeaderLabels(["종류", "폴더 경로", "재시도", "오류 내용"])
+        table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        table.verticalHeader().setVisible(False)
+        table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
+        for row, error in enumerate(errors):
+            table.setItem(row, 0, QTableWidgetItem(error.error_kind))
+            table.setItem(row, 1, QTableWidgetItem(error.folder_path))
+            table.setItem(row, 2, QTableWidgetItem(str(error.retry_count)))
+            table.setItem(row, 3, QTableWidgetItem(error.message))
+        layout.addWidget(table)
+        buttons = QDialogButtonBox(QDialogButtonBox.Close, parent=dialog)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        dialog.exec()
 
 
 class PreflightDialog(QDialog):
@@ -633,6 +787,7 @@ class MainWindow(QMainWindow):
         self,
         config: AppConfig,
         folder_index_database_path: str | Path | None = None,
+        ui_settings_path: str | Path | None = None,
     ) -> None:
         super().__init__()
         self._config = config
@@ -641,8 +796,19 @@ class MainWindow(QMainWindow):
         )
         self._folder_index_thread: QThread | None = None
         self._folder_index_worker: FolderIndexWorker | None = None
-        self._pending_folder_index_job: tuple[list[str], bool, str] | None = None
+        self._pending_folder_index_job: tuple[list[str], bool, int | None, bool] | None = None
         self._folder_index_shutting_down = False
+        self._ui_settings: QSettings | None = None
+        if ui_settings_path is not None:
+            settings_path = Path(ui_settings_path)
+            settings_path.parent.mkdir(parents=True, exist_ok=True)
+            self._ui_settings = QSettings(str(settings_path), QSettings.IniFormat)
+        self._folder_table_header_save_timer = QTimer(self)
+        self._folder_table_header_save_timer.setSingleShot(True)
+        self._folder_table_header_save_timer.setInterval(300)
+        self._folder_table_header_save_timer.timeout.connect(
+            self._save_folder_table_header_states
+        )
         self._is_syncing_navigation = False
         self._active_result_queue: str | None = None
         self._is_syncing_folder_selection = False
@@ -657,6 +823,9 @@ class MainWindow(QMainWindow):
         self._runtime_options_enabled = True
         self._image_page_has_more = False
         self._image_page_request_pending = False
+        self._folder_search_page_limit = 200
+        self._folder_search_total = 0
+        self._folder_search_offset = 0
         self._recipe_actions: list[QAction] = []
         self._build_ui()
         self._build_menu_bar()
@@ -693,6 +862,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
         """Stop folder-index work before Qt destroys its thread objects."""
 
+        self._save_folder_table_header_states()
         self.shutdown_folder_navigation()
         super().closeEvent(event)
 
@@ -726,10 +896,22 @@ class MainWindow(QMainWindow):
         self.folder_search_edit.textChanged.connect(self._on_folder_search_changed)
         self.folder_search_results.itemClicked.connect(self._on_folder_search_result_clicked)
         self.btn_cancel_folder_search.clicked.connect(self._cancel_folder_search)
+        self.btn_more_folder_search.clicked.connect(self._load_more_folder_search_results)
 
         self._reload_favorite_roots()
-        if self._folder_index_repository.list_favorites():
-            QTimer.singleShot(0, self._refresh_favorite_roots_incrementally)
+        resumable = [
+            favorite.path
+            for favorite in self._folder_index_repository.list_favorites()
+            if favorite.scope_mode != SCOPE_EXCLUDED
+            and favorite.index_status != INDEX_PAUSED
+        ]
+        if resumable:
+            QTimer.singleShot(
+                0,
+                lambda: self._start_folder_index_job(
+                    resumable, full=False, max_folders_per_root=None, retry_errors=True
+                ),
+            )
 
     def _reload_favorite_roots(self, selected_path: str | None = None) -> None:
         favorites = self._folder_index_repository.list_favorites()
@@ -740,8 +922,8 @@ class MainWindow(QMainWindow):
         self.favorite_root_list.clear()
         for favorite in favorites:
             status = "●" if favorite.online else "○"
-            suffix = "" if favorite.online else " (오프라인)"
-            item = QListWidgetItem(f"{status} {favorite.path}{suffix}")
+            suffix = _folder_index_status_label(favorite.index_status)
+            item = QListWidgetItem(f"{status} {favorite.path} · {suffix}")
             item.setData(Qt.UserRole, favorite.path)
             checked = favorite.last_checked or "아직 확인하지 않음"
             item.setToolTip(f"{favorite.path}\n마지막 확인: {checked}")
@@ -789,16 +971,19 @@ class MainWindow(QMainWindow):
             self.append_log(f"[폴더 검색] 즐겨찾기 Root 추가: {path}")
         self._reload_favorite_roots(selected_path=path if action != "remove" else None)
         self._show_cached_folder_search()
-        if action == "add":
-            self._start_folder_index_job(
-                [path], full=True, query=self.folder_search_edit.text()
-            )
+        if action in {"add", "reindex"}:
+            self._start_folder_index_job([path], full=True)
+        elif action in {"refresh", "resume", "scope"}:
+            favorite = self._folder_index_repository.get_favorite(path)
+            if favorite and favorite.scope_mode != SCOPE_EXCLUDED:
+                self._start_folder_index_job([path], full=False, retry_errors=True)
+        elif action == "pause":
+            self._cancel_active_folder_index_job(clear_pending=False)
 
     def _on_favorite_root_clicked(self, item: QListWidgetItem) -> None:
         path = str(item.data(Qt.UserRole) or "")
         if not os.path.isdir(path):
             self.folder_search_status.setText(f"오프라인 Root: {path}")
-            self._start_folder_index_job([path], full=False, query=self.folder_search_edit.text())
             return
         self.jump_to_path(path, show_feedback=True)
 
@@ -810,7 +995,6 @@ class MainWindow(QMainWindow):
         self._start_folder_index_job(
             [path for path in roots if path],
             full=True,
-            query=self.folder_search_edit.text(),
         )
 
     def _refresh_favorite_roots_incrementally(self) -> None:
@@ -819,7 +1003,8 @@ class MainWindow(QMainWindow):
             self._start_folder_index_job(
                 roots,
                 full=False,
-                query=self.folder_search_edit.text(),
+                max_folders_per_root=2000,
+                retry_errors=False,
             )
 
     def _on_folder_search_changed(self, query: str) -> None:
@@ -828,8 +1013,7 @@ class MainWindow(QMainWindow):
         self._show_cached_folder_search()
         self._folder_search_debounce.stop()
         if not query.strip():
-            self._cancel_active_folder_index_job(clear_pending=True)
-            self.btn_cancel_folder_search.setEnabled(False)
+            self.btn_more_folder_search.hide()
             return
         self._folder_search_debounce.start()
 
@@ -838,6 +1022,7 @@ class MainWindow(QMainWindow):
         if not query:
             self.folder_search_results.clear()
             self.folder_search_results.hide()
+            self.btn_more_folder_search.hide()
             favorite_count = len(self._folder_index_repository.list_favorites())
             self.folder_search_status.setText(
                 "검색어를 입력하세요."
@@ -851,24 +1036,45 @@ class MainWindow(QMainWindow):
             self.folder_search_results.hide()
             self.folder_search_status.setText("Enter 또는 검색을 누르면 경로로 이동합니다.")
             return
-        results = self._folder_index_repository.search(query)
-        self._render_folder_search_results(results)
-        self.folder_search_status.setText(f"캐시 결과 {len(results):,}개")
+        page = self._folder_index_repository.search_page(
+            query, limit=self._folder_search_page_limit
+        )
+        self._folder_search_offset = len(page.results)
+        self._folder_search_total = page.total_count
+        self._render_folder_search_results(page.results)
+        self.btn_more_folder_search.setVisible(page.has_more)
+        self.folder_search_status.setText(
+            f"캐시 결과 {len(page.results):,}/{page.total_count:,}개"
+        )
 
     def _run_live_folder_search(self) -> None:
         query = self.folder_search_edit.text().strip()
         if not query or os.path.isdir(self._normalize_navigation_path(query)):
             return
-        roots = [favorite.path for favorite in self._folder_index_repository.list_favorites()]
-        if not roots:
+        self._show_cached_folder_search()
+
+    def _load_more_folder_search_results(self) -> None:
+        query = self.folder_search_edit.text().strip()
+        if not query:
             return
-        self.folder_search_status.setText(
-            f"캐시 결과 {self.folder_search_results.count():,}개 · 실제 폴더 변경분 확인 중..."
+        page = self._folder_index_repository.search_page(
+            query,
+            limit=self._folder_search_page_limit,
+            offset=self._folder_search_offset,
         )
-        self._start_folder_index_job(roots, full=False, query=query)
+        self._append_folder_search_results(page.results)
+        self._folder_search_offset += len(page.results)
+        self._folder_search_total = page.total_count
+        self.btn_more_folder_search.setVisible(page.has_more)
+        self.folder_search_status.setText(
+            f"캐시 결과 {self._folder_search_offset:,}/{page.total_count:,}개"
+        )
 
     def _render_folder_search_results(self, results: list[FolderSearchResult]) -> None:
         self.folder_search_results.clear()
+        self._append_folder_search_results(results)
+
+    def _append_folder_search_results(self, results: list[FolderSearchResult]) -> None:
         for result in results:
             status = "" if result.root_online else "[오프라인] "
             item = QListWidgetItem(f"{status}{result.name}  —  {result.parent_path}")
@@ -876,34 +1082,51 @@ class MainWindow(QMainWindow):
             item.setData(Qt.UserRole + 1, result.root_path)
             item.setToolTip(result.path)
             self.folder_search_results.addItem(item)
-        self.folder_search_results.setVisible(bool(results))
+        self.folder_search_results.setVisible(self.folder_search_results.count() > 0)
 
     def _on_folder_search_result_clicked(self, item: QListWidgetItem) -> None:
         path = str(item.data(Qt.UserRole) or "")
         root_path = str(item.data(Qt.UserRole + 1) or "")
-        if os.path.isdir(path):
+        if self._folder_index_repository.path_is_directory(path):
             self.jump_to_path(path, show_feedback=True)
             return
         self._show_path_error(f"검색 결과 폴더가 현재 존재하지 않습니다: {path}")
         if root_path:
-            self._start_folder_index_job(
-                [root_path], full=False, query=self.folder_search_edit.text()
-            )
+            self._folder_index_repository.mark_path_missing(root_path, path)
+            self._show_cached_folder_search()
 
     def _start_folder_index_job(
         self,
         root_paths: list[str],
         *,
         full: bool,
-        query: str,
+        max_folders_per_root: int | None = None,
+        retry_errors: bool = False,
     ) -> None:
         roots = list(dict.fromkeys(path for path in root_paths if path))
         if self._folder_index_shutting_down or not roots:
             return
         if self._folder_index_thread is not None:
-            self._pending_folder_index_job = (roots, bool(full), query.strip())
-            if self._folder_index_worker is not None:
-                self._folder_index_worker.cancel()
+            if self._pending_folder_index_job is None:
+                self._pending_folder_index_job = (
+                    roots, bool(full), max_folders_per_root, bool(retry_errors)
+                )
+            else:
+                pending_roots, pending_full, pending_max, pending_retry = (
+                    self._pending_folder_index_job
+                )
+                combined_full = pending_full or bool(full)
+                combined_max = (
+                    None
+                    if combined_full or pending_max is None or max_folders_per_root is None
+                    else max(pending_max, max_folders_per_root)
+                )
+                self._pending_folder_index_job = (
+                    list(dict.fromkeys([*pending_roots, *roots])),
+                    combined_full,
+                    combined_max,
+                    pending_retry or bool(retry_errors),
+                )
             return
 
         thread = QThread(self)
@@ -911,7 +1134,8 @@ class MainWindow(QMainWindow):
             self._folder_index_repository,
             roots,
             full=full,
-            query=query,
+            max_folders_per_root=max_folders_per_root,
+            retry_errors=retry_errors,
         )
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
@@ -924,29 +1148,30 @@ class MainWindow(QMainWindow):
         thread.finished.connect(self._on_folder_index_thread_finished)
         self._folder_index_thread = thread
         self._folder_index_worker = worker
-        self.btn_cancel_folder_search.setEnabled(bool(query.strip()))
+        self.btn_cancel_folder_search.setEnabled(True)
         thread.start(QThread.LowPriority)
 
     def _on_folder_index_progress(self, root_path: str, count: int) -> None:
-        if self.folder_search_edit.text().strip():
+        favorite = self._folder_index_repository.get_favorite(root_path)
+        if favorite:
             self.folder_search_status.setText(
-                f"실제 폴더 확인 중 · {Path(root_path).name or root_path}: {count:,}개"
+                f"백그라운드 색인 중 · {Path(root_path).name or root_path} · "
+                f"색인 {favorite.indexed_count:,} · 대기 {favorite.pending_count:,} · "
+                f"오류 {favorite.error_count:,}"
             )
 
     def _on_folder_index_completed(self, payload: object) -> None:
         if not isinstance(payload, dict):
             return
         self._reload_favorite_roots()
-        query = str(payload.get("query") or "")
-        if query and query == self.folder_search_edit.text().strip() and not payload.get("cancelled"):
-            results = list(payload.get("results") or [])
-            self._render_folder_search_results(results)
-            offline_count = sum(
-                not outcome.online for outcome in payload.get("outcomes", [])
-            )
-            suffix = f" · 오프라인 Root {offline_count}개" if offline_count else ""
+        self._show_cached_folder_search()
+        outcomes = list(payload.get("outcomes") or [])
+        if not self.folder_search_edit.text().strip() and outcomes:
+            indexed = sum(outcome.indexed_count for outcome in outcomes)
+            pending = sum(outcome.pending_count for outcome in outcomes)
+            errors = sum(outcome.error_count for outcome in outcomes)
             self.folder_search_status.setText(
-                f"최신 결과 {len(results):,}개{suffix}"
+                f"색인 상태 · 등록 {indexed:,} · 대기 {pending:,} · 오류 {errors:,}"
             )
 
     def _on_folder_index_failed(self, message: str) -> None:
@@ -960,15 +1185,23 @@ class MainWindow(QMainWindow):
         pending = self._pending_folder_index_job
         self._pending_folder_index_job = None
         if pending and not self._folder_index_shutting_down:
-            roots, full, query = pending
-            self._start_folder_index_job(roots, full=full, query=query)
+            roots, full, max_folders, retry_errors = pending
+            self._start_folder_index_job(
+                roots,
+                full=full,
+                max_folders_per_root=max_folders,
+                retry_errors=retry_errors,
+            )
 
     def _cancel_folder_search(self) -> None:
         self._folder_search_debounce.stop()
+        for favorite in self._folder_index_repository.list_favorites():
+            if favorite.index_status == INDEX_INDEXING:
+                self._folder_index_repository.pause_root(favorite.path)
         self._cancel_active_folder_index_job(clear_pending=True)
         self.btn_cancel_folder_search.setEnabled(False)
         self.folder_search_status.setText(
-            f"검색 갱신 취소 요청 · 캐시 결과 {self.folder_search_results.count():,}개 유지"
+            f"색인 일시정지 요청 · 캐시 결과 {self.folder_search_results.count():,}개 유지"
         )
 
     def _cancel_active_folder_index_job(self, *, clear_pending: bool) -> None:
@@ -1074,7 +1307,7 @@ class MainWindow(QMainWindow):
         self.folder_search_edit = self.path_jump_edit
         self.btn_path_jump = QPushButton("검색")
         self.btn_path_jump.clicked.connect(self._on_path_jump_requested)
-        self.btn_cancel_folder_search = QPushButton("취소")
+        self.btn_cancel_folder_search = QPushButton("색인 일시정지")
         self.btn_cancel_folder_search.setEnabled(False)
         search_row.addWidget(self.path_jump_edit, stretch=1)
         search_row.addWidget(self.btn_path_jump)
@@ -1091,6 +1324,10 @@ class MainWindow(QMainWindow):
         self.folder_search_results.setMaximumHeight(132)
         self.folder_search_results.hide()
         layout.addWidget(self.folder_search_results)
+
+        self.btn_more_folder_search = QPushButton("검색 결과 더 보기")
+        self.btn_more_folder_search.hide()
+        layout.addWidget(self.btn_more_folder_search)
 
         self.folder_tree = FolderTreeView()
         self.folder_tree.setObjectName("folderTree")
@@ -1309,6 +1546,7 @@ class MainWindow(QMainWindow):
         self.active_folder_table = self._create_folder_table(
             self.active_folder_table_model,
             selection_mode=QTableView.ExtendedSelection,
+            settings_key="active",
         )
         # Keep active list visibly larger from first render as requested.
         self.active_folder_table.setMinimumHeight(198)
@@ -1362,7 +1600,10 @@ class MainWindow(QMainWindow):
         completed_label.setObjectName("subPanelTitle")
         layout.addWidget(completed_label)
 
-        self.completed_folder_table = self._create_folder_table(self.completed_folder_table_model)
+        self.completed_folder_table = self._create_folder_table(
+            self.completed_folder_table_model,
+            settings_key="completed",
+        )
         # Preserve completed-list readability without stealing too much initial height.
         self.completed_folder_table.setMinimumHeight(148)
         self.completed_folder_table.selectionModel().selectionChanged.connect(
@@ -1377,6 +1618,7 @@ class MainWindow(QMainWindow):
         self,
         model: FolderTableModel,
         selection_mode: QAbstractItemView.SelectionMode = QTableView.SingleSelection,
+        settings_key: str = "",
     ) -> QTableView:
         """Create one folder table with shared visual/column policy."""
 
@@ -1396,17 +1638,50 @@ class MainWindow(QMainWindow):
 
         header = table.horizontalHeader()
         header.setStretchLastSection(False)
-        header.setSectionResizeMode(QHeaderView.ResizeToContents)
-        header.setResizeContentsPrecision(-1)
-        header.setMinimumSectionSize(56)
-        header.setSectionResizeMode(0, QHeaderView.Interactive)
-        header.setSectionResizeMode(1, QHeaderView.Interactive)
-        table.setColumnWidth(0, 86)
-        table.setColumnWidth(1, 190)
-        table.setColumnWidth(2, 120)
+        header.setSectionResizeMode(QHeaderView.Interactive)
+        header.setMinimumSectionSize(64)
+        default_widths = (100, 200, 180, 380, 240, 80, 80, 80, 80, 110)
+        for column, width in enumerate(default_widths):
+            table.setColumnWidth(column, width)
         table.setItemDelegateForColumn(1, ProgressBarDelegate(table))
         table.setItemDelegateForColumn(2, StatusBadgeDelegate(table))
+        self._restore_folder_table_header_state(table, settings_key)
+        header.sectionResized.connect(
+            lambda *_args: self._folder_table_header_save_timer.start()
+        )
         return table
+
+    def _restore_folder_table_header_state(
+        self,
+        table: QTableView,
+        settings_key: str,
+    ) -> None:
+        """Restore one user-resized folder table header when available."""
+
+        if self._ui_settings is None or not settings_key:
+            return
+        state = self._ui_settings.value(f"folder_tables/{settings_key}/header_state")
+        if isinstance(state, QByteArray) and not state.isEmpty():
+            table.horizontalHeader().restoreState(state)
+        elif isinstance(state, (bytes, bytearray)) and state:
+            table.horizontalHeader().restoreState(QByteArray(bytes(state)))
+
+    def _save_folder_table_header_states(self) -> None:
+        """Persist independently resized active/completed folder table columns."""
+
+        if self._ui_settings is None:
+            return
+        tables = (
+            ("active", getattr(self, "active_folder_table", None)),
+            ("completed", getattr(self, "completed_folder_table", None)),
+        )
+        for settings_key, table in tables:
+            if table is not None:
+                self._ui_settings.setValue(
+                    f"folder_tables/{settings_key}/header_state",
+                    table.horizontalHeader().saveState(),
+                )
+        self._ui_settings.sync()
 
     def _build_bottom_panel(self) -> QWidget:
         panel = QGroupBox("상태 및 로그")

@@ -18,6 +18,7 @@ from app.runtime_paths import (
     resolve_task_database_path,
     resolve_stylesheet_path,
     resolve_ui_icon_path,
+    resolve_ui_settings_path,
 )
 
 
@@ -32,6 +33,15 @@ class RuntimePathsTest(unittest.TestCase):
 
             self.assertEqual(folder_index.name, "folder_index.sqlite3")
             self.assertNotEqual(folder_index, task_state)
+
+    def test_ui_settings_path_is_persistent_and_separate_from_task_state(self) -> None:
+        with TemporaryDirectory() as appdata_root:
+            with patch.dict(os.environ, {"APPDATA": appdata_root}, clear=False):
+                ui_settings = resolve_ui_settings_path()
+                task_state = resolve_task_database_path()
+
+            self.assertEqual(ui_settings.name, "ui_state.ini")
+            self.assertNotEqual(ui_settings, task_state)
 
     def test_resolve_default_config_path_prefers_explicit_cli_path(self) -> None:
         with TemporaryDirectory() as temp_dir:

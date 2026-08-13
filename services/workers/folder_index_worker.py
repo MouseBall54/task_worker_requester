@@ -24,15 +24,15 @@ class FolderIndexWorker(QObject):
         root_paths: list[str],
         *,
         full: bool = False,
-        query: str = "",
-        search_limit: int = 200,
+        max_folders_per_root: int | None = None,
+        retry_errors: bool = False,
     ) -> None:
         super().__init__()
         self._repository = repository
         self._root_paths = list(dict.fromkeys(root_paths))
         self._full = bool(full)
-        self._query = query.strip()
-        self._search_limit = max(1, int(search_limit))
+        self._max_folders_per_root = max_folders_per_root
+        self._retry_errors = bool(retry_errors)
         self._cancelled = threading.Event()
 
     @Slot()
@@ -42,23 +42,19 @@ class FolderIndexWorker(QObject):
             for root_path in self._root_paths:
                 if self._cancelled.is_set():
                     break
-                result = self._repository.refresh_root(
+                if self._full:
+                    self._repository.prepare_full_scan(root_path)
+                result = self._repository.resume_scan(
                     root_path,
-                    full=self._full,
+                    max_folders=self._max_folders_per_root,
                     should_cancel=self._cancelled.is_set,
                     progress=lambda count, path=root_path: self.progress.emit(path, count),
+                    retry_errors=self._retry_errors,
                 )
                 outcomes.append(result)
                 self.root_status.emit(root_path, result.online)
-            results = (
-                self._repository.search(self._query, limit=self._search_limit)
-                if self._query and not self._cancelled.is_set()
-                else []
-            )
             self.completed.emit(
                 {
-                    "query": self._query,
-                    "results": results,
                     "outcomes": outcomes,
                     "cancelled": self._cancelled.is_set(),
                 }

@@ -38,7 +38,13 @@ function Assert-BundleRuntimeFiles {
         "VCRUNTIME140_1.dll",
         "PySide6\MSVCP140.dll",
         "PySide6\MSVCP140_1.dll",
-        "PySide6\MSVCP140_2.dll"
+        "PySide6\MSVCP140_2.dll",
+        "assets\icons\folder_move_top.svg",
+        "assets\icons\folder_move_up.svg",
+        "assets\icons\folder_move_down.svg",
+        "assets\icons\folder_move_bottom.svg",
+        "assets\icons\folder_hold.svg",
+        "assets\icons\folder_release.svg"
     )
 
     $missing = @()

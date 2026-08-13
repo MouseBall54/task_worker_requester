@@ -37,6 +37,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build_windows.ps1
 
 - `packaging\prereqs\vc_redist.x64.exe` 존재 여부
 - PyInstaller 산출물의 Qt/VC 핵심 파일 존재 여부
+- `assets\icons`의 폴더 우선순위·보류 SVG 아이콘 존재 여부
 - QWidget 앱에서 쓰지 않는 Qt Quick/QML/PDF/VirtualKeyboard 계열 번들 파일 제거
 
 직접 실행:
@@ -53,6 +54,7 @@ uv run --group build pyinstaller .\packaging\IPDK_plus.spec --clean --noconfirm
 
 - `dist\IPDK_plus\_internal\assets\IPDK_plus.png`
 - `dist\IPDK_plus\_internal\assets\IPDK_plus.ico`
+- `dist\IPDK_plus\_internal\assets\icons\*.svg`
 
 작업표시줄 아이콘은 exe 내부 ICO를 사용하고, 메인창 제목 표시줄 아이콘은 PNG runtime asset을 우선 읽어 설정합니다.
 
@@ -80,6 +82,7 @@ Python 이 전혀 설치되지 않은 PC에서도 Qt DLL 로딩 실패를 방지
 - `%APPDATA%\IPDK_plus\app_config.yaml`
 - `%APPDATA%\IPDK_plus\recipe_config.yaml`
 - `%APPDATA%\IPDK_plus\logs\app.log`
+- `%APPDATA%\IPDK_plus\runtime\ui_state.ini` (진행중/대기·완료 표의 사용자 조정 열 너비)
 
 앱 첫 실행 시 위 파일이 없으면 번들된 seed 템플릿을 자동 복사합니다.
 로그도 동일한 AppData 루트 아래에 기록되며, 설치 폴더(`Program Files` 등) 아래에 `logs` 디렉터리를 만들지 않습니다.
