@@ -315,6 +315,7 @@ class MainWindowTest(unittest.TestCase):
             dialog.changed.connect(lambda action, path: changes.append((action, path)))
             try:
                 self.assertEqual(dialog.add_button.text(), "폴더 추가")
+                self.assertEqual(dialog.scope_combo.currentData(), SCOPE_DEPTH)
                 with patch(
                     "ui.main_window.QFileDialog.getExistingDirectory",
                     return_value=str(root),
@@ -334,7 +335,11 @@ class MainWindowTest(unittest.TestCase):
                     dialog.root_table.item(0, 0).data(Qt.UserRole),
                     str(root),
                 )
-                self.assertEqual(dialog.root_table.item(0, 1).text(), "전체 계층")
+                self.assertEqual(dialog.root_table.item(0, 1).text(), "하위 5계층")
+                favorite = window._folder_index_repository.get_favorite(str(root))
+                assert favorite is not None
+                self.assertEqual(favorite.scope_mode, SCOPE_DEPTH)
+                self.assertEqual(favorite.max_depth, 5)
                 self.assertEqual(changes, [("add", str(root))])
             finally:
                 dialog.close()
@@ -365,6 +370,31 @@ class MainWindowTest(unittest.TestCase):
                 assert favorite is not None
                 self.assertEqual(favorite.scope_mode, SCOPE_EXCLUDED)
                 self.assertEqual(changes, [("scope", str(root)), ("scope", str(root))])
+            finally:
+                dialog.close()
+                window.close()
+
+    def test_favorite_root_scope_edit_survives_periodic_status_reload(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "root"
+            root.mkdir()
+            window = self._make_window(Path(temp_dir) / "folder_index.sqlite3")
+            window._folder_index_repository.add_favorite(str(root))
+            dialog = FavoriteRootManagerDialog(window._folder_index_repository, window)
+            try:
+                dialog._reload(selected_path=str(root))
+                depth_index = dialog.scope_combo.findData(SCOPE_DEPTH)
+                dialog.scope_combo.setCurrentIndex(depth_index)
+
+                # The one-second status refresh must not overwrite an unapplied edit.
+                dialog._reload(selected_path=str(root))
+
+                self.assertEqual(dialog.scope_combo.currentData(), SCOPE_DEPTH)
+                dialog._apply_scope()
+                favorite = window._folder_index_repository.get_favorite(str(root))
+                assert favorite is not None
+                self.assertEqual(favorite.scope_mode, SCOPE_DEPTH)
+                self.assertEqual(favorite.max_depth, 5)
             finally:
                 dialog.close()
                 window.close()

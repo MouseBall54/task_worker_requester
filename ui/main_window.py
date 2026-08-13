@@ -222,6 +222,9 @@ class FavoriteRootManagerDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self._repository = repository
+        self._scope_editor_path: str | None = None
+        self._scope_combo_dirty = False
+        self._syncing_scope_combo = False
         self.setWindowTitle("즐겨찾기 Root 관리")
         self.resize(1120, 520)
 
@@ -263,6 +266,8 @@ class FavoriteRootManagerDialog(QDialog):
         self.scope_combo.addItem("전체 계층", SCOPE_FULL)
         self.scope_combo.addItem("하위 5계층", SCOPE_DEPTH)
         self.scope_combo.addItem("색인 제외", SCOPE_EXCLUDED)
+        self.scope_combo.setCurrentIndex(self.scope_combo.findData(SCOPE_DEPTH))
+        self.scope_combo.currentIndexChanged.connect(self._on_scope_combo_changed)
         self.apply_scope_button = QPushButton("범위 적용", self)
         self.reindex_button = QPushButton("전체 재색인", self)
         self.refresh_button = QPushButton("증분 갱신", self)
@@ -313,32 +318,36 @@ class FavoriteRootManagerDialog(QDialog):
 
     def _reload(self, selected_path: str | None = None) -> None:
         favorites = self._repository.list_favorites()
-        self.root_table.setRowCount(len(favorites))
-        for row, favorite in enumerate(favorites):
-            path_item = QTableWidgetItem(favorite.path)
-            path_item.setData(Qt.UserRole, favorite.path)
-            scope_item = QTableWidgetItem(_folder_scope_label(favorite.scope_mode, favorite.max_depth))
-            status_item = QTableWidgetItem(_folder_index_status_label(favorite.index_status))
-            status_item.setTextAlignment(Qt.AlignCenter)
-            indexed_item = QTableWidgetItem(f"{favorite.indexed_count:,}")
-            pending_item = QTableWidgetItem(f"{favorite.pending_count:,}")
-            error_item = QTableWidgetItem(f"{favorite.error_count:,}")
-            completed_item = QTableWidgetItem(favorite.last_completed or "-")
-            for item in (indexed_item, pending_item, error_item):
-                item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-            checked = favorite.last_checked or "아직 확인하지 않음"
-            for item in (path_item, scope_item, status_item, indexed_item, pending_item, error_item, completed_item):
-                item.setToolTip(f"{favorite.path}\n마지막 확인: {checked}")
-            self.root_table.setItem(row, 0, path_item)
-            self.root_table.setItem(row, 1, scope_item)
-            self.root_table.setItem(row, 2, status_item)
-            self.root_table.setItem(row, 3, indexed_item)
-            self.root_table.setItem(row, 4, pending_item)
-            self.root_table.setItem(row, 5, error_item)
-            self.root_table.setItem(row, 6, completed_item)
-            if favorite.path == selected_path:
-                self.root_table.setCurrentCell(row, 0)
-                self.root_table.selectRow(row)
+        self.root_table.blockSignals(True)
+        try:
+            self.root_table.setRowCount(len(favorites))
+            for row, favorite in enumerate(favorites):
+                path_item = QTableWidgetItem(favorite.path)
+                path_item.setData(Qt.UserRole, favorite.path)
+                scope_item = QTableWidgetItem(_folder_scope_label(favorite.scope_mode, favorite.max_depth))
+                status_item = QTableWidgetItem(_folder_index_status_label(favorite.index_status))
+                status_item.setTextAlignment(Qt.AlignCenter)
+                indexed_item = QTableWidgetItem(f"{favorite.indexed_count:,}")
+                pending_item = QTableWidgetItem(f"{favorite.pending_count:,}")
+                error_item = QTableWidgetItem(f"{favorite.error_count:,}")
+                completed_item = QTableWidgetItem(favorite.last_completed or "-")
+                for item in (indexed_item, pending_item, error_item):
+                    item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                checked = favorite.last_checked or "아직 확인하지 않음"
+                for item in (path_item, scope_item, status_item, indexed_item, pending_item, error_item, completed_item):
+                    item.setToolTip(f"{favorite.path}\n마지막 확인: {checked}")
+                self.root_table.setItem(row, 0, path_item)
+                self.root_table.setItem(row, 1, scope_item)
+                self.root_table.setItem(row, 2, status_item)
+                self.root_table.setItem(row, 3, indexed_item)
+                self.root_table.setItem(row, 4, pending_item)
+                self.root_table.setItem(row, 5, error_item)
+                self.root_table.setItem(row, 6, completed_item)
+                if favorite.path == selected_path:
+                    self.root_table.setCurrentCell(row, 0)
+                    self.root_table.selectRow(row)
+        finally:
+            self.root_table.blockSignals(False)
         self._sync_buttons()
 
     def _selected_path(self) -> str | None:
@@ -357,6 +366,7 @@ class FavoriteRootManagerDialog(QDialog):
         path = self._selected_path()
         favorite = self._repository.get_favorite(path) if path else None
         selected = favorite is not None
+        self.scope_combo.setEnabled(selected)
         for button in (
             self.apply_scope_button,
             self.reindex_button,
@@ -367,21 +377,42 @@ class FavoriteRootManagerDialog(QDialog):
         ):
             button.setEnabled(selected)
         if favorite is not None:
-            combo_index = self.scope_combo.findData(favorite.scope_mode)
-            if combo_index >= 0:
-                self.scope_combo.setCurrentIndex(combo_index)
+            if self._scope_editor_path != favorite.path:
+                self._scope_editor_path = favorite.path
+                self._scope_combo_dirty = False
+            if not self._scope_combo_dirty:
+                combo_index = self.scope_combo.findData(favorite.scope_mode)
+                if combo_index >= 0:
+                    self._syncing_scope_combo = True
+                    try:
+                        self.scope_combo.setCurrentIndex(combo_index)
+                    finally:
+                        self._syncing_scope_combo = False
             self.pause_button.setEnabled(favorite.index_status == INDEX_INDEXING)
             self.resume_button.setEnabled(
                 favorite.index_status in {INDEX_PAUSED, INDEX_INCOMPLETE, INDEX_OFFLINE, INDEX_EMPTY}
                 and favorite.scope_mode != SCOPE_EXCLUDED
             )
             self.errors_button.setEnabled(favorite.error_count > 0)
+        else:
+            self._scope_editor_path = None
+            self._scope_combo_dirty = False
+
+    def _on_scope_combo_changed(self, _index: int) -> None:
+        if self._syncing_scope_combo:
+            return
+        path = self._selected_path()
+        if path:
+            self._scope_editor_path = path
+            self._scope_combo_dirty = True
 
     def _add_root(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "즐겨찾기 Root 선택")
         if not path:
             return
-        if not self._repository.add_favorite(path):
+        if not self._repository.add_favorite(
+            path, scope_mode=SCOPE_DEPTH, max_depth=5
+        ):
             QMessageBox.information(self, "즐겨찾기 Root", "이미 등록된 경로입니다.")
             self._reload(selected_path=path)
             return
@@ -406,6 +437,8 @@ class FavoriteRootManagerDialog(QDialog):
         if path and self._repository.set_scope(
             path, mode, 5 if mode == SCOPE_DEPTH else None
         ):
+            self._scope_editor_path = path
+            self._scope_combo_dirty = False
             self._reload(selected_path=path)
             self.changed.emit("scope", path)
 
