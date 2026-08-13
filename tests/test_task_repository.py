@@ -210,6 +210,7 @@ class TaskRepositoryTest(unittest.TestCase):
             try:
                 repository.save_runtime_settings("RUN", "result.saved", 2, 3)
                 self.assertEqual(repository.get_runtime_settings()["priority"], 2)
+                self.assertTrue(repository.is_resume_enabled())
             finally:
                 repository.close()
 

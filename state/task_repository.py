@@ -60,7 +60,8 @@ class TaskRepository:
             cursor.execute(
                 """
                 UPDATE sessions SET state = 'ACTIVE', updated_at = ?, action = NULL,
-                    result_queue = NULL, priority = NULL, polling_interval = NULL
+                    result_queue = NULL, priority = NULL, polling_interval = NULL,
+                    resume_enabled = 0
                 WHERE session_id = ?
                 """,
                 (_now_text(), self.session_id),
@@ -79,7 +80,7 @@ class TaskRepository:
             cursor.execute(
                 """
                 UPDATE sessions SET action = ?, result_queue = ?, priority = ?,
-                    polling_interval = ?
+                    polling_interval = ?, resume_enabled = 1
                 WHERE session_id = ?
                 """,
                 (
@@ -110,6 +111,25 @@ class TaskRepository:
             "priority": max(0, int(row["priority"] or 0)),
             "polling_interval": max(1, int(row["polling_interval"] or 1)),
         }
+
+    def is_resume_enabled(self) -> bool:
+        """Return whether the user previously started the current workload."""
+
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT resume_enabled FROM sessions WHERE session_id = ?",
+                (self.session_id,),
+            ).fetchone()
+        return bool(row and row["resume_enabled"])
+
+    def disable_auto_resume(self) -> None:
+        """Mark the current workload as completed and not eligible for auto-resume."""
+
+        with self._transaction() as cursor:
+            cursor.execute(
+                "UPDATE sessions SET resume_enabled = 0 WHERE session_id = ?",
+                (self.session_id,),
+            )
 
     def register_folder_descriptors(
         self,
@@ -656,7 +676,8 @@ class TaskRepository:
                 action TEXT,
                 result_queue TEXT,
                 priority INTEGER,
-                polling_interval INTEGER
+                polling_interval INTEGER,
+                resume_enabled INTEGER NOT NULL DEFAULT 0
             );
             CREATE TABLE IF NOT EXISTS folders(
                 session_id TEXT NOT NULL,
@@ -722,6 +743,7 @@ class TaskRepository:
             "result_queue": "TEXT",
             "priority": "INTEGER",
             "polling_interval": "INTEGER",
+            "resume_enabled": "INTEGER NOT NULL DEFAULT 0",
         }
         for column, definition in definitions.items():
             if column not in existing:

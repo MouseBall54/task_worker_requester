@@ -282,6 +282,16 @@ class SqliteTaskStore(QObject):
             return True
         return bool(self.repository.list_folder_descriptors(states=["WAITING", "SCANNING"]))
 
+    def should_auto_resume(self) -> bool:
+        """Return whether persisted work was explicitly started by the user."""
+
+        return self.repository.is_resume_enabled() and self.has_resumable_work()
+
+    def disable_auto_resume(self) -> None:
+        """Prevent completed work from authorizing later folders to auto-start."""
+
+        self.repository.disable_auto_resume()
+
     def remove_pending_only_folders(
         self,
         folder_paths: list[str],

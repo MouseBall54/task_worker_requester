@@ -64,7 +64,7 @@ uv run python main.py --config config/app_config.yaml
 - `rabbitmq.request_queue_declare`, `rabbitmq.result_queue_declare`로 queue declare 옵션을 각각 설정할 수 있습니다.
 - `publish.max_active_open_folders`는 전체 모수 집계 시 동시에 스캔할 폴더 수와 전송 중 활성 폴더 수를 제한하고, `publish.initial_open_folders`는 집계 완료 후 처음 활성화할 폴더 수를 결정합니다. 이미지 작업은 전체 목록을 메모리에 유지하지 않고 SQLite에 청크 저장합니다.
 - 작업 상태는 `%APPDATA%\IPDK_plus\runtime\task_state.sqlite3`에 저장되며, 앱은 `publish_chunk_size` 단위로만 메시지를 만들고 queue/inflight 상한에 따라 자동으로 발행을 멈췄다가 재개합니다. CMD 조회 방법은 [SQLite 작업 상태 조회 가이드](.\docs\sqlite_state_query_guide.md)를 참고하세요.
-- 앱이 중단되면 미발행 CLAIMED 작업은 다시 대기로 돌리고, 저장된 Action·Priority·결과 큐를 사용해 미완료 스캔과 결과 polling을 다음 실행에서 자동 재개합니다.
+- 사용자가 `전송 시작`을 누른 작업이 앱 종료로 중단되면 미발행 CLAIMED 작업은 다시 대기로 돌리고, 저장된 Action·Priority·결과 큐를 사용해 미완료 스캔과 결과 polling을 다음 실행에서 자동 재개합니다. 시작하지 않고 쌓아둔 폴더는 목록만 복원되며 자동 전송되지 않습니다.
 - 선택한 폴더의 상세 작업은 최초 500행만 읽고, 스크롤 끝에서 다음 500행을 추가로 조회합니다. 화면 로그는 설정된 최대 줄 수만 유지하고 파일 로그는 회전 보관합니다.
 - `publish.default_priority`는 기본 request MQ priority 입니다.
 - UI의 `Priority` 드롭다운 범위는 `rabbitmq.request_queue_declare.arguments.x-max-priority` 값을 기준으로 `0..max`로 생성됩니다.

@@ -76,6 +76,23 @@ class SqliteTaskStoreTest(unittest.TestCase):
             finally:
                 store.close()
 
+    def test_auto_resume_requires_explicit_start_authorization(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = SqliteTaskStore(Path(temp_dir) / "tasks.sqlite3")
+            try:
+                store.register_folder_descriptors(["folder"], [("R", "r.json")])
+                self.assertTrue(store.has_resumable_work())
+                self.assertFalse(store.should_auto_resume())
+
+                store.save_runtime_settings("RUN", "result.queue", 0, 1)
+                self.assertTrue(store.should_auto_resume())
+
+                store.disable_auto_resume()
+                self.assertFalse(store.should_auto_resume())
+                self.assertTrue(store.has_resumable_work())
+            finally:
+                store.close()
+
     def test_large_pending_folder_delete_does_not_materialize_request_ids(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             store = SqliteTaskStore(Path(temp_dir) / "tasks.sqlite3")

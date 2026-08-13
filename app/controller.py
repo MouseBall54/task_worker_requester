@@ -110,7 +110,7 @@ class TaskController(QObject):
         self._check_connection_once()
         if not getattr(self._view, "_disable_queue_metrics_monitor", False):
             self._start_queue_metrics_monitor()
-        if self._lazy_mode and self._store.has_resumable_work():  # type: ignore[attr-defined]
+        if self._lazy_mode and self._store.should_auto_resume():  # type: ignore[attr-defined]
             QTimer.singleShot(0, self._resume_persisted_lazy_session)
 
     def _wire_signals(self) -> None:
@@ -660,6 +660,8 @@ class TaskController(QObject):
             self._active = False
             self._view.set_running_state(False)
             if self._store.all_tasks_terminal():
+                if self._lazy_mode:
+                    self._store.disable_auto_resume()  # type: ignore[attr-defined]
                 self._set_runtime_options_locked(False)
 
     @Slot(int, int)
@@ -1158,7 +1160,7 @@ class TaskController(QObject):
     def _resume_persisted_lazy_session(self) -> None:
         """Automatically continue a disk-backed session restored at application startup."""
 
-        if self._active or not self._store.has_resumable_work():  # type: ignore[attr-defined]
+        if self._active or not self._store.should_auto_resume():  # type: ignore[attr-defined]
             return
         self._log("미완료 대용량 세션을 복구하여 자동으로 재개합니다.")
         self._start_lazy_session(self._store.get_runtime_settings())  # type: ignore[attr-defined]
@@ -1345,6 +1347,7 @@ class TaskController(QObject):
         else:
             self._active = False
             self._view.set_running_state(False)
+            self._store.disable_auto_resume()  # type: ignore[attr-defined]
             self._set_runtime_options_locked(False)
             self._log("모든 대용량 작업이 완료되었습니다.")
 

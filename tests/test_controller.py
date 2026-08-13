@@ -414,6 +414,7 @@ class TaskControllerTest(unittest.TestCase):
                 self.assertEqual(store.overall_stats()["total"], 12)
                 self.assertTrue(store.all_tasks_terminal())
                 self.assertLessEqual(store.inflight_count(), 10)
+                self.assertFalse(store.should_auto_resume())
             finally:
                 controller.shutdown()
                 self._app.processEvents()
@@ -476,6 +477,52 @@ class TaskControllerTest(unittest.TestCase):
                 self.assertEqual(record["action"], "SAVED_ACTION")
                 self.assertEqual(record["result_queue"], "saved.result.queue")
                 self.assertEqual(record["priority"], 4)
+            finally:
+                controller.shutdown()
+                self._app.processEvents()
+                restored.close()
+
+    def test_sqlite_runtime_restores_unstarted_folders_without_auto_start(self) -> None:
+        config = AppConfig(
+            rabbitmq=RabbitMQConfig(host="127.0.0.1", port=5672, username="guest", password="guest"),
+            publish=PublishConfig(image_extensions=[".jpg"], ui_refresh_interval_ms=100),
+            ui=UiConfig(),
+            mock_mode=True,
+        )
+        view = DummyView()
+        logger = logging.getLogger("controller_sqlite_unstarted_restore_test")
+        logger.handlers.clear()
+        logger.addHandler(logging.NullHandler())
+
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            image_folder = root / "images"
+            image_folder.mkdir()
+            (image_folder / "image.jpg").write_text("x", encoding="utf-8")
+            database = root / "tasks.sqlite3"
+
+            original = SqliteTaskStore(database)
+            original.register_folder_descriptors(
+                [str(image_folder)], [("Recipe", "recipe.json")]
+            )
+            original.close()
+
+            restored = SqliteTaskStore(database)
+            controller = TaskController(
+                config=config,
+                view=view,  # type: ignore[arg-type]
+                store=restored,
+                broker_provider=build_broker_provider(config),
+                logger=logger,
+            )
+            try:
+                self._app.processEvents()
+
+                self.assertFalse(controller._active)
+                self.assertFalse(view.running)
+                self.assertEqual(restored.get_waiting_folder_paths(), [str(image_folder)])
+                self.assertEqual(restored.overall_stats()["total"], 0)
+                self.assertFalse(any("자동으로 재개" in message for message in view.logs))
             finally:
                 controller.shutdown()
                 self._app.processEvents()

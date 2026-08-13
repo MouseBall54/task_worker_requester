@@ -190,7 +190,7 @@ RabbitMQ 서버와 worker는 앱이 보내는 메시지 규격을 그대로 이�
 
 result queue 이름은 클라이언트 PC의 IPv4에 따라 달라집니다. 네트워크 어댑터, VPN, IP 변경, hostname lookup 변화가 있으면 result queue suffix가 바뀔 수 있습니다. worker는 반드시 request의 QUEUE_NAME 또는 reply_to를 사용해야 합니다.
 
-대량 이미지 처리 시 앱은 AppData의 SQLite 작업 DB, 활성 폴더 지연 스캔, Chunk 발행과 inflight 상한을 사용합니다. worker가 없거나 느린 경우에도 전체 작업을 RabbitMQ에 한꺼번에 넣지 않고 자동 대기합니다. 화면의 Queued Messages와 폴더 상태에서 스캔 대기/스캔 중/전송 대기/처리 중 상태를 확인할 수 있습니다. 앱이 중단되면 저장된 세션 설정으로 미완료 스캔과 결과 polling을 다음 실행에서 자동 재개합니다.
+대량 이미지 처리 시 앱은 AppData의 SQLite 작업 DB, 활성 폴더 지연 스캔, Chunk 발행과 inflight 상한을 사용합니다. worker가 없거나 느린 경우에도 전체 작업을 RabbitMQ에 한꺼번에 넣지 않고 자동 대기합니다. 화면의 Queued Messages와 폴더 상태에서 스캔 대기/스캔 중/전송 대기/처리 중 상태를 확인할 수 있습니다. 사용자가 전송 시작을 누른 작업이 앱 종료로 중단된 경우에만 저장된 세션 설정으로 미완료 스캔과 결과 polling을 다음 실행에서 자동 재개합니다. 시작하지 않은 대기 폴더는 목록만 복원됩니다.
 
 운영 중 RabbitMQ queue argument를 바꾸면 기존 queue와 충돌할 수 있습니다. 특히 x-max-priority, durable, auto_delete 같은 값은 broker에 이미 만들어진 queue와 맞아야 합니다.""",
     ),
