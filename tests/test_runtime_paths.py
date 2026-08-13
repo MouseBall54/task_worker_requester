@@ -13,6 +13,7 @@ from app.runtime_paths import (
     migrate_legacy_appdata_dir,
     resolve_app_icon_path,
     resolve_default_config_path,
+    resolve_folder_index_database_path,
     resolve_logs_dir,
     resolve_task_database_path,
     resolve_stylesheet_path,
@@ -22,6 +23,15 @@ from app.runtime_paths import (
 
 class RuntimePathsTest(unittest.TestCase):
     """Validate AppData seeding and runtime resource lookup behavior."""
+
+    def test_folder_index_database_is_separate_from_task_state(self) -> None:
+        with TemporaryDirectory() as appdata_root:
+            with patch.dict(os.environ, {"APPDATA": appdata_root}, clear=False):
+                folder_index = resolve_folder_index_database_path()
+                task_state = resolve_task_database_path()
+
+            self.assertEqual(folder_index.name, "folder_index.sqlite3")
+            self.assertNotEqual(folder_index, task_state)
 
     def test_resolve_default_config_path_prefers_explicit_cli_path(self) -> None:
         with TemporaryDirectory() as temp_dir:

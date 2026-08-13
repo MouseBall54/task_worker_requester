@@ -12,6 +12,7 @@ from app.runtime_paths import (
     RuntimePathError,
     resolve_app_icon_path,
     resolve_default_config_path,
+    resolve_folder_index_database_path,
     resolve_logs_dir,
     resolve_stylesheet_path,
     resolve_task_database_path,
@@ -67,7 +68,10 @@ def run_app(config_path: str | None = None) -> int:
 
     store = SqliteTaskStore(resolve_task_database_path())
     broker_provider = build_broker_provider(app_config)
-    window = MainWindow(config=app_config)
+    window = MainWindow(
+        config=app_config,
+        folder_index_database_path=resolve_folder_index_database_path(),
+    )
     controller = TaskController(
         config=app_config,
         view=window,
@@ -77,6 +81,7 @@ def run_app(config_path: str | None = None) -> int:
     )
 
     app.aboutToQuit.connect(controller.shutdown)
+    app.aboutToQuit.connect(window.shutdown_folder_navigation)
     app.aboutToQuit.connect(store.close)
     app.aboutToQuit.connect(guard.release)
 

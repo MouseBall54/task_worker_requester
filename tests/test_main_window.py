@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+from tempfile import TemporaryDirectory
+import time
 import unittest
+from unittest.mock import Mock, patch
 
 from config.models import AppConfig, PublishConfig, RabbitMQConfig, RecipeConfig, RecipeItem, UiConfig
 from models.task_models import FolderSummary, RunHistorySummary, TaskStatus
@@ -16,11 +20,13 @@ try:
         QApplication,
         QComboBox,
         QLabel,
+        QListWidgetItem,
         QSizePolicy,
         QToolButton,
     )
     from ui.main_window import (
         DuplicateFolderDialog,
+        FavoriteRootManagerDialog,
         FolderTreeView,
         MainWindow,
         PreflightDialog,
@@ -46,7 +52,7 @@ class MainWindowTest(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls._app = QApplication.instance() or QApplication([])
 
-    def _make_window(self) -> MainWindow:
+    def _make_window(self, folder_index_database_path=None) -> MainWindow:  # noqa: ANN001
         config = AppConfig(
             rabbitmq=RabbitMQConfig(host="127.0.0.1", port=5672, username="guest", password="guest"),
             publish=PublishConfig(image_extensions=[".jpg"]),
@@ -60,7 +66,238 @@ class MainWindowTest(unittest.TestCase):
             ui=UiConfig(),
             mock_mode=True,
         )
-        return MainWindow(config)
+        return MainWindow(config, folder_index_database_path=folder_index_database_path)
+
+    def test_favorite_root_cache_search_renders_actual_folder_path(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "favorite_root"
+            target = root / "project_alpha"
+            target.mkdir(parents=True)
+            database = Path(temp_dir) / "folder_index.sqlite3"
+            window = self._make_window(database)
+            try:
+                window._folder_index_repository.add_favorite(str(root))
+                window._folder_index_repository.refresh_root(str(root), full=True)
+                window._reload_favorite_roots(selected_path=str(root))
+                window.folder_search_edit.setText("project_alpha")
+
+                self.assertEqual(window.favorite_root_list.count(), 1)
+                self.assertIn(str(root), window.favorite_root_list.item(0).text())
+                self.assertEqual(window.folder_search_results.count(), 1)
+                self.assertEqual(
+                    window.folder_search_results.item(0).data(Qt.UserRole),
+                    str(target),
+                )
+            finally:
+                window.close()
+
+    def test_unified_folder_input_navigates_paths_and_searches_words(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "target"
+            root.mkdir()
+            window = self._make_window(Path(temp_dir) / "folder_index.sqlite3")
+            navigated: list[str] = []
+            searched: list[str] = []
+            try:
+                self.assertIs(window.path_jump_edit, window.folder_search_edit)
+                self.assertEqual(window.btn_path_jump.text(), "검색")
+                self.assertEqual(
+                    window.btn_manage_favorite_roots.text(), "즐겨찾기 관리"
+                )
+                self.assertGreater(
+                    window.btn_manage_favorite_roots.maximumWidth(),
+                    window.btn_manage_favorite_roots.minimumWidth(),
+                )
+                self.assertGreater(
+                    window.btn_refresh_favorite_roots.maximumWidth(),
+                    window.btn_refresh_favorite_roots.minimumWidth(),
+                )
+                window.jump_to_path = (  # type: ignore[method-assign]
+                    lambda path, show_feedback=True: navigated.append(path) or True
+                )
+                window._run_live_folder_search = (  # type: ignore[method-assign]
+                    lambda: searched.append(window.path_jump_edit.text())
+                )
+
+                window.path_jump_edit.setText(str(root))
+                window._on_path_jump_requested()
+                window.path_jump_edit.setText("inspection")
+                window._on_path_jump_requested()
+
+                self.assertEqual(navigated, [str(root)])
+                self.assertEqual(searched, ["inspection"])
+            finally:
+                window.close()
+
+    def test_cancel_search_stops_background_refresh_and_keeps_results(self) -> None:
+        window = self._make_window()
+        worker = Mock()
+        try:
+            window._folder_index_worker = worker
+            window._pending_folder_index_job = ([r"D:\root"], False, "target")
+            window.folder_search_results.addItem("cached result")
+            window.btn_cancel_folder_search.setEnabled(True)
+
+            window._cancel_folder_search()
+
+            worker.cancel.assert_called_once_with()
+            self.assertIsNone(window._pending_folder_index_job)
+            self.assertFalse(window.btn_cancel_folder_search.isEnabled())
+            self.assertEqual(window.folder_search_results.count(), 1)
+            self.assertIn("취소 요청", window.folder_search_status.text())
+        finally:
+            window._folder_index_worker = None
+            window.close()
+
+    def test_background_folder_index_refresh_updates_search_without_blocking_ui(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "favorite_root"
+            target = root / "background_target"
+            target.mkdir(parents=True)
+            window = self._make_window(Path(temp_dir) / "folder_index.sqlite3")
+            try:
+                window._folder_index_repository.add_favorite(str(root))
+                window._reload_favorite_roots(selected_path=str(root))
+                window.folder_search_edit.setText("background_target")
+                window._start_folder_index_job(
+                    [str(root)],
+                    full=True,
+                    query="background_target",
+                )
+                deadline = time.monotonic() + 5.0
+                while time.monotonic() < deadline and window._folder_index_thread is not None:
+                    self._app.processEvents()
+                    time.sleep(0.01)
+                self._app.processEvents()
+
+                self.assertIsNone(window._folder_index_thread)
+                self.assertEqual(window.folder_search_results.count(), 1)
+                self.assertEqual(
+                    window.folder_search_results.item(0).data(Qt.UserRole),
+                    str(target),
+                )
+                self.assertIn("최신 결과", window.folder_search_status.text())
+            finally:
+                window.close()
+
+    def test_favorite_root_manager_moves_and_removes_selected_root(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            first = Path(temp_dir) / "first"
+            second = Path(temp_dir) / "second"
+            first.mkdir()
+            second.mkdir()
+            window = self._make_window(Path(temp_dir) / "folder_index.sqlite3")
+            try:
+                window._folder_index_repository.add_favorite(str(first))
+                window._folder_index_repository.add_favorite(str(second))
+                window._reload_favorite_roots(selected_path=str(second))
+                dialog = FavoriteRootManagerDialog(
+                    window._folder_index_repository, window
+                )
+                dialog.changed.connect(window._on_favorite_roots_managed)
+                dialog._reload(selected_path=str(second))
+
+                dialog._move_root("up")
+                self.assertEqual(
+                    [
+                        window.favorite_root_list.item(index).data(Qt.UserRole)
+                        for index in range(window.favorite_root_list.count())
+                    ],
+                    [str(second), str(first)],
+                )
+
+                dialog._remove_root()
+                self.assertEqual(window.favorite_root_list.count(), 1)
+                self.assertEqual(
+                    window.favorite_root_list.item(0).data(Qt.UserRole),
+                    str(first),
+                )
+                self.assertTrue(hasattr(window, "btn_manage_favorite_roots"))
+                self.assertTrue(hasattr(window, "btn_refresh_favorite_roots"))
+                self.assertFalse(hasattr(window, "btn_add_favorite_root"))
+                dialog.close()
+            finally:
+                window.close()
+
+    def test_favorite_root_manager_adds_selected_directory(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "new-root"
+            root.mkdir()
+            window = self._make_window(Path(temp_dir) / "folder_index.sqlite3")
+            dialog = FavoriteRootManagerDialog(window._folder_index_repository, window)
+            changes: list[tuple[str, str]] = []
+            dialog.changed.connect(lambda action, path: changes.append((action, path)))
+            try:
+                self.assertEqual(dialog.add_button.text(), "폴더 추가")
+                with patch(
+                    "ui.main_window.QFileDialog.getExistingDirectory",
+                    return_value=str(root),
+                ):
+                    dialog._add_root()
+
+                self.assertEqual(dialog.root_table.rowCount(), 1)
+                self.assertEqual(dialog.root_table.columnCount(), 4)
+                self.assertEqual(
+                    [
+                        dialog.root_table.horizontalHeaderItem(column).text()
+                        for column in range(dialog.root_table.columnCount())
+                    ],
+                    ["순서", "Root 경로", "상태", "마지막 확인"],
+                )
+                self.assertEqual(
+                    dialog.root_table.item(0, 1).data(Qt.UserRole),
+                    str(root),
+                )
+                self.assertEqual(dialog.root_table.item(0, 2).text(), "온라인")
+                self.assertEqual(changes, [("add", str(root))])
+            finally:
+                dialog.close()
+                window.close()
+
+    def test_favorite_click_navigates_and_offline_root_is_marked(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            online = Path(temp_dir) / "online"
+            offline = Path(temp_dir) / "offline"
+            online.mkdir()
+            window = self._make_window(Path(temp_dir) / "folder_index.sqlite3")
+            navigated: list[str] = []
+            try:
+                window._folder_index_repository.add_favorite(str(online))
+                window._folder_index_repository.add_favorite(str(offline))
+                window._reload_favorite_roots(selected_path=str(online))
+                window.jump_to_path = (  # type: ignore[method-assign]
+                    lambda path, show_feedback=True: navigated.append(path) or True
+                )
+
+                window._on_favorite_root_clicked(window.favorite_root_list.item(0))
+
+                self.assertEqual(navigated, [str(online)])
+                self.assertIn("오프라인", window.favorite_root_list.item(1).text())
+                self.assertTrue(window._folder_periodic_refresh.isActive())
+                self.assertEqual(window._folder_periodic_refresh.interval(), 5 * 60 * 1000)
+                self.assertIn(str(online), window._favorite_root_watcher.directories())
+            finally:
+                window.close()
+
+    def test_missing_search_result_is_verified_before_navigation(self) -> None:
+        window = self._make_window()
+        errors: list[str] = []
+        refreshes: list[tuple[list[str], bool, str]] = []
+        try:
+            item = QListWidgetItem("missing")
+            item.setData(Qt.UserRole, r"Z:\missing\target")
+            item.setData(Qt.UserRole + 1, r"Z:\missing")
+            window._show_path_error = errors.append  # type: ignore[method-assign]
+            window._start_folder_index_job = (  # type: ignore[method-assign]
+                lambda roots, full, query: refreshes.append((roots, full, query))
+            )
+
+            window._on_folder_search_result_clicked(item)
+
+            self.assertEqual(len(errors), 1)
+            self.assertEqual(refreshes, [([r"Z:\missing"], False, "")])
+        finally:
+            window.close()
 
     def test_status_sidebar_defaults_to_log_tab(self) -> None:
         window = self._make_window()
@@ -209,6 +446,19 @@ class MainWindowTest(unittest.TestCase):
                 window.btn_release_folders,
             ):
                 button.setEnabled(True)
+            expected_labels = (
+                (window.btn_move_folder_top, "맨 위로 이동"),
+                (window.btn_move_folder_up, "위로 이동"),
+                (window.btn_move_folder_down, "아래로 이동"),
+                (window.btn_move_folder_bottom, "맨 아래로 이동"),
+                (window.btn_hold_folders, "보류"),
+                (window.btn_release_folders, "보류 해제"),
+            )
+            for button, label in expected_labels:
+                self.assertEqual(button.text(), "")
+                self.assertFalse(button.icon().isNull())
+                self.assertEqual(button.toolTip(), label)
+                self.assertEqual(button.accessibleName(), label)
             window.btn_move_folder_top.click()
             window.btn_move_folder_bottom.click()
             window.btn_hold_folders.click()

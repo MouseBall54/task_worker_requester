@@ -5,6 +5,7 @@ RabbitMQ로 이미지 단위 작업 요청을 전송하고(`IMG_LIST` 1건), 전
 ## 주요 기능
 
 - 폴더/하위 폴더 이미지 수집
+- 즐겨찾기 Root 영속화와 SQLite 캐시 기반 빠른 폴더 검색
 - 깊은 폴더 계층 선택 시 해당 노드가 가로 뷰포트 중앙에 오도록 자동 정렬
 - 이미지 1건당 MQ 메시지 1건 전송
 - `request_id` + `correlation_id` 기반 결과 매칭
@@ -68,6 +69,7 @@ uv run python main.py --config config/app_config.yaml
 - `rabbitmq.request_queue_declare`, `rabbitmq.result_queue_declare`로 queue declare 옵션을 각각 설정할 수 있습니다.
 - `publish.max_active_open_folders`는 전체 모수 집계 시 동시에 스캔할 폴더 수와 전송 중 활성 폴더 수를 제한하고, `publish.initial_open_folders`는 집계 완료 후 처음 활성화할 폴더 수를 결정합니다. 이미지 작업은 전체 목록을 메모리에 유지하지 않고 SQLite에 청크 저장합니다.
 - 작업 상태는 `%APPDATA%\IPDK_plus\runtime\task_state.sqlite3`에 저장되며, 앱은 `publish_chunk_size` 단위로만 메시지를 만들고 queue/inflight 상한에 따라 자동으로 발행을 멈췄다가 재개합니다. CMD 조회 방법은 [SQLite 작업 상태 조회 가이드](.\docs\sqlite_state_query_guide.md)를 참고하세요.
+- 즐겨찾기 Root와 폴더명 검색 인덱스는 작업 상태와 분리된 `%APPDATA%\IPDK_plus\runtime\folder_index.sqlite3`에 저장됩니다. 검색은 캐시 결과를 즉시 표시한 뒤 백그라운드에서 실제 폴더 변경분을 확인하며, 수동 새로고침과 5분 주기 증분 갱신을 지원합니다. 자세한 동작과 조회 방법은 [즐겨찾기 Root 및 폴더 검색 가이드](.\docs\folder_search_index.md)를 참고하세요.
 - 사용자가 `전송 시작`을 누른 작업이 앱 종료로 중단되면 미발행 CLAIMED 작업은 다시 대기로 돌리고, 저장된 Action·Priority·결과 큐를 사용해 미완료 스캔과 결과 polling을 다음 실행에서 자동 재개합니다. 시작하지 않고 쌓아둔 폴더는 목록만 복원되며 자동 전송되지 않습니다.
 - `일시정지`를 누른 작업은 `PAUSED_BY_USER`로 별도 저장되어 앱을 다시 실행해도 자동 전송하지 않습니다. 시작할 때 재개 확인창이 나타나며 `전송 재개`를 눌러 수동으로 이어갈 수도 있습니다.
 - 전체 폴더 스캔이 끝나면 최초 publish 전에 폴더·고유 이미지·Recipe·최종 메시지 수, 접근 불가 경로, RabbitMQ request queue 상태, Priority와 활성 폴더 정책을 사전 점검합니다. `preflight_warning_task_threshold` 이상이면 대량 작업 경고가 함께 표시됩니다.

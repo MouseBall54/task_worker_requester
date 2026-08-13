@@ -7,8 +7,19 @@ import os
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QDir, QItemSelectionModel, QModelIndex, QSize, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QAction, QDesktopServices, QIcon, QKeySequence, QShowEvent
+from PySide6.QtCore import (
+    QDir,
+    QFileSystemWatcher,
+    QItemSelectionModel,
+    QModelIndex,
+    QSize,
+    Qt,
+    QThread,
+    QTimer,
+    QUrl,
+    Signal,
+)
+from PySide6.QtGui import QAction, QCloseEvent, QDesktopServices, QIcon, QKeySequence, QShowEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -23,6 +34,8 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMainWindow,
     QMenu,
     QMessageBox,
@@ -47,6 +60,8 @@ from PySide6.QtWidgets import (
 from app.runtime_paths import resolve_ui_icon_path
 from config.models import AppConfig
 from models.task_models import FolderSummary, ImageTask, RunHistorySummary
+from services.workers.folder_index_worker import FolderIndexWorker
+from state.folder_index_repository import FolderIndexRepository, FolderSearchResult
 from ui.help_dialog import HelpDialog
 from ui.models import FolderTableModel, ImageTableModel, ProgressBarDelegate
 from ui.widgets import MQButtonDelegate, StatusBadgeDelegate
@@ -158,6 +173,133 @@ class DuplicateFolderDialog(QDialog):
         buttons.rejected.connect(self.reject)
         buttons.accepted.connect(self.accept)
         layout.addWidget(buttons)
+
+
+class FavoriteRootManagerDialog(QDialog):
+    """Manage persistent favorite roots outside the main navigation panel."""
+
+    changed = Signal(str, str)
+
+    def __init__(
+        self,
+        repository: FolderIndexRepository,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._repository = repository
+        self.setWindowTitle("즐겨찾기 Root 관리")
+        self.resize(720, 420)
+
+        layout = QVBoxLayout(self)
+        description = QLabel(
+            "검색과 빠른 이동에 사용할 Root를 추가하고 표시 순서를 관리합니다."
+        )
+        description.setWordWrap(True)
+        layout.addWidget(description)
+
+        self.root_table = QTableWidget(0, 4, self)
+        self.root_table.setObjectName("favoriteRootManagerTable")
+        self.root_table.setHorizontalHeaderLabels(
+            ["순서", "Root 경로", "상태", "마지막 확인"]
+        )
+        self.root_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.root_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.root_table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.root_table.setAlternatingRowColors(True)
+        self.root_table.verticalHeader().setVisible(False)
+        self.root_table.horizontalHeader().setSectionResizeMode(
+            0, QHeaderView.ResizeToContents
+        )
+        self.root_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.root_table.horizontalHeader().setSectionResizeMode(
+            2, QHeaderView.ResizeToContents
+        )
+        self.root_table.horizontalHeader().setSectionResizeMode(
+            3, QHeaderView.ResizeToContents
+        )
+        self.root_table.itemSelectionChanged.connect(self._sync_buttons)
+        layout.addWidget(self.root_table, stretch=1)
+
+        action_row = QHBoxLayout()
+        self.add_button = QPushButton("폴더 추가", self)
+        self.remove_button = QPushButton("삭제", self)
+        self.up_button = QPushButton("위로", self)
+        self.down_button = QPushButton("아래로", self)
+        self.add_button.clicked.connect(self._add_root)
+        self.remove_button.clicked.connect(self._remove_root)
+        self.up_button.clicked.connect(lambda: self._move_root("up"))
+        self.down_button.clicked.connect(lambda: self._move_root("down"))
+        action_row.addWidget(self.add_button)
+        action_row.addWidget(self.remove_button)
+        action_row.addStretch(1)
+        action_row.addWidget(self.up_button)
+        action_row.addWidget(self.down_button)
+        layout.addLayout(action_row)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Close, parent=self)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+        self._reload()
+
+    def _reload(self, selected_path: str | None = None) -> None:
+        favorites = self._repository.list_favorites()
+        self.root_table.setRowCount(len(favorites))
+        for row, favorite in enumerate(favorites):
+            order_item = QTableWidgetItem(str(row + 1))
+            order_item.setTextAlignment(Qt.AlignCenter)
+            path_item = QTableWidgetItem(favorite.path)
+            path_item.setData(Qt.UserRole, favorite.path)
+            status_item = QTableWidgetItem("온라인" if favorite.online else "오프라인")
+            status_item.setTextAlignment(Qt.AlignCenter)
+            checked = favorite.last_checked or "아직 확인하지 않음"
+            checked_item = QTableWidgetItem(checked)
+            for item in (order_item, path_item, status_item, checked_item):
+                item.setToolTip(f"{favorite.path}\n마지막 확인: {checked}")
+            self.root_table.setItem(row, 0, order_item)
+            self.root_table.setItem(row, 1, path_item)
+            self.root_table.setItem(row, 2, status_item)
+            self.root_table.setItem(row, 3, checked_item)
+            if favorite.path == selected_path:
+                self.root_table.setCurrentCell(row, 1)
+                self.root_table.selectRow(row)
+        self._sync_buttons()
+
+    def _selected_path(self) -> str | None:
+        row = self.root_table.currentRow()
+        item = self.root_table.item(row, 1) if row >= 0 else None
+        if item is None:
+            return None
+        return str(item.data(Qt.UserRole) or "").strip() or None
+
+    def _sync_buttons(self) -> None:
+        row = self.root_table.currentRow()
+        count = self.root_table.rowCount()
+        self.remove_button.setEnabled(row >= 0)
+        self.up_button.setEnabled(row > 0)
+        self.down_button.setEnabled(row >= 0 and row < count - 1)
+
+    def _add_root(self) -> None:
+        path = QFileDialog.getExistingDirectory(self, "즐겨찾기 Root 선택")
+        if not path:
+            return
+        if not self._repository.add_favorite(path):
+            QMessageBox.information(self, "즐겨찾기 Root", "이미 등록된 경로입니다.")
+            self._reload(selected_path=path)
+            return
+        self._reload(selected_path=path)
+        self.changed.emit("add", path)
+
+    def _remove_root(self) -> None:
+        path = self._selected_path()
+        if path and self._repository.remove_favorite(path):
+            self._reload()
+            self.changed.emit("remove", path)
+
+    def _move_root(self, operation: str) -> None:
+        path = self._selected_path()
+        if path and self._repository.move_favorite(path, operation):
+            self._reload(selected_path=path)
+            self.changed.emit("move", path)
 
 
 class PreflightDialog(QDialog):
@@ -487,9 +629,20 @@ class MainWindow(QMainWindow):
     history_requested = Signal()
     history_export_requested = Signal(str, str)
 
-    def __init__(self, config: AppConfig) -> None:
+    def __init__(
+        self,
+        config: AppConfig,
+        folder_index_database_path: str | Path | None = None,
+    ) -> None:
         super().__init__()
         self._config = config
+        self._folder_index_repository = FolderIndexRepository(
+            folder_index_database_path or ":memory:"
+        )
+        self._folder_index_thread: QThread | None = None
+        self._folder_index_worker: FolderIndexWorker | None = None
+        self._pending_folder_index_job: tuple[list[str], bool, str] | None = None
+        self._folder_index_shutting_down = False
         self._is_syncing_navigation = False
         self._active_result_queue: str | None = None
         self._is_syncing_folder_selection = False
@@ -508,6 +661,7 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._build_menu_bar()
         self._apply_defaults()
+        self._setup_folder_navigation_index()
 
     def _build_menu_bar(self) -> None:
         """Build top-level app actions."""
@@ -535,6 +689,312 @@ class MainWindow(QMainWindow):
 
         super().showEvent(event)
         self._apply_initial_scroll_alignment_once()
+
+    def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
+        """Stop folder-index work before Qt destroys its thread objects."""
+
+        self.shutdown_folder_navigation()
+        super().closeEvent(event)
+
+    def _setup_folder_navigation_index(self) -> None:
+        """Wire persistent favorite roots, cache search, and refresh scheduling."""
+
+        self._folder_search_debounce = QTimer(self)
+        self._folder_search_debounce.setSingleShot(True)
+        self._folder_search_debounce.setInterval(350)
+        self._folder_search_debounce.timeout.connect(self._run_live_folder_search)
+
+        self._folder_watcher_debounce = QTimer(self)
+        self._folder_watcher_debounce.setSingleShot(True)
+        self._folder_watcher_debounce.setInterval(1200)
+        self._folder_watcher_debounce.timeout.connect(self._refresh_favorite_roots_incrementally)
+
+        self._folder_periodic_refresh = QTimer(self)
+        self._folder_periodic_refresh.setInterval(5 * 60 * 1000)
+        self._folder_periodic_refresh.timeout.connect(self._refresh_favorite_roots_incrementally)
+        self._folder_periodic_refresh.start()
+
+        self._favorite_root_watcher = QFileSystemWatcher(self)
+        self._favorite_root_watcher.directoryChanged.connect(
+            lambda _path: self._folder_watcher_debounce.start()
+        )
+
+        self.btn_manage_favorite_roots.clicked.connect(self._open_favorite_root_manager)
+        self.btn_refresh_favorite_roots.clicked.connect(self._refresh_selected_favorite_roots)
+        self.favorite_root_list.itemClicked.connect(self._on_favorite_root_clicked)
+        self.favorite_root_list.itemSelectionChanged.connect(self._sync_favorite_buttons)
+        self.folder_search_edit.textChanged.connect(self._on_folder_search_changed)
+        self.folder_search_results.itemClicked.connect(self._on_folder_search_result_clicked)
+        self.btn_cancel_folder_search.clicked.connect(self._cancel_folder_search)
+
+        self._reload_favorite_roots()
+        if self._folder_index_repository.list_favorites():
+            QTimer.singleShot(0, self._refresh_favorite_roots_incrementally)
+
+    def _reload_favorite_roots(self, selected_path: str | None = None) -> None:
+        favorites = self._folder_index_repository.list_favorites()
+        current_item = self.favorite_root_list.currentItem()
+        preserved = selected_path or (
+            str(current_item.data(Qt.UserRole)) if current_item is not None else ""
+        )
+        self.favorite_root_list.clear()
+        for favorite in favorites:
+            status = "●" if favorite.online else "○"
+            suffix = "" if favorite.online else " (오프라인)"
+            item = QListWidgetItem(f"{status} {favorite.path}{suffix}")
+            item.setData(Qt.UserRole, favorite.path)
+            checked = favorite.last_checked or "아직 확인하지 않음"
+            item.setToolTip(f"{favorite.path}\n마지막 확인: {checked}")
+            self.favorite_root_list.addItem(item)
+            if favorite.path == preserved:
+                self.favorite_root_list.setCurrentItem(item)
+        self._sync_favorite_root_watcher(favorites)
+        self._sync_favorite_buttons()
+        if not favorites and not self.folder_search_edit.text().strip():
+            self.folder_search_status.setText(
+                "즐겨찾기 Root를 추가하면 빠른 검색을 사용할 수 있습니다."
+            )
+
+    def _sync_favorite_root_watcher(self, favorites) -> None:  # noqa: ANN001
+        watched = self._favorite_root_watcher.directories()
+        if watched:
+            self._favorite_root_watcher.removePaths(watched)
+        online_paths = [favorite.path for favorite in favorites if os.path.isdir(favorite.path)]
+        if online_paths:
+            self._favorite_root_watcher.addPaths(online_paths)
+
+    def _sync_favorite_buttons(self) -> None:
+        count = self.favorite_root_list.count()
+        self.btn_refresh_favorite_roots.setEnabled(count > 0)
+
+    def _selected_favorite_root(self) -> str | None:
+        item = self.favorite_root_list.currentItem()
+        if item is None:
+            return None
+        path = str(item.data(Qt.UserRole) or "").strip()
+        return path or None
+
+    def _open_favorite_root_manager(self) -> None:
+        dialog = FavoriteRootManagerDialog(self._folder_index_repository, self)
+        dialog.changed.connect(self._on_favorite_roots_managed)
+        dialog.exec()
+        self._reload_favorite_roots()
+        self._show_cached_folder_search()
+
+    def _on_favorite_roots_managed(self, action: str, path: str) -> None:
+        if action == "remove":
+            self._cancel_active_folder_index_job(clear_pending=True)
+            self.append_log(f"[폴더 검색] 즐겨찾기 Root 삭제: {path}")
+        elif action == "add":
+            self.append_log(f"[폴더 검색] 즐겨찾기 Root 추가: {path}")
+        self._reload_favorite_roots(selected_path=path if action != "remove" else None)
+        self._show_cached_folder_search()
+        if action == "add":
+            self._start_folder_index_job(
+                [path], full=True, query=self.folder_search_edit.text()
+            )
+
+    def _on_favorite_root_clicked(self, item: QListWidgetItem) -> None:
+        path = str(item.data(Qt.UserRole) or "")
+        if not os.path.isdir(path):
+            self.folder_search_status.setText(f"오프라인 Root: {path}")
+            self._start_folder_index_job([path], full=False, query=self.folder_search_edit.text())
+            return
+        self.jump_to_path(path, show_feedback=True)
+
+    def _refresh_selected_favorite_roots(self) -> None:
+        selected = self._selected_favorite_root()
+        roots = [selected] if selected else [
+            favorite.path for favorite in self._folder_index_repository.list_favorites()
+        ]
+        self._start_folder_index_job(
+            [path for path in roots if path],
+            full=True,
+            query=self.folder_search_edit.text(),
+        )
+
+    def _refresh_favorite_roots_incrementally(self) -> None:
+        roots = [favorite.path for favorite in self._folder_index_repository.list_favorites()]
+        if roots:
+            self._start_folder_index_job(
+                roots,
+                full=False,
+                query=self.folder_search_edit.text(),
+            )
+
+    def _on_folder_search_changed(self, query: str) -> None:
+        if self._is_syncing_navigation:
+            return
+        self._show_cached_folder_search()
+        self._folder_search_debounce.stop()
+        if not query.strip():
+            self._cancel_active_folder_index_job(clear_pending=True)
+            self.btn_cancel_folder_search.setEnabled(False)
+            return
+        self._folder_search_debounce.start()
+
+    def _show_cached_folder_search(self) -> None:
+        query = self.folder_search_edit.text().strip()
+        if not query:
+            self.folder_search_results.clear()
+            self.folder_search_results.hide()
+            favorite_count = len(self._folder_index_repository.list_favorites())
+            self.folder_search_status.setText(
+                "검색어를 입력하세요."
+                if favorite_count
+                else "즐겨찾기 Root를 추가하면 빠른 검색을 사용할 수 있습니다."
+            )
+            return
+        normalized_path = self._normalize_navigation_path(query)
+        if os.path.isdir(normalized_path):
+            self.folder_search_results.clear()
+            self.folder_search_results.hide()
+            self.folder_search_status.setText("Enter 또는 검색을 누르면 경로로 이동합니다.")
+            return
+        results = self._folder_index_repository.search(query)
+        self._render_folder_search_results(results)
+        self.folder_search_status.setText(f"캐시 결과 {len(results):,}개")
+
+    def _run_live_folder_search(self) -> None:
+        query = self.folder_search_edit.text().strip()
+        if not query or os.path.isdir(self._normalize_navigation_path(query)):
+            return
+        roots = [favorite.path for favorite in self._folder_index_repository.list_favorites()]
+        if not roots:
+            return
+        self.folder_search_status.setText(
+            f"캐시 결과 {self.folder_search_results.count():,}개 · 실제 폴더 변경분 확인 중..."
+        )
+        self._start_folder_index_job(roots, full=False, query=query)
+
+    def _render_folder_search_results(self, results: list[FolderSearchResult]) -> None:
+        self.folder_search_results.clear()
+        for result in results:
+            status = "" if result.root_online else "[오프라인] "
+            item = QListWidgetItem(f"{status}{result.name}  —  {result.parent_path}")
+            item.setData(Qt.UserRole, result.path)
+            item.setData(Qt.UserRole + 1, result.root_path)
+            item.setToolTip(result.path)
+            self.folder_search_results.addItem(item)
+        self.folder_search_results.setVisible(bool(results))
+
+    def _on_folder_search_result_clicked(self, item: QListWidgetItem) -> None:
+        path = str(item.data(Qt.UserRole) or "")
+        root_path = str(item.data(Qt.UserRole + 1) or "")
+        if os.path.isdir(path):
+            self.jump_to_path(path, show_feedback=True)
+            return
+        self._show_path_error(f"검색 결과 폴더가 현재 존재하지 않습니다: {path}")
+        if root_path:
+            self._start_folder_index_job(
+                [root_path], full=False, query=self.folder_search_edit.text()
+            )
+
+    def _start_folder_index_job(
+        self,
+        root_paths: list[str],
+        *,
+        full: bool,
+        query: str,
+    ) -> None:
+        roots = list(dict.fromkeys(path for path in root_paths if path))
+        if self._folder_index_shutting_down or not roots:
+            return
+        if self._folder_index_thread is not None:
+            self._pending_folder_index_job = (roots, bool(full), query.strip())
+            if self._folder_index_worker is not None:
+                self._folder_index_worker.cancel()
+            return
+
+        thread = QThread(self)
+        worker = FolderIndexWorker(
+            self._folder_index_repository,
+            roots,
+            full=full,
+            query=query,
+        )
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.progress.connect(self._on_folder_index_progress)
+        worker.completed.connect(self._on_folder_index_completed)
+        worker.failed.connect(self._on_folder_index_failed)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._on_folder_index_thread_finished)
+        self._folder_index_thread = thread
+        self._folder_index_worker = worker
+        self.btn_cancel_folder_search.setEnabled(bool(query.strip()))
+        thread.start(QThread.LowPriority)
+
+    def _on_folder_index_progress(self, root_path: str, count: int) -> None:
+        if self.folder_search_edit.text().strip():
+            self.folder_search_status.setText(
+                f"실제 폴더 확인 중 · {Path(root_path).name or root_path}: {count:,}개"
+            )
+
+    def _on_folder_index_completed(self, payload: object) -> None:
+        if not isinstance(payload, dict):
+            return
+        self._reload_favorite_roots()
+        query = str(payload.get("query") or "")
+        if query and query == self.folder_search_edit.text().strip() and not payload.get("cancelled"):
+            results = list(payload.get("results") or [])
+            self._render_folder_search_results(results)
+            offline_count = sum(
+                not outcome.online for outcome in payload.get("outcomes", [])
+            )
+            suffix = f" · 오프라인 Root {offline_count}개" if offline_count else ""
+            self.folder_search_status.setText(
+                f"최신 결과 {len(results):,}개{suffix}"
+            )
+
+    def _on_folder_index_failed(self, message: str) -> None:
+        self.folder_search_status.setText(f"폴더 인덱스 갱신 실패: {message}")
+        self.append_log(f"[폴더 검색] 인덱스 갱신 실패: {message}")
+
+    def _on_folder_index_thread_finished(self) -> None:
+        self._folder_index_thread = None
+        self._folder_index_worker = None
+        self.btn_cancel_folder_search.setEnabled(False)
+        pending = self._pending_folder_index_job
+        self._pending_folder_index_job = None
+        if pending and not self._folder_index_shutting_down:
+            roots, full, query = pending
+            self._start_folder_index_job(roots, full=full, query=query)
+
+    def _cancel_folder_search(self) -> None:
+        self._folder_search_debounce.stop()
+        self._cancel_active_folder_index_job(clear_pending=True)
+        self.btn_cancel_folder_search.setEnabled(False)
+        self.folder_search_status.setText(
+            f"검색 갱신 취소 요청 · 캐시 결과 {self.folder_search_results.count():,}개 유지"
+        )
+
+    def _cancel_active_folder_index_job(self, *, clear_pending: bool) -> None:
+        if clear_pending:
+            self._pending_folder_index_job = None
+        if self._folder_index_worker is not None:
+            self._folder_index_worker.cancel()
+
+    def shutdown_folder_navigation(self) -> None:
+        """Stop background indexing and close its independent SQLite connection."""
+
+        if self._folder_index_shutting_down:
+            return
+        self._folder_index_shutting_down = True
+        self._folder_periodic_refresh.stop()
+        self._folder_search_debounce.stop()
+        self._folder_watcher_debounce.stop()
+        self._pending_folder_index_job = None
+        if self._folder_index_worker is not None:
+            self._folder_index_worker.cancel()
+        thread = self._folder_index_thread
+        if thread is not None and thread.isRunning():
+            thread.quit()
+            thread.wait(3000)
+        if thread is None or not thread.isRunning():
+            self._folder_index_repository.close()
 
     def _build_ui(self) -> None:
         self.setWindowTitle(self._config.ui.app_name)
@@ -584,15 +1044,53 @@ class MainWindow(QMainWindow):
         title.setObjectName("panelTitle")
         layout.addWidget(title)
 
-        jump_row = QHBoxLayout()
+        favorite_header = QHBoxLayout()
+        self.btn_manage_favorite_roots = QPushButton("즐겨찾기 관리")
+        self.btn_refresh_favorite_roots = QPushButton("새로고침")
+        for button, tooltip in (
+            (self.btn_manage_favorite_roots, "즐겨찾기 Root 목록 관리"),
+            (self.btn_refresh_favorite_roots, "선택 또는 전체 Root를 다시 색인"),
+        ):
+            button.setToolTip(tooltip)
+            button.setMinimumWidth(0)
+            button.setFixedHeight(30)
+            button.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
+            favorite_header.addWidget(button)
+        favorite_header.addStretch(1)
+        layout.addLayout(favorite_header)
+
+        self.favorite_root_list = QListWidget()
+        self.favorite_root_list.setObjectName("favoriteRootList")
+        self.favorite_root_list.setMaximumHeight(92)
+        self.favorite_root_list.setSelectionMode(QAbstractItemView.SingleSelection)
+        layout.addWidget(self.favorite_root_list)
+
+        search_row = QHBoxLayout()
         self.path_jump_edit = QLineEdit()
-        self.path_jump_edit.setPlaceholderText(r"경로 입력 (예: D:\data\set1)")
+        self.path_jump_edit.setPlaceholderText(
+            r"폴더 경로 이동 또는 즐겨찾기 내 폴더 검색"
+        )
         self.path_jump_edit.returnPressed.connect(self._on_path_jump_requested)
-        self.btn_path_jump = QPushButton("이동")
+        self.folder_search_edit = self.path_jump_edit
+        self.btn_path_jump = QPushButton("검색")
         self.btn_path_jump.clicked.connect(self._on_path_jump_requested)
-        jump_row.addWidget(self.path_jump_edit, stretch=1)
-        jump_row.addWidget(self.btn_path_jump, stretch=0)
-        layout.addLayout(jump_row)
+        self.btn_cancel_folder_search = QPushButton("취소")
+        self.btn_cancel_folder_search.setEnabled(False)
+        search_row.addWidget(self.path_jump_edit, stretch=1)
+        search_row.addWidget(self.btn_path_jump)
+        search_row.addWidget(self.btn_cancel_folder_search)
+        layout.addLayout(search_row)
+
+        self.folder_search_status = QLabel("즐겨찾기 Root를 추가하면 빠른 검색을 사용할 수 있습니다.")
+        self.folder_search_status.setObjectName("folderSearchStatus")
+        self.folder_search_status.setWordWrap(True)
+        layout.addWidget(self.folder_search_status)
+
+        self.folder_search_results = QListWidget()
+        self.folder_search_results.setObjectName("folderSearchResults")
+        self.folder_search_results.setMaximumHeight(132)
+        self.folder_search_results.hide()
+        layout.addWidget(self.folder_search_results)
 
         self.folder_tree = FolderTreeView()
         self.folder_tree.setObjectName("folderTree")
@@ -623,6 +1121,7 @@ class MainWindow(QMainWindow):
 
         self.folder_tree.setRootIndex(QModelIndex())
         self.jump_to_path(str(Path.home()), show_feedback=False)
+        self.path_jump_edit.clear()
 
         layout.addWidget(self.folder_tree, stretch=1)
 
@@ -821,22 +1320,31 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.active_folder_table, stretch=11)
 
         action_row = QHBoxLayout()
-        self.btn_move_folder_top = QPushButton("맨 위")
-        self.btn_move_folder_up = QPushButton("위")
-        self.btn_move_folder_down = QPushButton("아래")
-        self.btn_move_folder_bottom = QPushButton("맨 아래")
-        self.btn_hold_folders = QPushButton("보류")
-        self.btn_release_folders = QPushButton("보류 해제")
-        for button in (
-            self.btn_move_folder_top,
-            self.btn_move_folder_up,
-            self.btn_move_folder_down,
-            self.btn_move_folder_bottom,
-            self.btn_hold_folders,
-            self.btn_release_folders,
-        ):
+        self.btn_move_folder_top = QPushButton()
+        self.btn_move_folder_up = QPushButton()
+        self.btn_move_folder_down = QPushButton()
+        self.btn_move_folder_bottom = QPushButton()
+        self.btn_hold_folders = QPushButton()
+        self.btn_release_folders = QPushButton()
+        folder_action_buttons = (
+            (self.btn_move_folder_top, "folder_move_top.svg", "맨 위로 이동"),
+            (self.btn_move_folder_up, "folder_move_up.svg", "위로 이동"),
+            (self.btn_move_folder_down, "folder_move_down.svg", "아래로 이동"),
+            (self.btn_move_folder_bottom, "folder_move_bottom.svg", "맨 아래로 이동"),
+            (self.btn_hold_folders, "folder_hold.svg", "보류"),
+            (self.btn_release_folders, "folder_release.svg", "보류 해제"),
+        )
+        for index, (button, icon_name, label) in enumerate(folder_action_buttons):
+            button.setObjectName("folderActionIconButton")
+            button.setIcon(self._load_sidebar_toggle_icon(icon_name))
+            button.setIconSize(QSize(22, 22))
+            button.setToolTip(label)
+            button.setAccessibleName(label)
+            button.setFixedSize(36, 34)
             button.setEnabled(False)
             action_row.addWidget(button)
+            if index == 3:
+                action_row.addSpacing(6)
         self.btn_move_folder_top.clicked.connect(lambda: self._emit_folder_move("top"))
         self.btn_move_folder_up.clicked.connect(lambda: self._emit_folder_move("up"))
         self.btn_move_folder_down.clicked.connect(lambda: self._emit_folder_move("down"))
@@ -1011,6 +1519,12 @@ class MainWindow(QMainWindow):
             if show_feedback:
                 self._show_path_error(f"유효한 폴더 경로가 아닙니다: {target_path}")
             return False
+
+        self._is_syncing_navigation = True
+        try:
+            self.path_jump_edit.setText(target_path)
+        finally:
+            self._is_syncing_navigation = False
 
         self._pending_jump_target = target_path
         self._pending_jump_show_feedback = show_feedback
@@ -1573,10 +2087,32 @@ class MainWindow(QMainWindow):
             self.status_tabs.setCurrentIndex(self.STATUS_TAB_DETAIL)
 
     def _on_path_jump_requested(self) -> None:
-        """Handle explicit path jump request from left panel."""
+        """Navigate explicit paths or search favorite roots from one input."""
 
-        input_path = self.path_jump_edit.text()
-        self.jump_to_path(input_path, show_feedback=True)
+        query = self.path_jump_edit.text().strip()
+        normalized_path = self._normalize_navigation_path(query)
+        is_explicit_path = (
+            os.path.isdir(normalized_path)
+            or os.path.isfile(normalized_path)
+            or self._looks_like_navigation_path(query)
+        )
+        if is_explicit_path:
+            self.jump_to_path(query, show_feedback=True)
+            return
+        self._show_cached_folder_search()
+        self._run_live_folder_search()
+
+    @staticmethod
+    def _looks_like_navigation_path(value: str) -> bool:
+        """Return whether user input has explicit filesystem-path syntax."""
+
+        stripped = value.strip()
+        return bool(
+            stripped.startswith(("\\\\", "/", "~", "."))
+            or (len(stripped) >= 2 and stripped[1] == ":")
+            or "\\" in stripped
+            or "/" in stripped
+        )
 
     def _show_path_error(self, message: str) -> None:
         """Show path validation errors in both dialog and log panel."""
@@ -1593,23 +2129,12 @@ class MainWindow(QMainWindow):
             parent = parent.parent()
 
     def _on_tree_current_changed(self, current: QModelIndex, _previous: QModelIndex) -> None:
-        """Reflect current tree selection immediately into the path input."""
+        """Keep tree alignment without overwriting the unified user input."""
 
         if self._is_syncing_navigation or not current.isValid():
             return
 
-        selected_path = self.file_system_model.filePath(current)
-        if not selected_path:
-            return
-        if self._pending_jump_target and not self._paths_match(selected_path, self._pending_jump_target):
-            return
-
-        self._is_syncing_navigation = True
-        try:
-            self.path_jump_edit.setText(selected_path)
-            self._center_tree_index_horizontally(current)
-        finally:
-            self._is_syncing_navigation = False
+        self._center_tree_index_horizontally(current)
 
     def _on_directory_loaded(self, _path: str) -> None:
         """Retry pending jump after filesystem model loads directories."""
@@ -1798,7 +2323,6 @@ class MainWindow(QMainWindow):
             self.folder_tree.expand(model_index)
             self._center_tree_index_horizontally(model_index)
             self.folder_tree.setFocus(Qt.OtherFocusReason)
-            self.path_jump_edit.setText(target_path)
         finally:
             self._is_syncing_navigation = False
 

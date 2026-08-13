@@ -20,6 +20,7 @@ APP_ICON_ICO_NAME = "IPDK_plus.ico"
 SEED_REFRESH_MARKER_NAME = ".refresh_seed_config"
 SEED_FINGERPRINT_FILE_NAME = ".seed_fingerprint"
 TASK_DATABASE_FILE_NAME = "task_state.sqlite3"
+FOLDER_INDEX_DATABASE_FILE_NAME = "folder_index.sqlite3"
 
 
 class RuntimePathError(RuntimeError):
@@ -119,6 +120,12 @@ def resolve_task_database_path() -> Path:
     """Return the persistent SQLite path for resumable task state."""
 
     return resolve_user_appdata_dir() / "runtime" / TASK_DATABASE_FILE_NAME
+
+
+def resolve_folder_index_database_path() -> Path:
+    """Return the independent SQLite path for favorite-root folder search."""
+
+    return resolve_user_appdata_dir() / "runtime" / FOLDER_INDEX_DATABASE_FILE_NAME
 
 
 def ensure_user_config_seeded() -> RuntimeConfigPaths:

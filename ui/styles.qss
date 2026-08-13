@@ -176,6 +176,38 @@ QListWidget#helpTopicList::item:selected {
     color: #eff6ff;
 }
 
+QListWidget#favoriteRootList,
+QListWidget#folderSearchResults {
+    background-color: #111b2d;
+    border: 1px solid #3a4b66;
+    border-radius: 8px;
+    padding: 3px;
+}
+
+QListWidget#favoriteRootList::item,
+QListWidget#folderSearchResults::item {
+    padding: 6px 8px;
+    margin: 1px;
+    border-radius: 5px;
+}
+
+QListWidget#favoriteRootList::item:hover,
+QListWidget#folderSearchResults::item:hover {
+    background-color: #29476b;
+}
+
+QListWidget#favoriteRootList::item:selected,
+QListWidget#folderSearchResults::item:selected {
+    background-color: #2f5f9e;
+    color: #eff6ff;
+}
+
+QLabel#folderSearchStatus {
+    color: #a9bad0;
+    font-size: 11px;
+    padding: 1px 3px;
+}
+
 QLabel#helpMatchLabel {
     color: #d8e3ef;
     background-color: #1d2a3f;
@@ -327,6 +359,11 @@ QToolButton#statusSidebarToggle:pressed,
 QToolButton#statusSidebarToggle:checked {
     background-color: rgba(59, 130, 246, 0.36);
     border-color: rgba(186, 230, 253, 0.78);
+}
+
+QPushButton#folderActionIconButton {
+    padding: 0;
+    border-radius: 7px;
 }
 
 QHeaderView::section {
