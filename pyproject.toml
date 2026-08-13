@@ -1,6 +1,6 @@
 [project]
 name = "IPDK_plus"
-version = "26.8.5"
+version = "26.8.13"
 description = "IPDK_plus PySide6 RabbitMQ image task requester and tracker"
 readme = "README.md"
 requires-python = ">=3.11,<3.12"

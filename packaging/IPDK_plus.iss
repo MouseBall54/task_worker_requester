@@ -1,5 +1,5 @@
 #define MyAppName "IPDK_plus"
-#define MyAppVersion "26.8.5"
+#define MyAppVersion "26.8.13"
 #define MyAppPublisher "박영문"
 #define MyAppExeName "IPDK_plus.exe"
 #define MyDistDir "..\\dist\\IPDK_plus"
