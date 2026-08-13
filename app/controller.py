@@ -96,6 +96,7 @@ class TaskController(QObject):
         self._dirty_folder_paths: set[str] = set()
         self._dirty_task_ids: set[str] = set()
         self._latest_overall_stats: dict[str, float | int | None] | None = None
+        self._duplicate_folder_paths: dict[str, None] = {}
         self._ui_refresh_timer = QTimer(self)
         self._ui_refresh_timer.setInterval(max(100, int(config.publish.ui_refresh_interval_ms)))
         self._ui_refresh_timer.timeout.connect(self._flush_ui_updates)
@@ -130,6 +131,7 @@ class TaskController(QObject):
         self._store.folder_group_added.connect(self._on_folder_group_changed)
         self._store.folder_group_updated.connect(self._on_folder_group_changed)
         self._store.folder_group_removed.connect(self._on_folder_group_removed)
+        self._store.duplicate_folders_detected.connect(self._on_duplicate_folders_detected)
         self._store.task_updated.connect(self._on_task_updated)
         self._store.store_reset.connect(self._on_store_reset)
         self._store.overall_updated.connect(self._on_overall_updated)
@@ -698,6 +700,15 @@ class TaskController(QObject):
 
         self._view.set_folder_rows(self._store.get_folder_summaries())
 
+    @Slot(list)
+    def _on_duplicate_folders_detected(self, folder_paths: list[str]) -> None:
+        """Accumulate duplicate paths so one user action produces one notice."""
+
+        for folder_path in folder_paths:
+            normalized = str(folder_path or "").strip()
+            if normalized:
+                self._duplicate_folder_paths.setdefault(normalized, None)
+
     @Slot(str)
     def _on_task_updated(self, request_id: str) -> None:
         self._dirty_task_ids.add(request_id)
@@ -729,6 +740,7 @@ class TaskController(QObject):
 
     @Slot()
     def _on_store_reset(self) -> None:
+        self._duplicate_folder_paths.clear()
         self._view.clear_progress_views()
 
     def _stop_polling_only(self, reason: str) -> None:
@@ -933,6 +945,7 @@ class TaskController(QObject):
             f"{mode_label} 등록 완료 - 스캔 대상 {len(normalized_paths)}개, "
             f"Recipe {len(recipe_selections)}개, 신규 폴더 {added_folders}개, 신규 작업 {added_images}개"
         )
+        self._show_duplicate_folder_notice()
 
         if not self._active or added_images <= 0:
             return
@@ -1017,6 +1030,7 @@ class TaskController(QObject):
             f"폴더 대기열 등록 완료 - 폴더 {added}개, "
             f"Recipe {len(recipe_selections)}개 (이미지는 활성 시점에 분할 스캔)"
         )
+        self._show_duplicate_folder_notice()
         if self._active and added:
             self._open_next_lazy_folders(self._available_open_slots())
             self._maybe_dispatch_lazy()
@@ -1070,6 +1084,7 @@ class TaskController(QObject):
     @Slot(int)
     def _on_discovery_completed(self, total_added: int) -> None:
         self._log(f"하위 폴더 탐색 완료 - 신규 폴더 {total_added}개")
+        self._show_duplicate_folder_notice()
         if self._start_after_discovery:
             self._start_after_discovery = False
             self._start_lazy_session()
@@ -1081,6 +1096,27 @@ class TaskController(QObject):
     @Slot(str)
     def _on_discovery_failed(self, error: str) -> None:
         self._log(f"하위 폴더 탐색 실패: {error}")
+        self._show_duplicate_folder_notice()
+
+    def _show_duplicate_folder_notice(self) -> None:
+        """Show accumulated duplicates with their current folder-table location."""
+
+        if not self._duplicate_folder_paths:
+            return
+
+        rows: list[tuple[str, str]] = []
+        for folder_path in self._duplicate_folder_paths:
+            summary = self._store.get_folder_summary(folder_path)
+            location = (
+                "완료된 폴더"
+                if summary is not None and summary.status.is_done
+                else "진행중/대기 폴더"
+            )
+            rows.append((folder_path, location))
+
+        self._duplicate_folder_paths.clear()
+        self._log(f"중복 폴더 {len(rows)}개는 이미 등록되어 추가하지 않았습니다.")
+        self._view.show_duplicate_folders(rows)
 
     @Slot()
     def _on_discovery_thread_finished(self) -> None:

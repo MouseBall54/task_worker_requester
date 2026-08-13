@@ -52,6 +52,7 @@ class DummyView(QObject if PYSIDE_AVAILABLE else object):
         self.queue_metrics: tuple[int | None, int | None] = (None, None)
         self.runtime_options_enabled = True
         self.recipe_selections = [("Recipe", "recipe.json")]
+        self.duplicate_folder_notifications: list[list[tuple[str, str]]] = []
         self._disable_queue_metrics_monitor = True
 
     def set_running_state(self, running: bool) -> None:
@@ -96,6 +97,9 @@ class DummyView(QObject if PYSIDE_AVAILABLE else object):
     def show_mq_preview(self, _preview) -> None:  # noqa: ANN001
         return
 
+    def show_duplicate_folders(self, rows: list[tuple[str, str]]) -> None:
+        self.duplicate_folder_notifications.append(list(rows))
+
     def current_runtime_settings(self) -> tuple[str, str, int, int]:
         return ("RUN_RECIPE", "recipe.json", 1, 0)
 
@@ -139,6 +143,115 @@ class TaskControllerTest(unittest.TestCase):
 
         self.assertEqual(store.overall_stats()["total"], 1)
         self.assertTrue(len(view.logs) >= 1)
+
+    def test_duplicate_folder_notice_classifies_pending_and_completed_paths(self) -> None:
+        config = AppConfig(
+            rabbitmq=RabbitMQConfig(host="127.0.0.1", port=5672, username="guest", password="guest"),
+            publish=PublishConfig(image_extensions=[".jpg"]),
+            ui=UiConfig(),
+            mock_mode=True,
+        )
+        view = DummyView()
+        logger = logging.getLogger("controller_duplicate_folder_notice_test")
+        logger.handlers.clear()
+        logger.addHandler(logging.NullHandler())
+
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            pending_folder = root / "pending"
+            completed_folder = root / "completed"
+            pending_folder.mkdir()
+            completed_folder.mkdir()
+            completed_image = completed_folder / "done.jpg"
+            completed_image.write_text("x", encoding="utf-8")
+
+            store = SqliteTaskStore(root / "tasks.sqlite3")
+            store.register_folder_descriptors(
+                [str(pending_folder), str(completed_folder)],
+                [("Recipe", "recipe.json")],
+            )
+            store.insert_task_batch(str(completed_folder), [str(completed_image)])
+            message = store.claim_pending_messages(
+                [str(completed_folder)], "RUN", "result.queue", 0, 1
+            )[0]
+            store.mark_task_sent(message.request_id)
+            store.apply_result(TaskResult(request_id=message.request_id, result=["PASS"]))
+            store.set_folder_scan_state(str(completed_folder), "SCANNED")
+
+            controller = TaskController(
+                config=config,
+                view=view,  # type: ignore[arg-type]
+                store=store,
+                broker_provider=build_broker_provider(config),
+                logger=logger,
+            )
+            try:
+                controller.on_add_folder_requested(
+                    [str(pending_folder), str(completed_folder)]
+                )
+
+                self.assertEqual(
+                    view.duplicate_folder_notifications,
+                    [[
+                        (str(pending_folder), "진행중/대기 폴더"),
+                        (str(completed_folder), "완료된 폴더"),
+                    ]],
+                )
+                self.assertTrue(any("중복 폴더 2개" in message for message in view.logs))
+            finally:
+                controller.shutdown()
+                store.close()
+
+    def test_subfolder_duplicates_are_grouped_into_one_notice(self) -> None:
+        config = AppConfig(
+            rabbitmq=RabbitMQConfig(host="127.0.0.1", port=5672, username="guest", password="guest"),
+            publish=PublishConfig(image_extensions=[".jpg"]),
+            ui=UiConfig(),
+            mock_mode=True,
+        )
+        view = DummyView()
+        logger = logging.getLogger("controller_duplicate_subfolder_notice_test")
+        logger.handlers.clear()
+        logger.addHandler(logging.NullHandler())
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            folder_a = root / "folder_a"
+            folder_b = root / "folder_b"
+            for folder in (folder_a, folder_b):
+                folder.mkdir()
+                (folder / "image.jpg").write_text("x", encoding="utf-8")
+
+            store = SqliteTaskStore(root / "tasks.sqlite3")
+            store.register_folder_descriptors(
+                [str(folder_a), str(folder_b)], [("Recipe", "recipe.json")]
+            )
+            controller = TaskController(
+                config=config,
+                view=view,  # type: ignore[arg-type]
+                store=store,
+                broker_provider=build_broker_provider(config),
+                logger=logger,
+            )
+            try:
+                controller.on_add_subfolders_requested([str(root)])
+                deadline = time.monotonic() + 5.0
+                while time.monotonic() < deadline and controller._discovery_thread is not None:
+                    self._app.processEvents()
+                    time.sleep(0.01)
+                self._app.processEvents()
+
+                self.assertEqual(
+                    view.duplicate_folder_notifications,
+                    [[
+                        (str(folder_a), "진행중/대기 폴더"),
+                        (str(folder_b), "진행중/대기 폴더"),
+                    ]],
+                )
+                self.assertTrue(any("신규 폴더 0개" in message for message in view.logs))
+            finally:
+                controller.shutdown()
+                self._app.processEvents()
+                store.close()
 
     def test_sqlite_runtime_registers_descriptor_then_publishes_one_chunk(self) -> None:
         config = AppConfig(

@@ -19,7 +19,13 @@ try:
         QSizePolicy,
         QToolButton,
     )
-    from ui.main_window import FolderTreeView, MainWindow, RecipePathRow, ResponsiveRecipeSettings
+    from ui.main_window import (
+        DuplicateFolderDialog,
+        FolderTreeView,
+        MainWindow,
+        RecipePathRow,
+        ResponsiveRecipeSettings,
+    )
 
     PYSIDE_AVAILABLE = True
 except ImportError:  # pragma: no cover
@@ -60,6 +66,23 @@ class MainWindowTest(unittest.TestCase):
             self.assertEqual(window.status_tabs.currentIndex(), window.STATUS_TAB_LOG)
         finally:
             window.close()
+
+    def test_duplicate_folder_dialog_renders_path_and_location_table(self) -> None:
+        dialog = DuplicateFolderDialog(
+            [
+                (r"D:\data\pending", "진행중/대기 폴더"),
+                (r"D:\data\done", "완료된 폴더"),
+            ]
+        )
+        try:
+            self.assertEqual(dialog.windowTitle(), "중복 폴더 안내")
+            self.assertEqual(dialog.table.rowCount(), 2)
+            self.assertEqual(dialog.table.columnCount(), 2)
+            self.assertEqual(dialog.table.item(0, 0).text(), r"D:\data\pending")
+            self.assertEqual(dialog.table.item(0, 1).text(), "진행중/대기 폴더")
+            self.assertEqual(dialog.table.item(1, 1).text(), "완료된 폴더")
+        finally:
+            dialog.close()
 
     def test_log_document_is_bounded_by_configuration(self) -> None:
         window = self._make_window()

@@ -23,6 +23,7 @@ class SqliteTaskStore(QObject):
     folder_group_added = Signal(str)
     folder_group_updated = Signal(str)
     folder_group_removed = Signal(str)
+    duplicate_folders_detected = Signal(list)
     task_updated = Signal(str)
     store_reset = Signal()
     overall_updated = Signal(dict)
@@ -63,7 +64,11 @@ class SqliteTaskStore(QObject):
         folder_paths: list[str],
         recipe_selections: list[tuple[str, str]],
     ) -> int:
+        normalized_paths = list(
+            dict.fromkeys(str(path).strip() for path in folder_paths if str(path).strip())
+        )
         before = set(self.get_folder_paths())
+        duplicates = [path for path in normalized_paths if path in before]
         added = self.repository.register_folder_descriptors(folder_paths, recipe_selections)
         for folder_path in self.get_folder_paths():
             if folder_path not in before:
@@ -71,6 +76,8 @@ class SqliteTaskStore(QObject):
                 self.folder_group_updated.emit(folder_path)
         if added:
             self._emit_overall()
+        if duplicates:
+            self.duplicate_folders_detected.emit(duplicates)
         return added
 
     def insert_task_batch(self, folder_path: str, image_paths: list[str]) -> int:

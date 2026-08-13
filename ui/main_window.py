@@ -30,6 +30,8 @@ from PySide6.QtWidgets import (
     QSplitter,
     QTabWidget,
     QTableView,
+    QTableWidget,
+    QTableWidgetItem,
     QTextEdit,
     QTreeView,
     QVBoxLayout,
@@ -118,6 +120,43 @@ class MQPreviewDialog(QDialog):
             json.dumps(preview_data.get("payload", {}).get("received", {}), ensure_ascii=False, indent=2),
         ]
         return "\n".join(sections)
+
+
+class DuplicateFolderDialog(QDialog):
+    """Display folders skipped because the same path is already registered."""
+
+    def __init__(
+        self,
+        rows: list[tuple[str, str]],
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("중복 폴더 안내")
+        self.resize(820, 420)
+
+        layout = QVBoxLayout(self)
+        header = QLabel(
+            f"이미 등록되어 추가하지 않은 폴더가 {len(rows)}개 있습니다."
+        )
+        layout.addWidget(header)
+
+        self.table = QTableWidget(len(rows), 2, self)
+        self.table.setHorizontalHeaderLabels(["폴더 경로", "현재 위치"])
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setAlternatingRowColors(True)
+        self.table.verticalHeader().setVisible(False)
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        for row_index, (folder_path, location) in enumerate(rows):
+            self.table.setItem(row_index, 0, QTableWidgetItem(folder_path))
+            self.table.setItem(row_index, 1, QTableWidgetItem(location))
+        layout.addWidget(self.table, stretch=1)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Close, parent=self)
+        buttons.rejected.connect(self.reject)
+        buttons.accepted.connect(self.accept)
+        layout.addWidget(buttons)
 
 
 class ResponsiveRecipeSettings(QWidget):
@@ -1039,6 +1078,12 @@ class MainWindow(QMainWindow):
         """Open modal dialog for one task's MQ preview information."""
 
         dialog = MQPreviewDialog(preview_data=preview_data, parent=self)
+        dialog.exec()
+
+    def show_duplicate_folders(self, rows: list[tuple[str, str]]) -> None:
+        """Show paths skipped because they already exist in a folder table."""
+
+        dialog = DuplicateFolderDialog(rows=rows, parent=self)
         dialog.exec()
 
     def confirm_reset(self) -> bool:

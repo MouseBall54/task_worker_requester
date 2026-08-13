@@ -11,6 +11,24 @@ from state.sqlite_task_store import SqliteTaskStore
 
 
 class SqliteTaskStoreTest(unittest.TestCase):
+    def test_duplicate_folder_registration_emits_existing_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = SqliteTaskStore(Path(temp_dir) / "tasks.sqlite3")
+            duplicates: list[list[str]] = []
+            store.duplicate_folders_detected.connect(duplicates.append)
+            try:
+                store.register_folder_descriptors(
+                    ["folder_a", "folder_b"], [("R", "r.json")]
+                )
+                added = store.register_folder_descriptors(
+                    ["folder_b", "folder_c", "folder_a"], [("R", "r.json")]
+                )
+
+                self.assertEqual(added, 1)
+                self.assertEqual(duplicates, [["folder_b", "folder_a"]])
+            finally:
+                store.close()
+
     def test_lazy_descriptor_scan_claim_and_result_flow(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             store = SqliteTaskStore(Path(temp_dir) / "tasks.sqlite3")

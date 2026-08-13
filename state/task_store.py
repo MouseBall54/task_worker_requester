@@ -28,6 +28,7 @@ class TaskStore(QObject):
     folder_group_added = Signal(str)
     folder_group_updated = Signal(str)
     folder_group_removed = Signal(str)
+    duplicate_folders_detected = Signal(list)
     task_updated = Signal(str)
     store_reset = Signal()
     overall_updated = Signal(dict)
@@ -84,6 +85,7 @@ class TaskStore(QObject):
 
             group = self._groups[folder_path]
             index = self._folder_image_index[folder_path]
+            folder_added_images = 0
 
             for image_path in image_paths:
                 for recipe_alias, recipe_path in selections:
@@ -103,9 +105,12 @@ class TaskStore(QObject):
                     group.task_ids.append(request_id)
                     index.add(task_key)
                     added_images += 1
+                    folder_added_images += 1
                     self.task_updated.emit(request_id)
 
             self.folder_group_updated.emit(folder_path)
+            if not folder_added_images and folder_path in self._groups:
+                self.duplicate_folders_detected.emit([folder_path])
 
         if added_folders or added_images:
             self._emit_overall()
