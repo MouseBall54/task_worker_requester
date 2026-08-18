@@ -71,6 +71,7 @@ def run_app(config_path: str | None = None) -> int:
     broker_provider = build_broker_provider(app_config)
     window = MainWindow(
         config=app_config,
+        config_path=resolved_config_path,
         folder_index_database_path=resolve_folder_index_database_path(),
         ui_settings_path=resolve_ui_settings_path(),
     )

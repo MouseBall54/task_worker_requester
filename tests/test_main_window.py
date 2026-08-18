@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 from pathlib import Path
+import shutil
+import os
 from tempfile import TemporaryDirectory
 import time
 import unittest
 from unittest.mock import Mock, patch
 
+from config.config_loader import ConfigLoader
 from config.models import AppConfig, PublishConfig, RabbitMQConfig, RecipeConfig, RecipeItem, UiConfig
 from models.task_models import FolderSummary, RunHistorySummary, TaskStatus
 from state.folder_index_repository import SCOPE_DEPTH, SCOPE_EXCLUDED
@@ -780,6 +783,16 @@ class MainWindowTest(unittest.TestCase):
         window = self._make_window()
         try:
             self.assertEqual(window.windowTitle(), "IPDK_plus")
+            self.assertEqual(
+                [action.text() for action in window.menuBar().actions()],
+                ["작업", "설정", "도움말"],
+            )
+            self.assertEqual(
+                [action.text() for action in window.settings_menu.actions()],
+                ["MQ 연결 설정", "Recipe 설정"],
+            )
+            self.assertEqual(window.action_edit_app_config.text(), "MQ 연결 설정")
+            self.assertEqual(window.action_edit_recipe_config.text(), "Recipe 설정")
             self.assertEqual((window.width(), window.height()), (1920, 1080))
             self.assertEqual(window.maximumWidth(), 16_777_215)
             self.assertEqual(window.maximumHeight(), 16_777_215)
@@ -836,6 +849,29 @@ class MainWindowTest(unittest.TestCase):
             self.assertIs(window._help_dialog, dialog)
         finally:
             window.close()
+
+    def test_settings_menu_uses_the_active_runtime_config_paths(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            project_root = Path(__file__).resolve().parents[1]
+            app_path = Path(temp_dir) / "app_config.yaml"
+            recipe_path = Path(temp_dir) / "recipe_config.yaml"
+            shutil.copy2(project_root / "config" / "app_config.yaml", app_path)
+            shutil.copy2(project_root / "config" / "recipe_config.yaml", recipe_path)
+            config = ConfigLoader.load(app_path)
+            window = MainWindow(config, config_path=app_path)
+            try:
+                self.assertTrue(window.action_edit_app_config.isEnabled())
+                self.assertTrue(window.action_edit_recipe_config.isEnabled())
+                self.assertEqual(window._config_path, app_path)
+                self.assertTrue(os.path.samefile(window._recipe_config_path(), recipe_path))
+                with patch("ui.main_window.AppConfigSettingsDialog.exec", return_value=0) as app_exec:
+                    window.action_edit_app_config.trigger()
+                with patch("ui.main_window.RecipeConfigSettingsDialog.exec", return_value=0) as recipe_exec:
+                    window.action_edit_recipe_config.trigger()
+                app_exec.assert_called_once()
+                recipe_exec.assert_called_once()
+            finally:
+                window.close()
 
     def test_active_folder_single_selection_switches_to_detail_tab(self) -> None:
         window = self._make_window()

@@ -61,6 +61,7 @@ from PySide6.QtWidgets import (
 
 from app.runtime_paths import resolve_ui_icon_path
 from config.models import AppConfig
+from config.config_loader import ConfigError
 from models.task_models import FolderSummary, ImageTask, RunHistorySummary
 from services.workers.folder_index_worker import FolderIndexWorker
 from state.folder_index_repository import (
@@ -78,6 +79,7 @@ from state.folder_index_repository import (
     FolderSearchResult,
 )
 from ui.help_dialog import HelpDialog
+from ui.settings_dialog import AppConfigSettingsDialog, RecipeConfigSettingsDialog
 from ui.models import FolderTableModel, ImageTableModel, ProgressBarDelegate
 from ui.widgets import MQButtonDelegate, StatusBadgeDelegate
 from utils.time_utils import format_seoul_display
@@ -843,11 +845,13 @@ class MainWindow(QMainWindow):
     def __init__(
         self,
         config: AppConfig,
+        config_path: str | Path | None = None,
         folder_index_database_path: str | Path | None = None,
         ui_settings_path: str | Path | None = None,
     ) -> None:
         super().__init__()
         self._config = config
+        self._config_path = Path(config_path) if config_path is not None else None
         self._folder_index_repository = FolderIndexRepository(
             folder_index_database_path or ":memory:"
         )
@@ -892,23 +896,74 @@ class MainWindow(QMainWindow):
     def _build_menu_bar(self) -> None:
         """Build top-level app actions."""
 
-        task_menu = self.menuBar().addMenu("작업")
+        self.task_menu = self.menuBar().addMenu("작업")
         self.action_open_history = QAction("실행 이력", self)
         self.action_open_history.triggered.connect(self.history_requested.emit)
-        task_menu.addAction(self.action_open_history)
+        self.task_menu.addAction(self.action_open_history)
 
-        help_menu = self.menuBar().addMenu("도움말")
+        self.settings_menu = self.menuBar().addMenu("설정")
+        self.action_edit_app_config = QAction("MQ 연결 설정", self)
+        self.action_edit_app_config.setEnabled(
+            self._config_path is not None and self._config_path.exists()
+        )
+        self.action_edit_app_config.triggered.connect(self._open_app_config_settings)
+        self.settings_menu.addAction(self.action_edit_app_config)
+        self.action_edit_recipe_config = QAction("Recipe 설정", self)
+        recipe_path = self._recipe_config_path()
+        self.action_edit_recipe_config.setEnabled(
+            self._config_path is not None
+            and recipe_path is not None
+            and recipe_path.exists()
+        )
+        self.action_edit_recipe_config.triggered.connect(self._open_recipe_config_settings)
+        self.settings_menu.addAction(self.action_edit_recipe_config)
+
+        self.help_menu = self.menuBar().addMenu("도움말")
         self.action_open_help = QAction("도움말 열기", self)
         self.action_open_help.setShortcut(QKeySequence.HelpContents)
         self.action_open_help.triggered.connect(self._open_help_dialog)
-        help_menu.addAction(self.action_open_help)
+        self.help_menu.addAction(self.action_open_help)
         self.addAction(self.action_open_help)
 
-        help_menu.addSeparator()
+        self.help_menu.addSeparator()
         self.action_check_update = QAction("업데이트 확인", self)
         self.action_check_update.setEnabled(self._config.update.enabled)
         self.action_check_update.triggered.connect(self._open_update_link)
-        help_menu.addAction(self.action_check_update)
+        self.help_menu.addAction(self.action_check_update)
+
+    def _recipe_config_path(self) -> Path | None:
+        value = str(self._config.recipe_config_path or "").strip()
+        return Path(value) if value else None
+
+    def _open_app_config_settings(self) -> None:
+        if self._config_path is None:
+            QMessageBox.warning(self, "설정 파일 없음", "현재 실행에 사용된 app_config.yaml 경로를 찾지 못했습니다.")
+            return
+        try:
+            dialog = AppConfigSettingsDialog(self._config_path, self)
+        except (ConfigError, OSError) as exc:
+            QMessageBox.critical(self, "설정 열기 실패", str(exc))
+            return
+        dialog.settings_saved.connect(self._on_runtime_settings_saved)
+        dialog.exec()
+
+    def _open_recipe_config_settings(self) -> None:
+        recipe_path = self._recipe_config_path()
+        if self._config_path is None or recipe_path is None:
+            QMessageBox.warning(self, "설정 파일 없음", "현재 실행에 사용된 recipe_config.yaml 경로를 찾지 못했습니다.")
+            return
+        try:
+            dialog = RecipeConfigSettingsDialog(
+                self._config_path, recipe_path, self
+            )
+        except (ConfigError, OSError) as exc:
+            QMessageBox.critical(self, "Recipe 설정 열기 실패", str(exc))
+            return
+        dialog.settings_saved.connect(self._on_runtime_settings_saved)
+        dialog.exec()
+
+    def _on_runtime_settings_saved(self, path: str) -> None:
+        self.append_log(f"[설정] 저장 완료 · 재시작 후 적용: {path}")
 
     def showEvent(self, event: QShowEvent) -> None:  # noqa: N802
         """Align horizontal scroll positions once when the main window is first shown."""

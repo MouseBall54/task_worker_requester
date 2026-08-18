@@ -144,7 +144,7 @@ Avg Time/Image는 완료된 작업과 경과 시간을 바탕으로 계산되는
     HelpTopic(
         title="설정 파일",
         keywords=("app_config.yaml", "recipe_config.yaml", "AppData", "seed", "fingerprint", "mock_mode", "update"),
-        body="""앱 설정은 app_config.yaml과 recipe_config.yaml을 중심으로 관리됩니다.
+        body="""앱 설정은 app_config.yaml과 recipe_config.yaml을 중심으로 관리됩니다. 상단 `설정` 메뉴의 `MQ 연결 설정`에서는 RabbitMQ 연결·queue 및 주요 전송/조회 값을 수정할 수 있고, `Recipe 설정`에서는 기본 alias와 Recipe alias/path 행을 추가·수정·삭제할 수 있습니다. 현재 실행에 사용된 값과 실제 저장 경로가 창에 표시되며, 저장 전 전체 설정 검증을 통과한 경우에만 파일이 교체됩니다.
 
 설정 탐색 우선순위는 CLI --config 경로, 호환용 positional config 경로, %APPDATA%\\IPDK_plus\\app_config.yaml, 설치 패키지 seed, 실행파일 옆 config, 개발 repo 기본값 순서입니다. 설치형 실행에서는 기본 편집 대상이 %APPDATA%\\IPDK_plus\\app_config.yaml입니다.
 
