@@ -733,13 +733,24 @@ class TaskController(QObject):
     def _on_publish_thread_finished(self) -> None:
         """Release a bounded chunk left unpublished and continue after thread cleanup."""
 
+        finished_thread = self.sender()
+        if finished_thread is not None and finished_thread is not self._publish_thread:
+            return
         self._publish_thread = None
         self._publish_worker = None
         if not self._lazy_mode:
             return
         released = self._store.release_claimed()  # type: ignore[attr-defined]
         if released:
-            self._log(f"미발행 작업 {released}건을 전송 대기로 복구했습니다.")
+            retry_delay_ms = max(
+                250,
+                int(float(self._config.publish.publish_retry_backoff_seconds) * 1000),
+            )
+            self._log(
+                f"미발행 작업 {released}건을 전송 대기로 복구했습니다. "
+                f"{retry_delay_ms / 1000:.1f}초 후 자동 재시도합니다."
+            )
+            QTimer.singleShot(retry_delay_ms, self._maybe_dispatch_lazy)
             return
         self._maybe_dispatch_lazy()
 
@@ -810,6 +821,7 @@ class TaskController(QObject):
 
     @Slot()
     def _flush_ui_updates(self) -> None:
+        self._reconcile_finished_scan_threads()
         folder_paths = self._dirty_folder_paths
         self._dirty_folder_paths = set()
         for folder_path in folder_paths:
@@ -1453,8 +1465,12 @@ class TaskController(QObject):
         worker.access_issues_found.connect(self._on_scan_access_issues)
         worker.finished.connect(thread.quit)
         worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(
+            lambda path=folder_path, finished_thread=thread: self._on_scan_thread_finished(
+                path, finished_thread
+            )
+        )
         thread.finished.connect(thread.deleteLater)
-        thread.finished.connect(lambda path=folder_path: self._on_scan_thread_finished(path))
         self._scan_threads[folder_path] = thread
         self._scan_workers[folder_path] = worker
         thread.start()
@@ -1506,10 +1522,40 @@ class TaskController(QObject):
         if not self._inventory_preparing:
             self._open_next_lazy_folders(self._available_open_slots())
 
-    def _on_scan_thread_finished(self, folder_path: str) -> None:
+    def _on_scan_thread_finished(
+        self,
+        folder_path: str,
+        finished_thread: QThread | None = None,
+    ) -> None:
+        current_thread = self._scan_threads.get(folder_path)
+        if finished_thread is not None and current_thread is not finished_thread:
+            return
         self._scan_threads.pop(folder_path, None)
         self._scan_workers.pop(folder_path, None)
         if self._inventory_preparing:
+            self._continue_lazy_inventory()
+
+    def _reconcile_finished_scan_threads(self) -> None:
+        """Recover inventory slots if a Qt thread-finished callback was missed."""
+
+        if not self._lazy_mode or not self._active or not self._inventory_preparing:
+            return
+        stale_paths: list[str] = []
+        for folder_path, thread in list(self._scan_threads.items()):
+            try:
+                running = thread.isRunning()
+            except RuntimeError:
+                running = False
+            if running:
+                continue
+            if self._scan_threads.get(folder_path) is thread:
+                self._scan_threads.pop(folder_path, None)
+                self._scan_workers.pop(folder_path, None)
+                stale_paths.append(folder_path)
+        if stale_paths:
+            self._log(
+                f"종료된 스캔 슬롯 {len(stale_paths)}개를 자동 복구하여 다음 폴더를 계속합니다."
+            )
             self._continue_lazy_inventory()
 
     def _folder_queue_label(self, folder_path: str) -> str:
