@@ -142,7 +142,7 @@ class UiConfig:
 
     app_name: str = "IPDK_plus"
     window_width: int = 1920
-    window_height: int = 1080
+    window_height: int = 1000
     theme: str = "dark"
     font_family: str = "Segoe UI"
 

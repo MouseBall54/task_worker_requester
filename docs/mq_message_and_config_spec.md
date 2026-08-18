@@ -105,7 +105,7 @@ publish:
 ui:
   app_name: "IPDK_plus"
   window_width: 1920
-  window_height: 1080
+  window_height: 1000
   theme: "dark"
   font_family: "Segoe UI"
 
@@ -214,7 +214,7 @@ recipes:
 | --- | --- | --- | --- | --- |
 | `ui.app_name` | `"IPDK_plus"` | Qt application name | 창/앱 표시 이름에 영향 | 설치 패키지 이름과 다르면 사용자 혼동 가능 |
 | `ui.window_width` | `1920` | 기본 창 너비 | 최초 창 크기가 바뀜 | px 단위 |
-| `ui.window_height` | `1080` | 기본 창 높이 | 최초 창 크기가 바뀜 | px 단위 |
+| `ui.window_height` | `1000` | 기본 창 높이 | 최초 창 크기가 바뀜 | px 단위 |
 | `ui.theme` | `"dark"` | UI theme 이름 | 스타일 선택에 영향 | 현재 스타일 파일 구현과 맞아야 함 |
 | `ui.font_family` | `"Segoe UI"` | UI 기본 폰트 | 화면 표시 폰트가 바뀜 | Windows 기본 폰트 기준 |
 

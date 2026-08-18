@@ -793,7 +793,7 @@ class MainWindowTest(unittest.TestCase):
             )
             self.assertEqual(window.action_edit_app_config.text(), "MQ 연결 설정")
             self.assertEqual(window.action_edit_recipe_config.text(), "Recipe 설정")
-            self.assertEqual((window.width(), window.height()), (1920, 1080))
+            self.assertEqual((window.width(), window.height()), (1920, 1000))
             self.assertEqual(window.maximumWidth(), 16_777_215)
             self.assertEqual(window.maximumHeight(), 16_777_215)
             self.assertFalse(hasattr(window, "brand_icon_label"))

@@ -52,7 +52,7 @@ publish:
 ui:
   app_name: "IPDK_plus"
   window_width: 1920
-  window_height: 1080
+  window_height: 1000
   theme: "dark"
   font_family: "Segoe UI"
 
