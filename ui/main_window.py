@@ -2083,10 +2083,10 @@ class MainWindow(QMainWindow):
         self.set_runtime_options_enabled(not paused)
 
     def set_runtime_options_enabled(self, enabled: bool) -> None:
-        """Enable/disable runtime-editable controls for session stability."""
+        """Lock session priority while keeping recipe selection available."""
 
         self._runtime_options_enabled = bool(enabled)
-        self.recipe_multi_button.setEnabled(enabled)
+        self.recipe_multi_button.setEnabled(True)
         self.priority_combo.setEnabled(enabled)
 
     def set_folder_rows(self, rows: list[FolderSummary]) -> None:

@@ -35,7 +35,7 @@ worker는 request queue에서 메시지를 가져가 작업을 수행하고, 메
 
 3. 하위 폴더 추가를 누르면 선택한 폴더 아래에서 이미지가 들어 있는 하위 폴더들을 작업 단위로 등록합니다. 선택한 Recipe가 여러 개면 각 하위 폴더도 Recipe별 독립 대기열 행으로 등록됩니다. 중복된 폴더+Recipe 조합이 여러 개면 탐색 완료 후 한 번의 테이블 팝업으로 모아서 안내합니다.
 
-4. Recipe는 worker에 전달할 RECIPE_PATH입니다. Recipe 선택 메뉴에서 하나 이상을 체크할 수 있고, 선택 경로 영역에는 Recipe별 alias와 path가 각각 표시됩니다. 폴더 추가 시점의 선택마다 폴더 단위 진행 현황에 별도 행이 생성되며 각 행은 하나의 Recipe만 가집니다. 이미지 N개와 Recipe M개는 N×M개의 고유 request로 등록됩니다. 로컬에서 recipe 파일이 보이지 않아도 payload에는 설정 문자열이 그대로 전송될 수 있으므로, worker가 접근할 수 있는 경로인지 확인해야 합니다.
+4. Recipe는 worker에 전달할 RECIPE_PATH입니다. Recipe 선택 메뉴에서 하나 이상을 체크할 수 있고, 선택 경로 영역에는 Recipe별 alias와 path가 각각 표시됩니다. 폴더 추가 시점의 선택마다 폴더 단위 진행 현황에 별도 행이 생성되며 각 행은 하나의 Recipe만 가집니다. 이미지 N개와 Recipe M개는 N×M개의 고유 request로 등록됩니다. 전송 중에도 Recipe 선택을 바꿀 수 있으며 변경한 선택은 이후 추가하는 작업에만 적용되고 기존 작업에는 소급 적용되지 않습니다. 로컬에서 recipe 파일이 보이지 않아도 payload에는 설정 문자열이 그대로 전송될 수 있으므로, worker가 접근할 수 있는 경로인지 확인해야 합니다.
 
 5. Priority는 RabbitMQ AMQP BasicProperties.priority로 전달됩니다. JSON payload 안에는 priority 필드가 들어가지 않습니다. 선택 가능한 범위는 request queue의 x-max-priority 설정을 기준으로 만들어집니다.
 

@@ -568,7 +568,8 @@ class MainWindowTest(unittest.TestCase):
             self.assertEqual(window.btn_start.text(), "전송 재개")
             self.assertTrue(window.btn_start.isEnabled())
             self.assertFalse(window.btn_stop.isEnabled())
-            self.assertFalse(window.recipe_multi_button.isEnabled())
+            self.assertTrue(window.recipe_multi_button.isEnabled())
+            self.assertFalse(window.priority_combo.isEnabled())
         finally:
             window.close()
 
@@ -1018,11 +1019,11 @@ class MainWindowTest(unittest.TestCase):
         finally:
             tree.close()
 
-    def test_set_runtime_options_enabled_toggles_recipe_and_priority(self) -> None:
+    def test_set_runtime_options_enabled_keeps_recipe_available_and_toggles_priority(self) -> None:
         window = self._make_window()
         try:
             window.set_runtime_options_enabled(False)
-            self.assertFalse(window.recipe_multi_button.isEnabled())
+            self.assertTrue(window.recipe_multi_button.isEnabled())
             self.assertFalse(window.priority_combo.isEnabled())
 
             window.set_runtime_options_enabled(True)
@@ -1051,7 +1052,7 @@ class MainWindowTest(unittest.TestCase):
             )
 
             window.set_runtime_options_enabled(False)
-            self.assertFalse(window.recipe_multi_button.isEnabled())
+            self.assertTrue(window.recipe_multi_button.isEnabled())
         finally:
             window.close()
 
