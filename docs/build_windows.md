@@ -64,7 +64,7 @@ uv run --group build pyinstaller .\packaging\IPDK_plus.spec --clean --noconfirm
 ISCC .\packaging\IPDK_plus.iss
 ```
 
-성공하면 `dist\installer\IPDK_plusSetup_26.8.13.exe` 가 생성됩니다.
+성공하면 `dist\installer\IPDK_plusSetup_26.8.18.exe` 가 생성됩니다.
 
 설치 과정에서 `vc_redist.x64.exe`를 자동으로 `silent` 설치합니다.  
 Python 이 전혀 설치되지 않은 PC에서도 Qt DLL 로딩 실패를 방지하기 위한 필수 단계입니다.
