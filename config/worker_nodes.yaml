@@ -1,0 +1,10 @@
+# Leave blank to use the RabbitMQ host with the default Management API port.
+management_api_url: ""
+nodes:
+  # 예시 전용 주소입니다. 실제 Worker IP로 바꿔서 사용하세요.
+  - ip: "192.0.2.10"
+    name: "예시 GPU Worker 1"
+  - ip: "192.0.2.11"
+    name: "예시 GPU Worker 2"
+  - ip: "192.0.2.12"
+    name: "예시 GPU Worker 3"

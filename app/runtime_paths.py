@@ -16,6 +16,7 @@ APPDATA_DIR_NAME = "IPDK_plus"
 LEGACY_APPDATA_DIR_NAME = "TaskWorkerRequester"
 CONFIG_FILE_NAME = "app_config.yaml"
 RECIPE_CONFIG_FILE_NAME = "recipe_config.yaml"
+WORKER_NODES_CONFIG_FILE_NAME = "worker_nodes.yaml"
 APP_ICON_PNG_NAME = "IPDK_plus.png"
 APP_ICON_ICO_NAME = "IPDK_plus.ico"
 SEED_REFRESH_MARKER_NAME = ".refresh_seed_config"
@@ -36,8 +37,10 @@ class RuntimeConfigPaths:
     appdata_dir: Path
     user_config_path: Path
     user_recipe_config_path: Path
+    user_worker_nodes_config_path: Path
     seed_config_source: Path | None
     seed_recipe_source: Path | None
+    seed_worker_nodes_config_source: Path | None
 
 
 def normalize_cli_path(path_value: str | Path) -> Path:
@@ -145,8 +148,12 @@ def ensure_user_config_seeded() -> RuntimeConfigPaths:
 
     user_config_path = appdata_dir / CONFIG_FILE_NAME
     user_recipe_config_path = appdata_dir / RECIPE_CONFIG_FILE_NAME
+    user_worker_nodes_config_path = appdata_dir / WORKER_NODES_CONFIG_FILE_NAME
     seed_config_source = find_bundled_resource(Path("config") / CONFIG_FILE_NAME)
     seed_recipe_source = find_bundled_resource(Path("config") / RECIPE_CONFIG_FILE_NAME)
+    seed_worker_nodes_config_source = find_bundled_resource(
+        Path("config") / WORKER_NODES_CONFIG_FILE_NAME
+    )
     seed_fingerprint = _calculate_seed_fingerprint(seed_config_source, seed_recipe_source)
     refresh_seed = _consume_seed_refresh_marker(appdata_dir) or (
         migrated_dir is None
@@ -173,6 +180,8 @@ def ensure_user_config_seeded() -> RuntimeConfigPaths:
 
     if not user_recipe_config_path.exists() and seed_recipe_source is not None:
         shutil.copy2(seed_recipe_source, user_recipe_config_path)
+    if not user_worker_nodes_config_path.exists() and seed_worker_nodes_config_source is not None:
+        shutil.copy2(seed_worker_nodes_config_source, user_worker_nodes_config_path)
 
     _write_seed_fingerprint(appdata_dir, seed_fingerprint)
 
@@ -180,8 +189,10 @@ def ensure_user_config_seeded() -> RuntimeConfigPaths:
         appdata_dir=appdata_dir,
         user_config_path=user_config_path,
         user_recipe_config_path=user_recipe_config_path,
+        user_worker_nodes_config_path=user_worker_nodes_config_path,
         seed_config_source=seed_config_source,
         seed_recipe_source=seed_recipe_source,
+        seed_worker_nodes_config_source=seed_worker_nodes_config_source,
     )
 
 
@@ -243,6 +254,23 @@ def resolve_default_config_path(explicit_config_path: str | Path | None = None) 
         "app_config.yaml 을 찾지 못했습니다. --config 로 직접 지정하거나 "
         f"{resolve_user_appdata_dir()} 아래 기본 설정 파일을 준비해주세요."
     )
+
+
+def resolve_worker_nodes_config_path(app_config_path: str | Path) -> Path:
+    """Resolve and seed worker-node settings beside the active app config."""
+
+    path = Path(app_config_path).resolve().parent / WORKER_NODES_CONFIG_FILE_NAME
+    if path.exists():
+        return path
+    seed_source = find_bundled_resource(Path("config") / WORKER_NODES_CONFIG_FILE_NAME)
+    if seed_source is None:
+        raise RuntimePathError("기본 worker_nodes.yaml 템플릿을 찾지 못했습니다.")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(seed_source, path)
+    except OSError as exc:
+        raise RuntimePathError(f"worker_nodes.yaml을 준비하지 못했습니다: {exc}") from exc
+    return path
 
 
 def find_bundled_resource(relative_path: str | Path) -> Path | None:

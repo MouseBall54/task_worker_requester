@@ -86,7 +86,7 @@ request_exchange를 비워 두지 않으면 custom exchange 모드가 됩니다.
 
 result_queue_base는 앱이 결과를 받을 queue 이름의 접두어입니다. 실제 result queue는 {result_queue_base}_{local_ipv4} 형식으로 만들어집니다. local_ipv4는 RabbitMQ host/port로 통신할 때 OS가 선택한 대표 IPv4를 우선 사용하고, 실패하면 hostname lookup의 non-loopback IPv4를 사용합니다.
 
-Worker Count와 Queued Messages는 request queue의 consumer 수와 대기 메시지 수를 나타냅니다. 같은 값이 전송 전 사전 점검에도 표시됩니다. 값이 - 또는 조회 실패 상태라면 RabbitMQ 연결, queue 권한, broker 상태를 확인해야 합니다.
+Worker Count와 Queued Messages는 request queue의 consumer 수와 대기 메시지 수를 나타냅니다. Worker Count를 클릭하면 등록된 IP별 consumer 수와 온라인/오프라인 상태를 확인할 수 있습니다. IP와 장비명은 worker_nodes.yaml에서 관리하며 팝업에서 편집할 수 있습니다. RabbitMQ Management 플러그인 및 조회 권한이 필요합니다. 같은 값이 전송 전 사전 점검에도 표시됩니다. 값이 - 또는 조회 실패 상태라면 RabbitMQ 연결, queue 권한, broker 상태를 확인해야 합니다.
 
 RabbitMQ 연결 실패 시에는 host, port, username, password, virtual_host, 방화벽, broker 실행 여부, queue declare 옵션 충돌을 순서대로 확인하세요. 이미 생성된 RabbitMQ queue와 durable/exclusive/auto_delete/arguments 값이 다르면 broker가 precondition failed 오류를 낼 수 있습니다.""",
     ),

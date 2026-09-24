@@ -89,10 +89,19 @@ QLabel#connectionStatus {
     color: #edf4fb;
 }
 
-QLabel#queueMetricsLabel {
+QPushButton#queueMetricsButton {
     color: #d8e3ef;
     font-size: 12px;
     padding-left: 2px;
+    text-align: left;
+    background-color: transparent;
+    border: none;
+    border-radius: 4px;
+}
+
+QPushButton#queueMetricsButton:hover {
+    color: #93c5fd;
+    background-color: rgba(37, 99, 235, 0.12);
 }
 
 QLabel#connectionStatus[state="connected"] {
@@ -262,9 +271,31 @@ QToolButton#statusSidebarToggle {
 }
 
 QDialog#appConfigSettingsDialog,
-QDialog#recipeConfigSettingsDialog {
+QDialog#recipeConfigSettingsDialog,
+QDialog#workerStatusDialog {
     background-color: #111827;
     color: #edf4fb;
+}
+
+QLabel#workerStatusHeader {
+    color: #7dd3fc;
+    font-size: 14px;
+    font-weight: 600;
+}
+
+QLabel#workerStatusFooter {
+    color: #a9bad0;
+}
+
+QTableWidget#workerNodeTable QLineEdit {
+    background-color: #0f1a2b;
+    color: #ffffff;
+    border: 2px solid #60a5fa;
+    border-radius: 3px;
+    padding: 2px 6px;
+    min-height: 24px;
+    selection-background-color: #2563eb;
+    selection-color: #ffffff;
 }
 
 QTabWidget#settingsTabs::pane {

@@ -81,6 +81,7 @@ Python 이 전혀 설치되지 않은 PC에서도 Qt DLL 로딩 실패를 방지
 
 - `%APPDATA%\IPDK_plus\app_config.yaml`
 - `%APPDATA%\IPDK_plus\recipe_config.yaml`
+- `%APPDATA%\IPDK_plus\worker_nodes.yaml`
 - `%APPDATA%\IPDK_plus\logs\app.log`
 - `%APPDATA%\IPDK_plus\runtime\ui_state.ini` (진행중/대기·완료 표의 사용자 조정 열 너비)
 

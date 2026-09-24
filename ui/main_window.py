@@ -62,6 +62,7 @@ from PySide6.QtWidgets import (
 from app.runtime_paths import resolve_ui_icon_path
 from config.models import AppConfig
 from config.config_loader import ConfigError
+from config.worker_node_settings import WorkerNodeSettingsError
 from models.task_models import FolderSummary, ImageTask, RunHistorySummary
 from services.workers.folder_index_worker import FolderIndexWorker
 from state.folder_index_repository import (
@@ -80,6 +81,7 @@ from state.folder_index_repository import (
 )
 from ui.help_dialog import HelpDialog
 from ui.settings_dialog import AppConfigSettingsDialog, RecipeConfigSettingsDialog
+from ui.worker_status_dialog import WorkerStatusDialog
 from ui.models import FolderTableModel, ImageTableModel, ProgressBarDelegate
 from ui.widgets import MQButtonDelegate, StatusBadgeDelegate
 from utils.time_utils import format_seoul_display
@@ -848,10 +850,16 @@ class MainWindow(QMainWindow):
         config_path: str | Path | None = None,
         folder_index_database_path: str | Path | None = None,
         ui_settings_path: str | Path | None = None,
+        worker_nodes_config_path: str | Path | None = None,
     ) -> None:
         super().__init__()
         self._config = config
         self._config_path = Path(config_path) if config_path is not None else None
+        self._worker_nodes_config_path = (
+            Path(worker_nodes_config_path)
+            if worker_nodes_config_path is not None
+            else (self._config_path.parent / "worker_nodes.yaml" if self._config_path else None)
+        )
         self._folder_index_repository = FolderIndexRepository(
             folder_index_database_path or ":memory:"
         )
@@ -1542,8 +1550,12 @@ class MainWindow(QMainWindow):
         self._update_status_sidebar_toggle_icon(collapsed=False)
         layout.addLayout(connection_row)
 
-        self.queue_metrics_label = QLabel("Worker Count: -    Queued Messages: -")
-        self.queue_metrics_label.setObjectName("queueMetricsLabel")
+        self.queue_metrics_label = QPushButton("Worker Count: -    Queued Messages: -")
+        self.queue_metrics_label.setObjectName("queueMetricsButton")
+        self.queue_metrics_label.setFlat(True)
+        self.queue_metrics_label.setCursor(Qt.PointingHandCursor)
+        self.queue_metrics_label.setAccessibleName("Worker consumer 현황 열기")
+        self.queue_metrics_label.clicked.connect(self._open_worker_status_dialog)
         layout.addWidget(self.queue_metrics_label)
 
         recipe_label = QLabel("Recipe")
@@ -2028,6 +2040,22 @@ class MainWindow(QMainWindow):
         self.queue_metrics_label.setText(
             f"Worker Count: {workers_text}    Queued Messages: {queued_text}"
         )
+
+    def _open_worker_status_dialog(self) -> None:
+        if self._worker_nodes_config_path is None:
+            QMessageBox.warning(self, "Worker 설정 파일 없음", "worker_nodes.yaml 경로를 확인할 수 없습니다.")
+            return
+        try:
+            dialog = WorkerStatusDialog(
+                self._worker_nodes_config_path,
+                self._config.rabbitmq,
+                self._config.rabbitmq.request_queue,
+                self,
+            )
+        except (WorkerNodeSettingsError, OSError) as exc:
+            QMessageBox.critical(self, "Worker 현황 열기 실패", str(exc))
+            return
+        dialog.exec()
 
     def set_overall_stats(self, stats: dict[str, float | int | None]) -> None:
         """Update overall progress widgets."""
