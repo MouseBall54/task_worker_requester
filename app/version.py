@@ -1,3 +1,3 @@
 """Application version metadata."""
 
-APP_VERSION = "26.8.18"
+APP_VERSION = "26.9.23"
