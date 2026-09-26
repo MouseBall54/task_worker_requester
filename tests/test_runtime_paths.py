@@ -216,6 +216,28 @@ class RuntimePathsTest(unittest.TestCase):
             self.assertTrue((appdata_dir / ".seed_fingerprint").exists())
             self.assertTrue(list(appdata_dir.glob("app_config.yaml.bak.*")))
 
+    def test_ensure_user_config_seeded_refreshes_when_app_version_changes(self) -> None:
+        with TemporaryDirectory() as runtime_dir, TemporaryDirectory() as appdata_root:
+            base = Path(runtime_dir)
+            config_dir = base / "config"
+            config_dir.mkdir(parents=True, exist_ok=True)
+            (config_dir / "app_config.yaml").write_text("seed: true\n", encoding="utf-8")
+
+            with (
+                patch.dict(os.environ, {"APPDATA": appdata_root}, clear=False),
+                patch("app.runtime_paths.resolve_runtime_base_dir", return_value=base),
+                patch("app.runtime_paths.resolve_install_dir", return_value=base),
+                patch("app.runtime_paths._development_root", return_value=base),
+            ):
+                resolved = ensure_user_config_seeded()
+                resolved.user_config_path.write_text("user_changed: true\n", encoding="utf-8")
+
+                with patch("app.runtime_paths.APP_VERSION", "99.0.0"):
+                    ensure_user_config_seeded()
+
+            self.assertEqual(resolved.user_config_path.read_text(encoding="utf-8"), "seed: true\n")
+            self.assertTrue(list(resolved.appdata_dir.glob("app_config.yaml.bak.*")))
+
     def test_migrate_legacy_appdata_dir_copies_old_folder_when_new_one_is_empty(self) -> None:
         with TemporaryDirectory() as appdata_root:
             legacy_dir = Path(appdata_root) / "TaskWorkerRequester"

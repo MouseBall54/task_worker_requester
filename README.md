@@ -81,10 +81,10 @@ uv run python main.py --config config/app_config.yaml
 - 선택한 폴더의 상세 작업은 최초 500행만 읽고, 스크롤 끝에서 다음 500행을 추가로 조회합니다. 화면 로그는 설정된 최대 줄 수만 유지하고 파일 로그는 회전 보관합니다.
 - `publish.default_priority`는 기본 request MQ priority 입니다.
 - UI의 `Priority` 드롭다운 범위는 `rabbitmq.request_queue_declare.arguments.x-max-priority` 값을 기준으로 `0..max`로 생성됩니다.
-- `update.latest_release_url`은 앱 메뉴와 설치 프로그램의 업데이트 확인 링크에서 사용됩니다.
+- `update.share_dir`(NAS 폴더)에서 앱 시작 시와 `도움말 > 업데이트 확인` 때 더 높은 버전의 `IPDK_plusSetup_<버전>.exe`를 찾아 설치를 제안합니다.
 - 설치형 실행에서는 기본 편집 대상 설정 파일이 `%APPDATA%\IPDK_plus\app_config.yaml` 입니다.
 - 로그 파일은 `%APPDATA%\IPDK_plus\logs\app.log` 에 기록되며, 설치 폴더 아래에는 로그를 만들지 않습니다.
-- 새 설치본의 번들 설정 fingerprint가 바뀌면 다음 앱 실행 때 새 기본 설정이 `%APPDATA%\IPDK_plus`에 반영됩니다. 기존 `app_config.yaml`, `recipe_config.yaml`은 같은 폴더에 `.bak.<timestamp>` 백업으로 남깁니다.
+- 앱 버전이 바뀌거나 번들 설정 fingerprint가 바뀌면 다음 앱 실행 때 새 기본 설정이 `%APPDATA%\IPDK_plus`에 반영됩니다. 기존 `app_config.yaml`, `recipe_config.yaml`은 같은 폴더에 `.bak.<timestamp>` 백업으로 남깁니다.
 - 설치 제거(Uninstall)는 사용자 AppData 설정을 삭제하지 않습니다.
 
 ### Recipe 설정 분리
@@ -169,7 +169,7 @@ PySide6 미설치 환경에서는 GUI 의존 테스트(`test_controller`)가 자
 - Inno Setup 스크립트: [packaging/IPDK_plus.iss](.\packaging\IPDK_plus.iss)
 - 세부 절차 문서: [docs/build_windows.md](.\docs\build_windows.md)
 - 설치 프로그램 파일명은 버전을 포함한 `IPDK_plusSetup_26.9.23.exe` 형식입니다.
-- 시작 메뉴의 `업데이트 확인`과 앱의 `도움말 > 업데이트 확인`은 GitHub 최신 릴리스 링크로 연결됩니다.
+- 배포는 설치 파일을 `\\12.56.53.186\ssa_new\sw\ipdk_plus`에 복사하면 끝납니다. 시작 메뉴의 `업데이트 확인`은 이 폴더를 엽니다.
 
 기본 아이콘은 사용자 제공 [a5303f13-1f30-4cdd-9acb-964ee59596a7.png](.\a5303f13-1f30-4cdd-9acb-964ee59596a7.png)를 투명 배경으로 정리한 [assets/IPDK_plus.png](.\assets\IPDK_plus.png)와 Windows용 다중 해상도 [assets/IPDK_plus.ico](.\assets\IPDK_plus.ico)를 사용합니다.
 

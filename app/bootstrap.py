@@ -95,6 +95,7 @@ def run_app(config_path: str | None = None) -> int:
         window.setWindowIcon(icon)
 
     window.show()
+    window.check_for_updates(manual=False)
     exit_code = app.exec()
     _release_guard(guard)
     return exit_code

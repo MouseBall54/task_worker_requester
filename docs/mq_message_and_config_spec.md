@@ -34,7 +34,7 @@
 2. 기존 호환용 positional config path를 넘긴 경우 해당 파일을 사용한다.
 3. 명시 경로가 없으면 `%APPDATA%\IPDK_plus\app_config.yaml`을 사용한다.
 4. `%APPDATA%\IPDK_plus\app_config.yaml`이 없으면 설치 패키지에 포함된 `config/app_config.yaml`을 seed로 복사한다.
-5. 번들 seed fingerprint가 `%APPDATA%\IPDK_plus\.seed_fingerprint`와 다르면 기존 AppData 설정을 `.bak.<timestamp>`로 백업하고 새 seed로 갱신한다.
+5. 번들 seed fingerprint(앱 버전 포함)가 `%APPDATA%\IPDK_plus\.seed_fingerprint`와 다르면 기존 AppData 설정을 `.bak.<timestamp>`로 백업하고 새 seed로 갱신한다.
 6. AppData seed가 실패하면 실행 파일 옆 `config\app_config.yaml`을 찾는다.
 7. 그 다음 실행 파일 옆 `app_config.yaml`을 찾는다.
 8. 개발 실행에서는 repo의 `config/app_config.yaml`을 fallback으로 사용한다.
@@ -111,8 +111,7 @@ ui:
 
 update:
   enabled: true
-  latest_release_url: "https://github.com/MouseBall54/task_worker_requester/releases/latest"
-  manifest_url: "https://github.com/MouseBall54/task_worker_requester/releases/latest/download/latest.json"
+  share_dir: '\\12.56.53.186\ssa_new\sw\ipdk_plus'
 ```
 
 ## 4. 현재 recipe_config.yaml 예시
@@ -222,9 +221,8 @@ recipes:
 
 | Key | 현재 값 | 의미 | 변경 시 영향 | 주의사항 |
 | --- | --- | --- | --- | --- |
-| `update.enabled` | `true` | 앱 내부 업데이트 확인 메뉴 활성화 여부 | `false`면 메뉴 action이 비활성화됨 | 설치 프로그램의 시작 메뉴 shortcut은 별도 Inno 설정을 사용 |
-| `update.latest_release_url` | GitHub latest release URL | 사용자가 최신 설치 파일을 받으러 갈 링크 | 앱 메뉴의 업데이트 확인 대상이 바뀜 | `http(s)` URL이어야 함 |
-| `update.manifest_url` | GitHub latest download `latest.json` URL | 향후 자동 비교용 manifest 위치 | manifest 배포 위치가 바뀌면 같이 수정 | 현재 앱은 링크 열기 중심이며 URL 유효성만 검사 |
+| `update.enabled` | `true` | 시작 시 자동 확인과 업데이트 확인 메뉴 활성화 여부 | `false`면 둘 다 비활성화됨 | 설치 프로그램의 시작 메뉴 shortcut은 별도 Inno 설정을 사용 |
+| `update.share_dir` | `\\12.56.53.186\ssa_new\sw\ipdk_plus` | `IPDK_plusSetup_<버전>.exe`를 찾는 NAS 폴더 | 더 높은 버전이 있으면 설치 여부를 물음 | 비어 있으면 안 됨 |
 
 ### 5.8 recipe_config
 

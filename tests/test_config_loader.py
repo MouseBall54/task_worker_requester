@@ -73,7 +73,7 @@ class ConfigLoaderTest(unittest.TestCase):
         self.assertEqual(config.publish.initial_open_folders, 2)
         self.assertEqual(config.publish.max_active_open_folders, 4)
         self.assertTrue(config.update.enabled)
-        self.assertIn("releases/latest", config.update.latest_release_url)
+        self.assertTrue(config.update.share_dir.startswith("\\\\"))
 
     def test_missing_recipe_config_path_raises_helpful_error(self) -> None:
         content = textwrap.dedent(
@@ -359,7 +359,7 @@ class ConfigLoaderTest(unittest.TestCase):
 
         self.assertEqual(config.ui.app_name, "IPDK_plus")
 
-    def test_invalid_update_url_raises_helpful_error(self) -> None:
+    def test_empty_update_share_dir_raises_helpful_error(self) -> None:
         main_content = textwrap.dedent(
             """
             recipe_config_path: "recipe_config.yaml"
@@ -369,8 +369,7 @@ class ConfigLoaderTest(unittest.TestCase):
               username: "guest"
               password: "guest"
             update:
-              latest_release_url: "not-a-url"
-              manifest_url: "https://example.test/latest.json"
+              share_dir: ""
             """
         ).strip()
         recipe_content = textwrap.dedent(
@@ -392,7 +391,7 @@ class ConfigLoaderTest(unittest.TestCase):
             with self.assertRaises(ConfigError) as ctx:
                 ConfigLoader.load(config_path)
 
-        self.assertIn("latest_release_url", str(ctx.exception))
+        self.assertIn("share_dir", str(ctx.exception))
 
 
 if __name__ == "__main__":

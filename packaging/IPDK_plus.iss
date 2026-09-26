@@ -1,11 +1,27 @@
 #define MyAppName "IPDK_plus"
-#define MyAppVersion "26.9.23"
+; MyAppVersion is read from app\version.py, the single version source.
+#define VersionFile FileOpen(AddBackslash(SourcePath) + "..\app\version.py")
+#if !VersionFile
+  #error Cannot open app\version.py
+#endif
+#define VersionPrefix 'APP_VERSION = "'
+#sub ReadVersionLine
+  #define VersionLine FileRead(VersionFile)
+  #if Pos(VersionPrefix, VersionLine) == 1
+    #define public MyAppVersion Copy(VersionLine, Len(VersionPrefix) + 1, Len(VersionLine) - Len(VersionPrefix) - 1)
+  #endif
+#endsub
+#for {0; !Defined(MyAppVersion) && !FileEof(VersionFile); 0} ReadVersionLine
+#expr FileClose(VersionFile)
+#ifndef MyAppVersion
+  #error APP_VERSION not found in app\version.py
+#endif
 #define MyAppPublisher "박영문"
 #define MyAppExeName "IPDK_plus.exe"
 #define MyDistDir "..\\dist\\IPDK_plus"
 #define MyIconFile "..\\assets\\IPDK_plus.ico"
 #define MyVCRedistExe "..\\packaging\\prereqs\\vc_redist.x64.exe"
-#define MyUpdateUrl "https://github.com/MouseBall54/task_worker_requester/releases/latest"
+#define MyUpdateUrl "\\12.56.53.186\ssa_new\sw\ipdk_plus"
 
 [Setup]
 AppId={{E2C1A58A-67B0-44B1-8AF6-3D2FD375B271}

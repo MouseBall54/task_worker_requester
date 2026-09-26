@@ -9,6 +9,7 @@ from pathlib import Path
 import shutil
 import sys
 
+from app.version import APP_VERSION
 from utils.time_utils import now_seoul
 
 
@@ -391,12 +392,12 @@ def _next_backup_path(target_path: Path) -> Path:
 
 
 def _calculate_seed_fingerprint(seed_config_source: Path | None, seed_recipe_source: Path | None) -> str | None:
-    """Calculate a stable fingerprint for bundled seed config files."""
+    """Calculate a fingerprint for bundled seed files; a new app version always changes it."""
 
     if seed_config_source is None:
         return None
 
-    digest = hashlib.sha256()
+    digest = hashlib.sha256(f"{APP_VERSION}\0".encode("utf-8"))
     for label, seed_path in (
         (CONFIG_FILE_NAME, seed_config_source),
         (RECIPE_CONFIG_FILE_NAME, seed_recipe_source),

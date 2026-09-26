@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -18,10 +19,9 @@ from PySide6.QtCore import (
     Qt,
     QThread,
     QTimer,
-    QUrl,
     Signal,
 )
-from PySide6.QtGui import QAction, QCloseEvent, QDesktopServices, QIcon, QKeySequence, QShowEvent
+from PySide6.QtGui import QAction, QCloseEvent, QIcon, QKeySequence, QShowEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -60,6 +60,8 @@ from PySide6.QtWidgets import (
 )
 
 from app.runtime_paths import resolve_ui_icon_path
+from app.updater import find_newer_installer
+from app.version import APP_VERSION
 from config.models import AppConfig
 from config.config_loader import ConfigError
 from config.worker_node_settings import WorkerNodeSettingsError
@@ -843,6 +845,7 @@ class MainWindow(QMainWindow):
     hold_folders_requested = Signal(list, bool)
     history_requested = Signal()
     history_export_requested = Signal(str, str)
+    update_check_finished = Signal(object, object, bool)
 
     def __init__(
         self,
@@ -936,7 +939,8 @@ class MainWindow(QMainWindow):
         self.help_menu.addSeparator()
         self.action_check_update = QAction("업데이트 확인", self)
         self.action_check_update.setEnabled(self._config.update.enabled)
-        self.action_check_update.triggered.connect(self._open_update_link)
+        self.action_check_update.triggered.connect(lambda: self.check_for_updates(manual=True))
+        self.update_check_finished.connect(self._on_update_check_finished)
         self.help_menu.addAction(self.action_check_update)
 
     def _recipe_config_path(self) -> Path | None:
@@ -1353,7 +1357,7 @@ class MainWindow(QMainWindow):
             self._folder_index_repository.close()
 
     def _build_ui(self) -> None:
-        self.setWindowTitle(self._config.ui.app_name)
+        self.setWindowTitle(f"{self._config.ui.app_name} {APP_VERSION}")
         # Keep the existing layout-derived minimum while leaving expansion unrestricted.
         self.setMaximumSize(16_777_215, 16_777_215)
         self.resize(self._config.ui.window_width, self._config.ui.window_height)
@@ -2715,15 +2719,51 @@ class MainWindow(QMainWindow):
         self.recipe_paths_layout.activate()
         self.recipe_paths_panel.updateGeometry()
 
-    def _open_update_link(self) -> None:
-        """Open the configured latest release URL in the default browser."""
+    def check_for_updates(self, manual: bool) -> None:
+        """Look for a newer installer on the NAS share without blocking the UI."""
 
-        url = str(self._config.update.latest_release_url or "").strip()
-        if not url:
-            QMessageBox.warning(self, "업데이트 확인", "업데이트 링크가 설정되어 있지 않습니다.")
+        if not self._config.update.enabled:
             return
-        if not QDesktopServices.openUrl(QUrl(url)):
-            QMessageBox.warning(self, "업데이트 확인", f"업데이트 링크를 열 수 없습니다:\n{url}")
+        self.action_check_update.setEnabled(False)
+        share_dir = self._config.update.share_dir
+
+        def run() -> None:
+            try:
+                result = find_newer_installer(share_dir, APP_VERSION)
+            except (OSError, ValueError) as exc:
+                self.update_check_finished.emit(None, exc, manual)
+                return
+            self.update_check_finished.emit(result, None, manual)
+
+        threading.Thread(target=run, name="update-check", daemon=True).start()
+
+    def _on_update_check_finished(self, result: Any, error: Any, manual: bool) -> None:
+        self.action_check_update.setEnabled(True)
+        if error is not None:
+            self.append_log(f"[업데이트] 확인 실패: {error}")
+            if manual:
+                QMessageBox.warning(self, "업데이트 확인", f"업데이트 폴더를 읽을 수 없습니다:\n{error}")
+            return
+        if result is None:
+            if manual:
+                QMessageBox.information(self, "업데이트 확인", f"최신 버전입니다. (현재 {APP_VERSION})")
+            return
+
+        version, installer = result
+        answer = QMessageBox.question(
+            self,
+            "업데이트 확인",
+            f"새 버전 {version} 이(가) 있습니다. (현재 {APP_VERSION})\n\n"
+            "지금 설치하시겠습니까? 설치를 시작하면 프로그램이 종료됩니다.",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            os.startfile(installer)  # type: ignore[attr-defined]
+        except OSError as exc:
+            QMessageBox.warning(self, "업데이트 확인", f"설치 파일을 실행할 수 없습니다:\n{installer}\n\n{exc}")
+            return
+        self.close()
 
     def _open_help_dialog(self) -> None:
         """Open or focus the searchable in-app help dialog."""

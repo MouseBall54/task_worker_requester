@@ -58,5 +58,4 @@ ui:
 
 update:
   enabled: true
-  latest_release_url: "https://github.com/MouseBall54/task_worker_requester/releases/latest"
-  manifest_url: "https://github.com/MouseBall54/task_worker_requester/releases/latest/download/latest.json"
+  share_dir: '\\12.56.53.186\ssa_new\sw\ipdk_plus'

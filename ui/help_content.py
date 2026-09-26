@@ -148,7 +148,7 @@ Avg Time/Image는 완료된 작업과 경과 시간을 바탕으로 계산되는
 
 설정 탐색 우선순위는 CLI --config 경로, 호환용 positional config 경로, %APPDATA%\\IPDK_plus\\app_config.yaml, 설치 패키지 seed, 실행파일 옆 config, 개발 repo 기본값 순서입니다. 설치형 실행에서는 기본 편집 대상이 %APPDATA%\\IPDK_plus\\app_config.yaml입니다.
 
-첫 실행 시 AppData 설정이 없으면 번들된 app_config.yaml과 recipe_config.yaml seed를 복사합니다. 새 설치본의 seed fingerprint가 기존 .seed_fingerprint와 다르면 기존 AppData 설정은 .bak.<timestamp>로 백업되고 새 seed가 반영됩니다. 언인스톨은 AppData 설정을 삭제하지 않습니다.
+첫 실행 시 AppData 설정이 없으면 번들된 app_config.yaml과 recipe_config.yaml seed를 복사합니다. 새 버전을 설치했거나 seed 내용이 바뀌어 fingerprint가 기존 .seed_fingerprint와 다르면 기존 AppData 설정은 .bak.<timestamp>로 백업되고 새 seed가 반영됩니다. 언인스톨은 AppData 설정을 삭제하지 않습니다.
 
 mock_mode가 true이면 실제 RabbitMQ 대신 내부 mock broker를 사용합니다. 실제 worker 연동 검증에서는 false로 두고 rabbitmq 섹션을 맞춰야 합니다.
 
@@ -160,7 +160,7 @@ recipe_config_path는 별도 recipe 설정 파일 경로입니다. 상대 경로
 
 ui 섹션은 앱 이름, 기본 창 크기, theme, font_family를 담습니다. 현재 스타일은 ui/styles.qss를 통해 적용됩니다.
 
-update 섹션의 latest_release_url은 앱 메뉴의 업데이트 확인 링크로 사용됩니다. manifest_url은 향후 자동 비교용 manifest 위치이지만, 현재 앱은 자동 다운로드나 자동 설치를 수행하지 않습니다.""",
+update 섹션의 share_dir은 새 설치 파일을 찾는 NAS 공유 폴더입니다. 앱 시작 시와 도움말 > 업데이트 확인 메뉴에서 이 폴더를 확인합니다.""",
     ),
     HelpTopic(
         title="일시정지, 보류와 실행 이력",
@@ -177,16 +177,14 @@ update 섹션의 latest_release_url은 앱 메뉴의 업데이트 확인 링크�
     ),
     HelpTopic(
         title="업데이트 확인",
-        keywords=("업데이트", "latest_release_url", "manifest_url", "GitHub Releases", "자동 설치"),
-        body="""현재 IPDK_plus의 업데이트 확인은 링크 기반입니다. 앱 내부의 도움말 > 업데이트 확인 메뉴는 config/app_config.yaml의 update.latest_release_url을 기본 브라우저로 엽니다.
+        keywords=("업데이트", "share_dir", "NAS", "설치 파일", "자동 설치"),
+        body="""IPDK_plus는 앱 시작 시 config/app_config.yaml의 update.share_dir(기본값 \\\\12.56.53.186\\ssa_new\\sw\\ipdk_plus) 폴더에서 IPDK_plusSetup_<버전>.exe 파일을 찾습니다. 현재 버전보다 높은 설치 파일이 있으면 설치 여부를 묻고, 확인하면 설치 프로그램을 실행한 뒤 앱을 종료합니다.
 
-기본 URL은 GitHub Releases의 latest 페이지입니다. 사용자는 그 페이지에서 최신 설치 파일을 내려받아 설치해야 합니다. 앱이 백그라운드에서 설치 파일을 자동 다운로드하거나 자동으로 설치 프로그램을 실행하지 않습니다.
+도움말 > 업데이트 확인 메뉴로 언제든 수동 확인할 수 있습니다. 수동 확인 시에는 최신 버전이거나 NAS에 접근할 수 없는 경우에도 결과를 알려 줍니다. 시작 시 자동 확인이 실패하면 로그에만 기록합니다.
 
-update.enabled가 false이면 앱 내부 업데이트 확인 action은 비활성화됩니다. 설치 프로그램의 시작 메뉴 업데이트 확인 shortcut은 Inno Setup 설정의 AppUpdatesURL/MyUpdateUrl과 연결되므로 앱 내부 메뉴와 별도로 관리됩니다.
+배포 담당자는 빌드된 dist\\installer\\IPDK_plusSetup_<버전>.exe를 NAS 폴더에 복사하기만 하면 됩니다. 이전 설치 파일은 남겨 두어도 가장 높은 버전만 사용합니다.
 
-update.manifest_url은 latest.json 같은 manifest 파일 위치를 가리키는 설정입니다. 현재 구현에서는 URL 유효성 검증과 향후 자동 비교 준비 용도이며, 실제 자동 업데이트 판단이나 파일 교체에는 사용하지 않습니다.
-
-배포 위치가 바뀌면 config/app_config.yaml의 update.latest_release_url, update.manifest_url, packaging/IPDK_plus.iss의 MyUpdateUrl을 같은 배포 대상으로 맞춰야 사용자가 혼동하지 않습니다.""",
+update.enabled가 false이면 자동 확인과 업데이트 확인 메뉴가 모두 비활성화됩니다.""",
     ),
     HelpTopic(
         title="로그와 문제 해결",

@@ -149,11 +149,10 @@ class UiConfig:
 
 @dataclass(slots=True)
 class UpdateConfig:
-    """External update link settings."""
+    """NAS installer share used for update checks."""
 
     enabled: bool = True
-    latest_release_url: str = "https://github.com/MouseBall54/task_worker_requester/releases/latest"
-    manifest_url: str = "https://github.com/MouseBall54/task_worker_requester/releases/latest/download/latest.json"
+    share_dir: str = r"\\12.56.53.186\ssa_new\sw\ipdk_plus"
 
 
 @dataclass(slots=True)

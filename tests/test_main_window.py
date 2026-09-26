@@ -10,6 +10,7 @@ import time
 import unittest
 from unittest.mock import Mock, patch
 
+from app.version import APP_VERSION
 from config.config_loader import ConfigLoader
 from config.models import AppConfig, PublishConfig, RabbitMQConfig, RecipeConfig, RecipeItem, UiConfig
 from models.task_models import FolderSummary, RunHistorySummary, TaskStatus
@@ -783,7 +784,7 @@ class MainWindowTest(unittest.TestCase):
     def test_window_uses_ipdk_branding_and_removes_drive_combo(self) -> None:
         window = self._make_window()
         try:
-            self.assertEqual(window.windowTitle(), "IPDK_plus")
+            self.assertEqual(window.windowTitle(), f"IPDK_plus {APP_VERSION}")
             self.assertEqual(
                 [action.text() for action in window.menuBar().actions()],
                 ["작업", "설정", "도움말"],
