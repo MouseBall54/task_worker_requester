@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -888,6 +889,9 @@ class MainWindow(QMainWindow):
         self._pending_jump_show_feedback = False
         self._pending_jump_attempts = 0
         self._max_pending_jump_attempts = 10
+        self._settle_jump_target: str | None = None
+        self._settle_jump_deadline = 0.0
+        self._settle_refocus_scheduled = False
         self._initial_scroll_alignment_done = False
         self._last_status_sidebar_width = 440
         self._help_dialog: HelpDialog | None = None
@@ -1137,6 +1141,7 @@ class MainWindow(QMainWindow):
     def _on_folder_search_changed(self, query: str) -> None:
         if self._is_syncing_navigation:
             return
+        self._settle_jump_target = None
         self._show_cached_folder_search()
         self._folder_search_debounce.stop()
         if not query.strip():
@@ -1477,6 +1482,8 @@ class MainWindow(QMainWindow):
         self.file_system_model.setRootPath("")
         self.file_system_model.setFilter(QDir.AllDirs | QDir.NoDotAndDotDot | QDir.Drives)
         self.file_system_model.directoryLoaded.connect(self._on_directory_loaded)
+        self.file_system_model.rowsRemoved.connect(self._schedule_settle_refocus)
+        self.file_system_model.layoutChanged.connect(self._schedule_settle_refocus)
 
         self.folder_tree.setModel(self.file_system_model)
         for col in range(1, 4):
@@ -1484,6 +1491,8 @@ class MainWindow(QMainWindow):
         self.folder_tree.setColumnWidth(0, 520)
         if self.folder_tree.selectionModel():
             self.folder_tree.selectionModel().currentChanged.connect(self._on_tree_current_changed)
+        self.folder_tree.expanded.connect(self._stop_settle_on_user_action)
+        self.folder_tree.verticalScrollBar().actionTriggered.connect(self._stop_settle_on_user_action)
 
         self.folder_tree.setRootIndex(QModelIndex())
         self.jump_to_path(str(Path.home()), show_feedback=False)
@@ -1934,6 +1943,7 @@ class MainWindow(QMainWindow):
         finally:
             self._is_syncing_navigation = False
 
+        self._settle_jump_target = None
         self._pending_jump_target = target_path
         self._pending_jump_show_feedback = show_feedback
         self._pending_jump_attempts = 0
@@ -2612,11 +2622,13 @@ class MainWindow(QMainWindow):
         if self._is_syncing_navigation or not current.isValid():
             return
 
+        self._settle_jump_target = None
         self._center_tree_index_horizontally(current)
 
     def _on_directory_loaded(self, _path: str) -> None:
         """Retry pending jump after filesystem model loads directories."""
 
+        self._schedule_settle_refocus()
         if not self._pending_jump_target:
             return
         QTimer.singleShot(0, self._retry_pending_jump)
@@ -2811,7 +2823,7 @@ class MainWindow(QMainWindow):
 
         QTimer.singleShot(100, self._retry_pending_jump)
 
-    def _try_focus_tree_path(self, target_path: str) -> bool:
+    def _try_focus_tree_path(self, target_path: str, take_focus: bool = True) -> bool:
         """Try selecting/centering a path in the tree immediately."""
 
         model_index = self.file_system_model.index(target_path)
@@ -2836,7 +2848,8 @@ class MainWindow(QMainWindow):
             self.folder_tree.scrollTo(model_index, QTreeView.PositionAtCenter)
             self.folder_tree.expand(model_index)
             self._center_tree_index_horizontally(model_index)
-            self.folder_tree.setFocus(Qt.OtherFocusReason)
+            if take_focus:
+                self.folder_tree.setFocus(Qt.OtherFocusReason)
         finally:
             self._is_syncing_navigation = False
 
@@ -2889,6 +2902,35 @@ class MainWindow(QMainWindow):
         if self._pending_jump_show_feedback:
             self.append_log(f"[탐색] 경로 이동 완료: {target_path}")
         self._clear_pending_jump()
+        # Slow shares (NAS/UNC) keep loading siblings and may even drop the UNC host node after the
+        # first successful focus, so re-assert the target on model changes for a short window.
+        # ponytail: fixed 15s window, make it configurable if very slow shares still drift.
+        self._settle_jump_target = target_path
+        self._settle_jump_deadline = time.monotonic() + 15.0
+
+    def _schedule_settle_refocus(self, *_args: object) -> None:
+        """Coalesce model change signals into one refocus of the settled jump target."""
+
+        if self._settle_jump_target is None or self._settle_refocus_scheduled:
+            return
+        self._settle_refocus_scheduled = True
+        QTimer.singleShot(0, self._settle_refocus)
+
+    def _stop_settle_on_user_action(self, *_args: object) -> None:
+        """Let the user browse freely once they expand or scroll the tree themselves."""
+
+        if not self._is_syncing_navigation:
+            self._settle_jump_target = None
+
+    def _settle_refocus(self) -> None:
+        self._settle_refocus_scheduled = False
+        target_path = self._settle_jump_target
+        if target_path is None or self._pending_jump_target is not None:
+            return
+        if time.monotonic() > self._settle_jump_deadline:
+            self._settle_jump_target = None
+            return
+        self._try_focus_tree_path(target_path, take_focus=False)
 
     def _center_tree_index_horizontally(self, index: QModelIndex) -> None:
         """Center a tree item's hierarchy/text anchor in the horizontal viewport."""
