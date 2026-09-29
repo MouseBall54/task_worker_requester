@@ -124,6 +124,12 @@ class PublishConfig:
     default_priority: int = 0
     initial_open_folders: int = 2
     max_active_open_folders: int = 3
+    publish_chunk_size: int = 500
+    fallback_max_queued_messages: int = 2000
+    ui_refresh_interval_ms: int = 500
+    ui_log_max_lines: int = 5000
+    preflight_warning_task_threshold: int = 10000
+    history_max_sessions: int = 100
     image_extensions: list[str] = field(
         default_factory=lambda: [".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"]
     )
@@ -135,19 +141,18 @@ class UiConfig:
     """UI-specific settings."""
 
     app_name: str = "IPDK_plus"
-    window_width: int = 1480
-    window_height: int = 900
+    window_width: int = 1920
+    window_height: int = 1000
     theme: str = "dark"
     font_family: str = "Segoe UI"
 
 
 @dataclass(slots=True)
 class UpdateConfig:
-    """External update link settings."""
+    """NAS installer share used for update checks."""
 
     enabled: bool = True
-    latest_release_url: str = "https://github.com/MouseBall54/task_worker_requester/releases/latest"
-    manifest_url: str = "https://github.com/MouseBall54/task_worker_requester/releases/latest/download/latest.json"
+    share_dir: str = r"\\12.56.53.186\ssa_new\sw\ipdk_plus"
 
 
 @dataclass(slots=True)

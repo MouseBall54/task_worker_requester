@@ -38,6 +38,7 @@ class PollingWorker(QObject):
         self._polling_interval_seconds = polling_interval_seconds
         self._max_messages_per_poll = max_messages_per_poll
         self._stop_requested = False
+        self._accept_all_request_ids = tracked_request_ids is None
         self._tracked_request_ids = set(tracked_request_ids or set())
         self._tracked_ids_lock = threading.Lock()
 
@@ -66,7 +67,10 @@ class PollingWorker(QObject):
                     return BrokerConsumeDecision.ACK
 
                 with self._tracked_ids_lock:
-                    is_tracked = matched_request_id in self._tracked_request_ids
+                    is_tracked = (
+                        self._accept_all_request_ids
+                        or matched_request_id in self._tracked_request_ids
+                    )
 
                 if not is_tracked:
                     self.log.emit(

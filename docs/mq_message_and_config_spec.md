@@ -34,7 +34,7 @@
 2. 기존 호환용 positional config path를 넘긴 경우 해당 파일을 사용한다.
 3. 명시 경로가 없으면 `%APPDATA%\IPDK_plus\app_config.yaml`을 사용한다.
 4. `%APPDATA%\IPDK_plus\app_config.yaml`이 없으면 설치 패키지에 포함된 `config/app_config.yaml`을 seed로 복사한다.
-5. 번들 seed fingerprint가 `%APPDATA%\IPDK_plus\.seed_fingerprint`와 다르면 기존 AppData 설정을 `.bak.<timestamp>`로 백업하고 새 seed로 갱신한다.
+5. 번들 seed fingerprint(앱 버전 포함)가 `%APPDATA%\IPDK_plus\.seed_fingerprint`와 다르면 기존 AppData 설정을 `.bak.<timestamp>`로 백업하고 새 seed로 갱신한다.
 6. AppData seed가 실패하면 실행 파일 옆 `config\app_config.yaml`을 찾는다.
 7. 그 다음 실행 파일 옆 `app_config.yaml`을 찾는다.
 8. 개발 실행에서는 repo의 `config/app_config.yaml`을 fallback으로 사용한다.
@@ -93,20 +93,25 @@ publish:
   publish_retry_backoff_seconds: 1.5
   initial_open_folders: 2
   max_active_open_folders: 3
+  publish_chunk_size: 500
+  fallback_max_queued_messages: 2000
+  ui_refresh_interval_ms: 500
+  ui_log_max_lines: 5000
+  preflight_warning_task_threshold: 10000
+  history_max_sessions: 100
   image_extensions: [".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"]
   scan_mode: "direct"
 
 ui:
   app_name: "IPDK_plus"
-  window_width: 1480
-  window_height: 900
+  window_width: 1920
+  window_height: 1000
   theme: "dark"
   font_family: "Segoe UI"
 
 update:
   enabled: true
-  latest_release_url: "https://github.com/MouseBall54/task_worker_requester/releases/latest"
-  manifest_url: "https://github.com/MouseBall54/task_worker_requester/releases/latest/download/latest.json"
+  share_dir: '\\12.56.53.186\ssa_new\sw\ipdk_plus'
 ```
 
 ## 4. 현재 recipe_config.yaml 예시
@@ -189,18 +194,26 @@ recipes:
 | `publish.max_messages_per_poll` | `100` | result consumer prefetch count | 한 번에 broker가 밀어줄 수 있는 미확인 메시지 수에 영향 | 너무 높으면 한 client가 result를 많이 선점할 수 있음 |
 | `publish.max_publish_retries` | `3` | request publish 실패 시 재시도 횟수 | publish 실패 복구 가능성이 바뀜 | 1 이상이어야 함 |
 | `publish.publish_retry_backoff_seconds` | `1.5` | publish retry backoff 기본 seconds | 재시도 대기 시간이 바뀜 | 실제 대기는 `backoff * attempt` |
-| `publish.initial_open_folders` | `2` | 시작 시 동시에 열어 전송할 폴더 batch 수 | 초기 전송량과 worker 부하가 바뀜 | `max_active_open_folders`보다 클 수 없음 |
-| `publish.max_active_open_folders` | `3` | 동시에 active 상태로 둘 폴더 수 상한 | 병렬 진행 폴더 수가 바뀜 | 1 이상이어야 함 |
+| `publish.initial_open_folders` | `2` | 시작 시 실제 스캔과 처리를 개시할 폴더 수 | 초기 디스크 I/O와 worker 부하가 바뀜 | `max_active_open_folders`보다 클 수 없음 |
+| `publish.max_active_open_folders` | `3` | 동시에 스캔·발행·결과 대기 상태로 유지할 폴더 수 | 열리지 않은 폴더는 Task/메시지를 생성하지 않음 | 1 이상이어야 함 |
+| `publish.publish_chunk_size` | `500` | SQLite에서 한 번에 claim하고 메시지로 만드는 Task 수 | 앱 메모리와 순간 publish량을 제한 | 1 이상, 사용자가 별도 조정하지 않아도 기본값 적용 |
+| `publish.fallback_max_queued_messages` | `2000` | broker 메트릭이 없을 때도 적용되는 CLAIMED/SENT/RUNNING 상한 | worker가 느리거나 0명일 때 무제한 발행 방지 | 1 이상 |
+| `publish.ui_refresh_interval_ms` | `500` | 대량 상태 UI 갱신을 묶는 목표 주기 | 값이 작을수록 UI 갱신량 증가 | 100 이상 |
+| `publish.ui_log_max_lines` | `5000` | 화면 로그 최대 줄 수 | 오래된 화면 로그 자동 제거 | 100 이상, 파일 로그는 별도 회전 |
+| `publish.preflight_warning_task_threshold` | `10000` | 사전 점검 대량 작업 경고 기준 | 최종 메시지가 기준 이상이면 확인 경고 표시 | 1 이상 |
+| `publish.history_max_sessions` | `100` | 완료·초기화 실행 이력 보존 개수 | 초과한 오래된 이력을 자동 삭제 | 현재/일시정지 세션은 삭제 대상 아님 |
 | `publish.image_extensions` | `[".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"]` | 이미지 스캔 대상 확장자 | 등록되는 이미지 파일 종류가 바뀜 | 확장자는 점 포함 문자열로 관리 |
 | `publish.scan_mode` | `"direct"` | 폴더 스캔 방식 | `"direct"`는 선택 폴더 직접 이미지, `"recursive"`는 하위까지 스캔 | 지원값은 `direct`, `recursive` |
+
+작업 세션은 `%APPDATA%\IPDK_plus\runtime\task_state.sqlite3`에 WAL 모드로 저장됩니다. 사용자가 `전송 시작`을 누른 ACTIVE 세션이 비정상 종료된 경우에는 미발행 `CLAIMED` 작업을 `PENDING`으로 복구하고, 세션에 저장된 Action·Priority·결과 큐·polling 주기를 사용해 스캔과 결과 수신을 자동 재개합니다. 사용자가 `일시정지`를 누른 세션은 `PAUSED_BY_USER`로 저장되어 자동 재개되지 않으며 확인창 또는 `전송 재개` 버튼으로만 이어갑니다. 완료 세션은 `COMPLETED`, 초기화한 세션은 `RESET` 이력으로 보존됩니다.
 
 ### 5.6 ui
 
 | Key | 현재 값 | 의미 | 변경 시 영향 | 주의사항 |
 | --- | --- | --- | --- | --- |
 | `ui.app_name` | `"IPDK_plus"` | Qt application name | 창/앱 표시 이름에 영향 | 설치 패키지 이름과 다르면 사용자 혼동 가능 |
-| `ui.window_width` | `1480` | 기본 창 너비 | 최초 창 크기가 바뀜 | px 단위 |
-| `ui.window_height` | `900` | 기본 창 높이 | 최초 창 크기가 바뀜 | px 단위 |
+| `ui.window_width` | `1920` | 기본 창 너비 | 최초 창 크기가 바뀜 | px 단위 |
+| `ui.window_height` | `1000` | 기본 창 높이 | 최초 창 크기가 바뀜 | px 단위 |
 | `ui.theme` | `"dark"` | UI theme 이름 | 스타일 선택에 영향 | 현재 스타일 파일 구현과 맞아야 함 |
 | `ui.font_family` | `"Segoe UI"` | UI 기본 폰트 | 화면 표시 폰트가 바뀜 | Windows 기본 폰트 기준 |
 
@@ -208,9 +221,8 @@ recipes:
 
 | Key | 현재 값 | 의미 | 변경 시 영향 | 주의사항 |
 | --- | --- | --- | --- | --- |
-| `update.enabled` | `true` | 앱 내부 업데이트 확인 메뉴 활성화 여부 | `false`면 메뉴 action이 비활성화됨 | 설치 프로그램의 시작 메뉴 shortcut은 별도 Inno 설정을 사용 |
-| `update.latest_release_url` | GitHub latest release URL | 사용자가 최신 설치 파일을 받으러 갈 링크 | 앱 메뉴의 업데이트 확인 대상이 바뀜 | `http(s)` URL이어야 함 |
-| `update.manifest_url` | GitHub latest download `latest.json` URL | 향후 자동 비교용 manifest 위치 | manifest 배포 위치가 바뀌면 같이 수정 | 현재 앱은 링크 열기 중심이며 URL 유효성만 검사 |
+| `update.enabled` | `true` | 시작 시 자동 확인과 업데이트 확인 메뉴 활성화 여부 | `false`면 둘 다 비활성화됨 | 설치 프로그램의 시작 메뉴 shortcut은 별도 Inno 설정을 사용 |
+| `update.share_dir` | `\\12.56.53.186\ssa_new\sw\ipdk_plus` | `IPDK_plusSetup_<버전>.exe`를 찾는 NAS 폴더 | 더 높은 버전이 있으면 설치 여부를 물음 | 비어 있으면 안 됨 |
 
 ### 5.8 recipe_config
 

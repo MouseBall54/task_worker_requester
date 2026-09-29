@@ -3,22 +3,28 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
 import hashlib
 import os
 from pathlib import Path
 import shutil
 import sys
 
+from app.version import APP_VERSION
+from utils.time_utils import now_seoul
+
 
 APPDATA_DIR_NAME = "IPDK_plus"
 LEGACY_APPDATA_DIR_NAME = "TaskWorkerRequester"
 CONFIG_FILE_NAME = "app_config.yaml"
 RECIPE_CONFIG_FILE_NAME = "recipe_config.yaml"
+WORKER_NODES_CONFIG_FILE_NAME = "worker_nodes.yaml"
 APP_ICON_PNG_NAME = "IPDK_plus.png"
 APP_ICON_ICO_NAME = "IPDK_plus.ico"
 SEED_REFRESH_MARKER_NAME = ".refresh_seed_config"
 SEED_FINGERPRINT_FILE_NAME = ".seed_fingerprint"
+TASK_DATABASE_FILE_NAME = "task_state.sqlite3"
+FOLDER_INDEX_DATABASE_FILE_NAME = "folder_index.sqlite3"
+UI_SETTINGS_FILE_NAME = "ui_state.ini"
 
 
 class RuntimePathError(RuntimeError):
@@ -32,8 +38,10 @@ class RuntimeConfigPaths:
     appdata_dir: Path
     user_config_path: Path
     user_recipe_config_path: Path
+    user_worker_nodes_config_path: Path
     seed_config_source: Path | None
     seed_recipe_source: Path | None
+    seed_worker_nodes_config_source: Path | None
 
 
 def normalize_cli_path(path_value: str | Path) -> Path:
@@ -114,6 +122,24 @@ def resolve_logs_dir() -> Path:
     return resolve_user_appdata_dir() / "logs"
 
 
+def resolve_task_database_path() -> Path:
+    """Return the persistent SQLite path for resumable task state."""
+
+    return resolve_user_appdata_dir() / "runtime" / TASK_DATABASE_FILE_NAME
+
+
+def resolve_folder_index_database_path() -> Path:
+    """Return the independent SQLite path for favorite-root folder search."""
+
+    return resolve_user_appdata_dir() / "runtime" / FOLDER_INDEX_DATABASE_FILE_NAME
+
+
+def resolve_ui_settings_path() -> Path:
+    """Return the persistent per-user UI layout settings path."""
+
+    return resolve_user_appdata_dir() / "runtime" / UI_SETTINGS_FILE_NAME
+
+
 def ensure_user_config_seeded() -> RuntimeConfigPaths:
     """Create AppData config files from bundled templates when missing."""
 
@@ -123,8 +149,12 @@ def ensure_user_config_seeded() -> RuntimeConfigPaths:
 
     user_config_path = appdata_dir / CONFIG_FILE_NAME
     user_recipe_config_path = appdata_dir / RECIPE_CONFIG_FILE_NAME
+    user_worker_nodes_config_path = appdata_dir / WORKER_NODES_CONFIG_FILE_NAME
     seed_config_source = find_bundled_resource(Path("config") / CONFIG_FILE_NAME)
     seed_recipe_source = find_bundled_resource(Path("config") / RECIPE_CONFIG_FILE_NAME)
+    seed_worker_nodes_config_source = find_bundled_resource(
+        Path("config") / WORKER_NODES_CONFIG_FILE_NAME
+    )
     seed_fingerprint = _calculate_seed_fingerprint(seed_config_source, seed_recipe_source)
     refresh_seed = _consume_seed_refresh_marker(appdata_dir) or (
         migrated_dir is None
@@ -151,6 +181,8 @@ def ensure_user_config_seeded() -> RuntimeConfigPaths:
 
     if not user_recipe_config_path.exists() and seed_recipe_source is not None:
         shutil.copy2(seed_recipe_source, user_recipe_config_path)
+    if not user_worker_nodes_config_path.exists() and seed_worker_nodes_config_source is not None:
+        shutil.copy2(seed_worker_nodes_config_source, user_worker_nodes_config_path)
 
     _write_seed_fingerprint(appdata_dir, seed_fingerprint)
 
@@ -158,8 +190,10 @@ def ensure_user_config_seeded() -> RuntimeConfigPaths:
         appdata_dir=appdata_dir,
         user_config_path=user_config_path,
         user_recipe_config_path=user_recipe_config_path,
+        user_worker_nodes_config_path=user_worker_nodes_config_path,
         seed_config_source=seed_config_source,
         seed_recipe_source=seed_recipe_source,
+        seed_worker_nodes_config_source=seed_worker_nodes_config_source,
     )
 
 
@@ -221,6 +255,23 @@ def resolve_default_config_path(explicit_config_path: str | Path | None = None) 
         "app_config.yaml 을 찾지 못했습니다. --config 로 직접 지정하거나 "
         f"{resolve_user_appdata_dir()} 아래 기본 설정 파일을 준비해주세요."
     )
+
+
+def resolve_worker_nodes_config_path(app_config_path: str | Path) -> Path:
+    """Resolve and seed worker-node settings beside the active app config."""
+
+    path = Path(app_config_path).resolve().parent / WORKER_NODES_CONFIG_FILE_NAME
+    if path.exists():
+        return path
+    seed_source = find_bundled_resource(Path("config") / WORKER_NODES_CONFIG_FILE_NAME)
+    if seed_source is None:
+        raise RuntimePathError("기본 worker_nodes.yaml 템플릿을 찾지 못했습니다.")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(seed_source, path)
+    except OSError as exc:
+        raise RuntimePathError(f"worker_nodes.yaml을 준비하지 못했습니다: {exc}") from exc
+    return path
 
 
 def find_bundled_resource(relative_path: str | Path) -> Path | None:
@@ -330,7 +381,8 @@ def _replace_seeded_file_with_backup(target_path: Path, seed_path: Path) -> None
 def _next_backup_path(target_path: Path) -> Path:
     """Build a non-conflicting backup path next to a refreshed config file."""
 
-    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    now = now_seoul()
+    timestamp = f"{now.strftime('%Y%m%d%H%M%S')}{now.microsecond // 100_000}"
     for index in range(0, 100):
         suffix = f".bak.{timestamp}" if index == 0 else f".bak.{timestamp}.{index}"
         candidate = target_path.with_name(f"{target_path.name}{suffix}")
@@ -340,12 +392,12 @@ def _next_backup_path(target_path: Path) -> Path:
 
 
 def _calculate_seed_fingerprint(seed_config_source: Path | None, seed_recipe_source: Path | None) -> str | None:
-    """Calculate a stable fingerprint for bundled seed config files."""
+    """Calculate a fingerprint for bundled seed files; a new app version always changes it."""
 
     if seed_config_source is None:
         return None
 
-    digest = hashlib.sha256()
+    digest = hashlib.sha256(f"{APP_VERSION}\0".encode("utf-8"))
     for label, seed_path in (
         (CONFIG_FILE_NAME, seed_config_source),
         (RECIPE_CONFIG_FILE_NAME, seed_recipe_source),

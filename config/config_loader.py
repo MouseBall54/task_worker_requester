@@ -142,6 +142,18 @@ class ConfigLoader:
             raise ConfigError("max_active_open_folders 는 1 이상이어야 합니다.")
         if config.publish.initial_open_folders > config.publish.max_active_open_folders:
             raise ConfigError("initial_open_folders 는 max_active_open_folders 보다 클 수 없습니다.")
+        if config.publish.publish_chunk_size <= 0:
+            raise ConfigError("publish_chunk_size 는 1 이상이어야 합니다.")
+        if config.publish.fallback_max_queued_messages <= 0:
+            raise ConfigError("fallback_max_queued_messages 는 1 이상이어야 합니다.")
+        if config.publish.ui_refresh_interval_ms < 100:
+            raise ConfigError("ui_refresh_interval_ms 는 100 이상이어야 합니다.")
+        if config.publish.ui_log_max_lines < 100:
+            raise ConfigError("ui_log_max_lines 는 100 이상이어야 합니다.")
+        if config.publish.preflight_warning_task_threshold <= 0:
+            raise ConfigError("preflight_warning_task_threshold 는 1 이상이어야 합니다.")
+        if config.publish.history_max_sessions <= 0:
+            raise ConfigError("history_max_sessions 는 1 이상이어야 합니다.")
 
         max_priority = ConfigLoader._read_request_queue_max_priority(config.rabbitmq)
         if max_priority is None:
@@ -354,17 +366,7 @@ class ConfigLoader:
 
     @staticmethod
     def _validate_update_config(update_config: UpdateConfig) -> None:
-        """Validate update links without requiring a live network check."""
+        """Validate the update share path without touching the network."""
 
-        if not update_config.enabled:
-            return
-
-        for label, raw_url in {
-            "update.latest_release_url": update_config.latest_release_url,
-            "update.manifest_url": update_config.manifest_url,
-        }.items():
-            url = str(raw_url or "").strip()
-            if not url:
-                raise ConfigError(f"{label} 는 비어 있을 수 없습니다.")
-            if not (url.startswith("https://") or url.startswith("http://")):
-                raise ConfigError(f"{label} 는 http(s) URL 이어야 합니다.")
+        if update_config.enabled and not str(update_config.share_dir or "").strip():
+            raise ConfigError("update.share_dir 는 비어 있을 수 없습니다.")

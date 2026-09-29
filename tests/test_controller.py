@@ -5,12 +5,15 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 from tempfile import TemporaryDirectory
+import time
 import unittest
+from unittest.mock import patch
 
 from config.models import AppConfig, PublishConfig, RabbitMQConfig, UiConfig
-from models.task_models import TaskStatus
+from models.task_models import TaskResult, TaskStatus
 from services.broker import build_broker_provider
 from state.task_store import TaskStore
+from state.sqlite_task_store import SqliteTaskStore
 
 try:
     from PySide6.QtCore import QObject, Signal
@@ -38,6 +41,10 @@ class DummyView(QObject if PYSIDE_AVAILABLE else object):
         reset_requested = Signal()
         folder_row_selected = Signal(str)
         mq_preview_requested = Signal(str)
+        move_folders_requested = Signal(list, str)
+        hold_folders_requested = Signal(list, bool)
+        history_requested = Signal()
+        history_export_requested = Signal(str, str)
 
     def __init__(self) -> None:
         if PYSIDE_AVAILABLE:
@@ -49,6 +56,14 @@ class DummyView(QObject if PYSIDE_AVAILABLE else object):
         self.active_result_queue: str | None = None
         self.queue_metrics: tuple[int | None, int | None] = (None, None)
         self.runtime_options_enabled = True
+        self.recipe_selections = [("Recipe", "recipe.json")]
+        self.duplicate_folder_notifications: list[list[tuple[str, str]]] = []
+        self.preflight_reports: list[dict] = []
+        self.preflight_accepted = True
+        self.paused = False
+        self.resume_paused_accepted = False
+        self.paused_resume_counts: list[int] = []
+        self.history_rows: list = []
         self._disable_queue_metrics_monitor = True
 
     def set_running_state(self, running: bool) -> None:
@@ -56,6 +71,9 @@ class DummyView(QObject if PYSIDE_AVAILABLE else object):
 
     def set_runtime_options_enabled(self, enabled: bool) -> None:
         self.runtime_options_enabled = enabled
+
+    def set_paused_state(self, paused: bool) -> None:
+        self.paused = paused
 
     def set_connection_status(self, connected: bool, label: str) -> None:
         self.connection = (connected, label)
@@ -93,8 +111,28 @@ class DummyView(QObject if PYSIDE_AVAILABLE else object):
     def show_mq_preview(self, _preview) -> None:  # noqa: ANN001
         return
 
+    def show_duplicate_folders(self, rows: list[tuple[str, str]]) -> None:
+        self.duplicate_folder_notifications.append(list(rows))
+
+    def confirm_preflight(self, report: dict) -> bool:
+        self.preflight_reports.append(dict(report))
+        return self.preflight_accepted
+
+    def confirm_resume_paused(self, pending_count: int) -> bool:
+        self.paused_resume_counts.append(pending_count)
+        return self.resume_paused_accepted
+
+    def show_run_history(self, rows: list) -> None:
+        self.history_rows = list(rows)
+
+    def show_history_export_result(self, _destination: str, _row_count: int) -> None:
+        return
+
     def current_runtime_settings(self) -> tuple[str, str, int, int]:
         return ("RUN_RECIPE", "recipe.json", 1, 0)
+
+    def current_recipe_selections(self) -> list[tuple[str, str]]:
+        return list(self.recipe_selections)
 
 
 @unittest.skipUnless(PYSIDE_AVAILABLE, "PySide6 is required for controller tests.")
@@ -133,6 +171,805 @@ class TaskControllerTest(unittest.TestCase):
 
         self.assertEqual(store.overall_stats()["total"], 1)
         self.assertTrue(len(view.logs) >= 1)
+
+    def test_duplicate_folder_notice_classifies_pending_and_completed_paths(self) -> None:
+        config = AppConfig(
+            rabbitmq=RabbitMQConfig(host="127.0.0.1", port=5672, username="guest", password="guest"),
+            publish=PublishConfig(image_extensions=[".jpg"]),
+            ui=UiConfig(),
+            mock_mode=True,
+        )
+        view = DummyView()
+        logger = logging.getLogger("controller_duplicate_folder_notice_test")
+        logger.handlers.clear()
+        logger.addHandler(logging.NullHandler())
+
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            pending_folder = root / "pending"
+            completed_folder = root / "completed"
+            pending_folder.mkdir()
+            completed_folder.mkdir()
+            completed_image = completed_folder / "done.jpg"
+            completed_image.write_text("x", encoding="utf-8")
+
+            store = SqliteTaskStore(root / "tasks.sqlite3")
+            store.register_folder_descriptors(
+                [str(pending_folder), str(completed_folder)],
+                [("Recipe", "recipe.json")],
+            )
+            store.insert_task_batch(str(completed_folder), [str(completed_image)])
+            message = store.claim_pending_messages(
+                [str(completed_folder)], "RUN", "result.queue", 0, 1
+            )[0]
+            store.mark_task_sent(message.request_id)
+            store.apply_result(TaskResult(request_id=message.request_id, result=["PASS"]))
+            store.set_folder_scan_state(str(completed_folder), "SCANNED")
+
+            controller = TaskController(
+                config=config,
+                view=view,  # type: ignore[arg-type]
+                store=store,
+                broker_provider=build_broker_provider(config),
+                logger=logger,
+            )
+            try:
+                controller.on_add_folder_requested(
+                    [str(pending_folder), str(completed_folder)]
+                )
+
+                self.assertEqual(
+                    view.duplicate_folder_notifications,
+                    [[
+                        (f"{pending_folder} [Recipe]", "진행중/대기 폴더"),
+                        (f"{completed_folder} [Recipe]", "완료된 폴더"),
+                    ]],
+                )
+                self.assertTrue(any("중복 폴더+Recipe 2개" in message for message in view.logs))
+            finally:
+                controller.shutdown()
+                store.close()
+
+    def test_subfolder_duplicates_are_grouped_into_one_notice(self) -> None:
+        config = AppConfig(
+            rabbitmq=RabbitMQConfig(host="127.0.0.1", port=5672, username="guest", password="guest"),
+            publish=PublishConfig(image_extensions=[".jpg"]),
+            ui=UiConfig(),
+            mock_mode=True,
+        )
+        view = DummyView()
+        logger = logging.getLogger("controller_duplicate_subfolder_notice_test")
+        logger.handlers.clear()
+        logger.addHandler(logging.NullHandler())
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            folder_a = root / "folder_a"
+            folder_b = root / "folder_b"
+            for folder in (folder_a, folder_b):
+                folder.mkdir()
+                (folder / "image.jpg").write_text("x", encoding="utf-8")
+
+            store = SqliteTaskStore(root / "tasks.sqlite3")
+            store.register_folder_descriptors(
+                [str(folder_a), str(folder_b)], [("Recipe", "recipe.json")]
+            )
+            controller = TaskController(
+                config=config,
+                view=view,  # type: ignore[arg-type]
+                store=store,
+                broker_provider=build_broker_provider(config),
+                logger=logger,
+            )
+            try:
+                controller.on_add_subfolders_requested([str(root)])
+                deadline = time.monotonic() + 5.0
+                while time.monotonic() < deadline and controller._discovery_thread is not None:
+                    self._app.processEvents()
+                    time.sleep(0.01)
+                self._app.processEvents()
+
+                self.assertEqual(
+                    view.duplicate_folder_notifications,
+                    [[
+                        (f"{folder_a} [Recipe]", "진행중/대기 폴더"),
+                        (f"{folder_b} [Recipe]", "진행중/대기 폴더"),
+                    ]],
+                )
+                self.assertTrue(any("신규 대기열 0개" in message for message in view.logs))
+            finally:
+                controller.shutdown()
+                self._app.processEvents()
+                store.close()
+
+    def test_sqlite_runtime_registers_descriptor_then_publishes_one_chunk(self) -> None:
+        config = AppConfig(
+            rabbitmq=RabbitMQConfig(host="127.0.0.1", port=5672, username="guest", password="guest"),
+            publish=PublishConfig(
+                image_extensions=[".jpg"],
+                initial_open_folders=1,
+                max_active_open_folders=1,
+                publish_chunk_size=3,
+                fallback_max_queued_messages=3,
+            ),
+            ui=UiConfig(),
+            mock_mode=True,
+        )
+        view = DummyView()
+        logger = logging.getLogger("controller_sqlite_chunk_test")
+        logger.handlers.clear()
+        logger.addHandler(logging.NullHandler())
+
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            image_folder = root / "images"
+            image_folder.mkdir()
+            for index in range(10):
+                (image_folder / f"{index}.jpg").write_text("x", encoding="utf-8")
+            store = SqliteTaskStore(root / "tasks.sqlite3")
+            controller = TaskController(
+                config=config,
+                view=view,  # type: ignore[arg-type]
+                store=store,
+                broker_provider=build_broker_provider(config),
+                logger=logger,
+            )
+            published_chunks: list[list] = []
+
+            def synchronous_scan(folder_path: str) -> None:
+                store.set_folder_scan_state(folder_path, "SCANNING")
+                store.insert_task_batch(folder_path, list(controller._scanner.iter_images(folder_path)))
+                store.set_folder_scan_state(folder_path, "SCANNED")
+
+            controller._start_scan_worker = synchronous_scan  # type: ignore[method-assign]
+            controller._start_publish_worker = (  # type: ignore[method-assign]
+                lambda messages, _exchange, _routing_key: published_chunks.append(list(messages))
+            )
+
+            controller.on_add_folder_requested([str(image_folder)])
+            self.assertEqual(store.overall_stats()["total"], 0)
+
+            controller.on_start_requested()
+
+            self.assertEqual(store.overall_stats()["total"], 10)
+            self.assertEqual(len(published_chunks), 1)
+            self.assertEqual(len(published_chunks[0]), 3)
+            self.assertEqual(
+                store.repository.overall_counts()["claimed"],
+                3,
+            )
+            controller._maybe_dispatch_lazy()
+            self.assertEqual(len(published_chunks), 1)
+
+            for message in published_chunks[0]:
+                store.mark_task_sent(message.request_id)
+                store.apply_result(TaskResult(request_id=message.request_id, result=["PASS"]))
+            controller._maybe_dispatch_lazy()
+            self.assertEqual(len(published_chunks), 2)
+            self.assertEqual(len(published_chunks[1]), 3)
+            controller.shutdown()
+            store.close()
+
+    def test_sqlite_runtime_fixes_total_before_publishing_in_folder_display_order(self) -> None:
+        config = AppConfig(
+            rabbitmq=RabbitMQConfig(host="127.0.0.1", port=5672, username="guest", password="guest"),
+            publish=PublishConfig(
+                image_extensions=[".jpg"],
+                initial_open_folders=2,
+                max_active_open_folders=2,
+                publish_chunk_size=10,
+                fallback_max_queued_messages=10,
+            ),
+            ui=UiConfig(),
+            mock_mode=True,
+        )
+        view = DummyView()
+        logger = logging.getLogger("controller_sqlite_total_and_order_test")
+        logger.handlers.clear()
+        logger.addHandler(logging.NullHandler())
+
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            first_folder = root / "z_first"
+            second_folder = root / "a_second"
+            first_folder.mkdir()
+            second_folder.mkdir()
+            for index in range(2):
+                (first_folder / f"{index}.jpg").write_text("x", encoding="utf-8")
+            for index in range(3):
+                (second_folder / f"{index}.jpg").write_text("x", encoding="utf-8")
+
+            store = SqliteTaskStore(root / "tasks.sqlite3")
+            controller = TaskController(
+                config=config,
+                view=view,  # type: ignore[arg-type]
+                store=store,
+                broker_provider=build_broker_provider(config),
+                logger=logger,
+            )
+            published: list = []
+            totals_at_publish: list[tuple[int, bool]] = []
+
+            def synchronous_scan(folder_path: str) -> None:
+                store.insert_task_batch(folder_path, list(controller._scanner.iter_images(folder_path)))
+                store.set_folder_scan_state(folder_path, "SCANNED")
+
+            def capture_publish(messages, _exchange, _routing_key) -> None:  # noqa: ANN001
+                stats = store.overall_stats()
+                totals_at_publish.append((int(stats["total"]), bool(stats["total_final"])))
+                published.extend(messages)
+
+            controller._start_scan_worker = synchronous_scan  # type: ignore[method-assign]
+            controller._start_publish_worker = capture_publish  # type: ignore[method-assign]
+            store.register_folder_descriptors(
+                [str(first_folder), str(second_folder)],
+                [("Recipe", "recipe.json")],
+            )
+
+            controller.on_start_requested()
+
+            self.assertEqual(totals_at_publish, [(5, True)])
+            self.assertEqual(
+                [Path(message.IMG_LIST[0]).parent.name for message in published],
+                ["z_first", "z_first", "a_second", "a_second", "a_second"],
+            )
+            controller.shutdown()
+            store.close()
+
+    def test_sqlite_runtime_waits_when_broker_queue_reaches_high_watermark(self) -> None:
+        config = AppConfig(
+            rabbitmq=RabbitMQConfig(host="127.0.0.1", port=5672, username="guest", password="guest"),
+            publish=PublishConfig(
+                image_extensions=[".jpg"],
+                initial_open_folders=1,
+                max_active_open_folders=1,
+                publish_chunk_size=3,
+                fallback_max_queued_messages=3,
+            ),
+            ui=UiConfig(),
+            mock_mode=True,
+        )
+        view = DummyView()
+        logger = logging.getLogger("controller_sqlite_backpressure_test")
+        logger.handlers.clear()
+        logger.addHandler(logging.NullHandler())
+
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            image_folder = root / "images"
+            image_folder.mkdir()
+            for index in range(6):
+                (image_folder / f"{index}.jpg").write_text("x", encoding="utf-8")
+            store = SqliteTaskStore(root / "tasks.sqlite3")
+            controller = TaskController(
+                config=config,
+                view=view,  # type: ignore[arg-type]
+                store=store,
+                broker_provider=build_broker_provider(config),
+                logger=logger,
+            )
+            published_chunks: list[list] = []
+
+            def synchronous_scan(folder_path: str) -> None:
+                store.insert_task_batch(folder_path, list(controller._scanner.iter_images(folder_path)))
+                store.set_folder_scan_state(folder_path, "SCANNED")
+
+            controller._start_scan_worker = synchronous_scan  # type: ignore[method-assign]
+            controller._start_publish_worker = (  # type: ignore[method-assign]
+                lambda messages, _exchange, _routing_key: published_chunks.append(list(messages))
+            )
+            controller.on_add_folder_requested([str(image_folder)])
+            controller._last_worker_count = 0
+            controller._last_queue_message_count = 3
+
+            controller.on_start_requested()
+
+            self.assertEqual(published_chunks, [])
+            self.assertEqual(store.repository.overall_counts()["pending"], 6)
+            controller._on_queue_metrics_updated(0, 0)
+            self.assertEqual(len(published_chunks), 1)
+            self.assertEqual(len(published_chunks[0]), 3)
+            controller.shutdown()
+            store.close()
+
+    def test_sqlite_scanning_folder_is_not_replaced_when_current_rows_finish(self) -> None:
+        config = AppConfig(
+            rabbitmq=RabbitMQConfig(host="127.0.0.1", port=5672, username="guest", password="guest"),
+            publish=PublishConfig(image_extensions=[".jpg"]),
+            ui=UiConfig(),
+            mock_mode=True,
+        )
+        view = DummyView()
+        logger = logging.getLogger("controller_sqlite_scanning_slot_test")
+        logger.handlers.clear()
+        logger.addHandler(logging.NullHandler())
+
+        with TemporaryDirectory() as temp_dir:
+            store = SqliteTaskStore(Path(temp_dir) / "tasks.sqlite3")
+            controller = TaskController(
+                config=config,
+                view=view,  # type: ignore[arg-type]
+                store=store,
+                broker_provider=build_broker_provider(config),
+                logger=logger,
+            )
+            folder_path = str(Path(temp_dir) / "images")
+            store.register_folder_descriptors([folder_path], [("R", "r.json")])
+            store.insert_task_batch(folder_path, ["a.jpg"])
+            task = store.claim_pending_messages([folder_path], "RUN", "result", 0, 1)[0]
+            store.mark_task_sent(task.request_id)
+            store.apply_result(TaskResult(request_id=task.request_id, result=["PASS"]))
+            store.set_folder_scan_state(folder_path, "SCANNING")
+            controller._active_folder_paths.add(folder_path)
+
+            self.assertEqual(controller._refresh_lazy_active_folders(), 0)
+            self.assertIn(folder_path, controller._active_folder_paths)
+            controller._on_scan_completed(folder_path, 0)
+            self.assertEqual(store.folder_scan_state(folder_path), "SCANNED")
+
+            controller.shutdown()
+            store.close()
+
+    def test_sqlite_inventory_completes_thirty_folders_and_5600_images(self) -> None:
+        config = AppConfig(
+            rabbitmq=RabbitMQConfig(host="127.0.0.1", port=5672, username="guest", password="guest"),
+            publish=PublishConfig(
+                image_extensions=[".jpg"],
+                initial_open_folders=2,
+                max_active_open_folders=3,
+                publish_chunk_size=500,
+                fallback_max_queued_messages=2000,
+                ui_refresh_interval_ms=100,
+            ),
+            ui=UiConfig(),
+            mock_mode=True,
+        )
+        view = DummyView()
+        logger = logging.getLogger("controller_sqlite_5600_inventory_test")
+        logger.handlers.clear()
+        logger.addHandler(logging.NullHandler())
+
+        with TemporaryDirectory() as temp_dir:
+            store = SqliteTaskStore(Path(temp_dir) / "tasks.sqlite3")
+            controller = TaskController(
+                config=config,
+                view=view,  # type: ignore[arg-type]
+                store=store,
+                broker_provider=build_broker_provider(config),
+                logger=logger,
+            )
+            folder_paths = [str(Path(temp_dir) / f"folder-{index:02d}") for index in range(30)]
+            counts = {path: (187 if index < 29 else 177) for index, path in enumerate(folder_paths)}
+
+            def virtual_images(folder_path: str):  # noqa: ANN202
+                return (f"{folder_path}/{index}.jpg" for index in range(counts[folder_path]))
+
+            controller._scanner.iter_images = virtual_images  # type: ignore[method-assign]
+            controller._maybe_dispatch_lazy = lambda: None  # type: ignore[method-assign]
+            try:
+                store.register_folder_descriptors(folder_paths, [("Recipe", "recipe.json")])
+                controller.on_start_requested()
+                deadline = time.monotonic() + 12.0
+                while time.monotonic() < deadline and controller._inventory_preparing:
+                    self._app.processEvents()
+                    time.sleep(0.01)
+                self._app.processEvents()
+
+                self.assertFalse(controller._inventory_preparing)
+                self.assertEqual(store.overall_stats()["total"], 5600)
+                self.assertTrue(store.overall_stats()["total_final"])
+                self.assertEqual(store.get_waiting_folder_paths(), [])
+                self.assertEqual(controller._scan_threads, {})
+            finally:
+                controller.shutdown()
+                self._app.processEvents()
+                store.close()
+
+    def test_finished_scan_slot_is_reconciled_when_qt_cleanup_signal_is_missed(self) -> None:
+        class _StoppedThread:
+            def isRunning(self) -> bool:  # noqa: N802
+                return False
+
+        config = AppConfig(
+            rabbitmq=RabbitMQConfig(host="127.0.0.1", port=5672, username="guest", password="guest"),
+            publish=PublishConfig(image_extensions=[".jpg"]),
+            ui=UiConfig(),
+            mock_mode=True,
+        )
+        view = DummyView()
+        logger = logging.getLogger("controller_scan_slot_reconcile_test")
+        logger.handlers.clear()
+        logger.addHandler(logging.NullHandler())
+        with TemporaryDirectory() as temp_dir:
+            store = SqliteTaskStore(Path(temp_dir) / "tasks.sqlite3")
+            controller = TaskController(
+                config=config,
+                view=view,  # type: ignore[arg-type]
+                store=store,
+                broker_provider=build_broker_provider(config),
+                logger=logger,
+            )
+            continued: list[bool] = []
+            controller._active = True
+            controller._inventory_preparing = True
+            controller._scan_threads["folder"] = _StoppedThread()  # type: ignore[assignment]
+            controller._scan_workers["folder"] = object()  # type: ignore[assignment]
+            controller._continue_lazy_inventory = lambda: continued.append(True)  # type: ignore[method-assign]
+
+            controller._reconcile_finished_scan_threads()
+
+            self.assertEqual(controller._scan_threads, {})
+            self.assertEqual(controller._scan_workers, {})
+            self.assertEqual(continued, [True])
+            self.assertTrue(any("스캔 슬롯 1개를 자동 복구" in message for message in view.logs))
+            controller.shutdown()
+            store.close()
+
+    def test_unpublished_claims_schedule_automatic_lazy_retry(self) -> None:
+        config = AppConfig(
+            rabbitmq=RabbitMQConfig(host="127.0.0.1", port=5672, username="guest", password="guest"),
+            publish=PublishConfig(
+                image_extensions=[".jpg"],
+                publish_retry_backoff_seconds=0.1,
+            ),
+            ui=UiConfig(),
+            mock_mode=True,
+        )
+        view = DummyView()
+        logger = logging.getLogger("controller_unpublished_retry_test")
+        logger.handlers.clear()
+        logger.addHandler(logging.NullHandler())
+        with TemporaryDirectory() as temp_dir:
+            store = SqliteTaskStore(Path(temp_dir) / "tasks.sqlite3")
+            controller = TaskController(
+                config=config,
+                view=view,  # type: ignore[arg-type]
+                store=store,
+                broker_provider=build_broker_provider(config),
+                logger=logger,
+            )
+            store.register_folder_descriptors(["folder"], [("R", "r.json")])
+            store.insert_task_batch("folder", ["image.jpg"])
+            store.set_folder_scan_state("folder", "SCANNED")
+            store.claim_pending_messages(["folder"], "RUN", "result", 0, 1)
+            controller._active = True
+            dispatched: list[bool] = []
+            scheduled: list[tuple[int, object]] = []
+            controller._maybe_dispatch_lazy = lambda: dispatched.append(True)  # type: ignore[method-assign]
+
+            with patch(
+                "app.controller.QTimer.singleShot",
+                side_effect=lambda delay, callback: scheduled.append((delay, callback)),
+            ):
+                controller._on_publish_thread_finished()
+
+            self.assertEqual(store.repository.overall_counts()["claimed"], 0)
+            self.assertEqual(store.repository.overall_counts()["pending"], 1)
+            self.assertEqual([delay for delay, _callback in scheduled], [250])
+            self.assertEqual(dispatched, [])
+            scheduled[0][1]()  # type: ignore[operator]
+            self.assertEqual(dispatched, [True])
+            self.assertTrue(any("자동 재시도" in message for message in view.logs))
+            controller.shutdown()
+            store.close()
+
+    def test_sqlite_runtime_completes_streamed_mock_session_end_to_end(self) -> None:
+        config = AppConfig(
+            rabbitmq=RabbitMQConfig(host="127.0.0.1", port=5672, username="guest", password="guest"),
+            publish=PublishConfig(
+                image_extensions=[".jpg"],
+                polling_interval_seconds=1,
+                initial_open_folders=1,
+                max_active_open_folders=1,
+                publish_chunk_size=5,
+                fallback_max_queued_messages=10,
+                ui_refresh_interval_ms=100,
+            ),
+            ui=UiConfig(),
+            mock_mode=True,
+        )
+        view = DummyView()
+        logger = logging.getLogger("controller_sqlite_e2e_test")
+        logger.handlers.clear()
+        logger.addHandler(logging.NullHandler())
+
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            image_folder = root / "images"
+            image_folder.mkdir()
+            for index in range(12):
+                (image_folder / f"{index}.jpg").write_text("x", encoding="utf-8")
+            store = SqliteTaskStore(root / "tasks.sqlite3")
+            controller = TaskController(
+                config=config,
+                view=view,  # type: ignore[arg-type]
+                store=store,
+                broker_provider=build_broker_provider(config),
+                logger=logger,
+            )
+            try:
+                controller.on_add_folder_requested([str(image_folder)])
+                controller.on_start_requested()
+                deadline = time.monotonic() + 12.0
+                while time.monotonic() < deadline and not store.all_tasks_terminal():
+                    self._app.processEvents()
+                    time.sleep(0.05)
+                self._app.processEvents()
+
+                self.assertEqual(store.overall_stats()["total"], 12)
+                self.assertTrue(store.all_tasks_terminal())
+                self.assertLessEqual(store.inflight_count(), 10)
+                self.assertFalse(store.should_auto_resume())
+            finally:
+                controller.shutdown()
+                self._app.processEvents()
+                store.close()
+
+    def test_sqlite_runtime_automatically_resumes_persisted_waiting_session(self) -> None:
+        config = AppConfig(
+            rabbitmq=RabbitMQConfig(host="127.0.0.1", port=5672, username="guest", password="guest"),
+            publish=PublishConfig(
+                image_extensions=[".jpg"],
+                polling_interval_seconds=1,
+                initial_open_folders=1,
+                max_active_open_folders=1,
+                publish_chunk_size=2,
+                fallback_max_queued_messages=4,
+                ui_refresh_interval_ms=100,
+            ),
+            ui=UiConfig(),
+            mock_mode=True,
+        )
+        view = DummyView()
+        logger = logging.getLogger("controller_sqlite_auto_resume_test")
+        logger.handlers.clear()
+        logger.addHandler(logging.NullHandler())
+
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            image_folder = root / "images"
+            image_folder.mkdir()
+            for index in range(5):
+                (image_folder / f"{index}.jpg").write_text("x", encoding="utf-8")
+            database = root / "tasks.sqlite3"
+            original = SqliteTaskStore(database)
+            original.register_folder_descriptors(
+                [str(image_folder)], [("Recipe", "recipe.json")]
+            )
+            original.save_runtime_settings("SAVED_ACTION", "saved.result.queue", 4, 2)
+            original.close()
+
+            restored = SqliteTaskStore(database)
+            controller = TaskController(
+                config=config,
+                view=view,  # type: ignore[arg-type]
+                store=restored,
+                broker_provider=build_broker_provider(config),
+                logger=logger,
+            )
+            try:
+                deadline = time.monotonic() + 10.0
+                while time.monotonic() < deadline and not restored.all_tasks_terminal():
+                    self._app.processEvents()
+                    time.sleep(0.05)
+                self._app.processEvents()
+
+                self.assertTrue(restored.all_tasks_terminal())
+                self.assertEqual(restored.overall_stats()["total"], 5)
+                self.assertTrue(any("자동으로 재개" in message for message in view.logs))
+                first_task = restored.get_image_tasks(str(image_folder), limit=1)[0]
+                record = restored.repository.get_task_record(first_task.request_id)
+                self.assertEqual(record["action"], "SAVED_ACTION")
+                self.assertEqual(record["result_queue"], "saved.result.queue")
+                self.assertEqual(record["priority"], 4)
+            finally:
+                controller.shutdown()
+                self._app.processEvents()
+                restored.close()
+
+    def test_sqlite_runtime_restores_unstarted_folders_without_auto_start(self) -> None:
+        config = AppConfig(
+            rabbitmq=RabbitMQConfig(host="127.0.0.1", port=5672, username="guest", password="guest"),
+            publish=PublishConfig(image_extensions=[".jpg"], ui_refresh_interval_ms=100),
+            ui=UiConfig(),
+            mock_mode=True,
+        )
+        view = DummyView()
+        logger = logging.getLogger("controller_sqlite_unstarted_restore_test")
+        logger.handlers.clear()
+        logger.addHandler(logging.NullHandler())
+
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            image_folder = root / "images"
+            image_folder.mkdir()
+            (image_folder / "image.jpg").write_text("x", encoding="utf-8")
+            database = root / "tasks.sqlite3"
+
+            original = SqliteTaskStore(database)
+            original.register_folder_descriptors(
+                [str(image_folder)], [("Recipe", "recipe.json")]
+            )
+            original.close()
+
+            restored = SqliteTaskStore(database)
+            controller = TaskController(
+                config=config,
+                view=view,  # type: ignore[arg-type]
+                store=restored,
+                broker_provider=build_broker_provider(config),
+                logger=logger,
+            )
+            try:
+                self._app.processEvents()
+
+                self.assertFalse(controller._active)
+                self.assertFalse(view.running)
+                self.assertEqual(restored.get_waiting_folder_paths(), [str(image_folder)])
+                self.assertEqual(restored.overall_stats()["total"], 0)
+                self.assertFalse(any("자동으로 재개" in message for message in view.logs))
+            finally:
+                controller.shutdown()
+                self._app.processEvents()
+                restored.close()
+
+    def test_add_folder_snapshots_all_selected_recipes(self) -> None:
+        config = AppConfig(
+            rabbitmq=RabbitMQConfig(host="127.0.0.1", port=5672, username="guest", password="guest"),
+            publish=PublishConfig(image_extensions=[".jpg"]),
+            ui=UiConfig(),
+            mock_mode=True,
+        )
+        view = DummyView()
+        view.recipe_selections = [("Recipe A", "recipes/a.json"), ("Recipe B", "recipes/b.json")]
+        store = TaskStore()
+        logger = logging.getLogger("controller_multi_recipe_test")
+        logger.handlers.clear()
+        logger.addHandler(logging.NullHandler())
+        controller = TaskController(
+            config=config,
+            view=view,  # type: ignore[arg-type]
+            store=store,
+            broker_provider=build_broker_provider(config),
+            logger=logger,
+        )
+
+        with TemporaryDirectory() as temp_dir:
+            folder = Path(temp_dir)
+            (folder / "a.jpg").write_text("x", encoding="utf-8")
+            (folder / "b.jpg").write_text("x", encoding="utf-8")
+            folder_path = str(folder)
+            controller.on_add_folder_requested([folder_path])
+            tasks = store.get_image_tasks(folder_path)
+
+        self.assertEqual(len(tasks), 4)
+        self.assertEqual({task.recipe_path for task in tasks}, {"recipes/a.json", "recipes/b.json"})
+
+    def test_sqlite_add_folder_creates_one_ordered_queue_per_recipe(self) -> None:
+        config = AppConfig(
+            rabbitmq=RabbitMQConfig(host="127.0.0.1", port=5672, username="guest", password="guest"),
+            publish=PublishConfig(image_extensions=[".jpg"]),
+            ui=UiConfig(),
+            mock_mode=True,
+        )
+        view = DummyView()
+        view.recipe_selections = [("Recipe A", "recipes/a.json"), ("Recipe B", "recipes/b.json")]
+        logger = logging.getLogger("controller_sqlite_recipe_queue_test")
+        logger.handlers.clear()
+        logger.addHandler(logging.NullHandler())
+
+        with TemporaryDirectory() as temp_dir:
+            folder = Path(temp_dir) / "images"
+            folder.mkdir()
+            (folder / "1.jpg").write_text("x", encoding="utf-8")
+            (folder / "2.jpg").write_text("x", encoding="utf-8")
+            store = SqliteTaskStore(Path(temp_dir) / "tasks.sqlite3")
+            controller = TaskController(
+                config=config,
+                view=view,  # type: ignore[arg-type]
+                store=store,
+                broker_provider=build_broker_provider(config),
+                logger=logger,
+            )
+            try:
+                published: list = []
+
+                def synchronous_scan(queue_key: str) -> None:
+                    source_path = store.get_folder_source_path(queue_key)
+                    store.insert_task_batch(
+                        queue_key,
+                        list(controller._scanner.iter_images(source_path)),
+                    )
+                    store.set_folder_scan_state(queue_key, "SCANNED")
+
+                controller._start_scan_worker = synchronous_scan  # type: ignore[method-assign]
+                controller._start_publish_worker = (  # type: ignore[method-assign]
+                    lambda messages, _exchange, _routing_key: published.extend(messages)
+                )
+                controller.on_add_folder_requested([str(folder)])
+
+                summaries = store.get_folder_summaries()
+                self.assertEqual(len(summaries), 2)
+                self.assertEqual([row.source_path for row in summaries], [str(folder), str(folder)])
+                self.assertEqual(
+                    [row.recipe_aliases for row in summaries],
+                    [("Recipe A",), ("Recipe B",)],
+                )
+                self.assertEqual([row.queue_priority for row in summaries], [1, 2])
+
+                controller.on_start_requested()
+
+                self.assertEqual(store.overall_stats()["total"], 4)
+                self.assertEqual(
+                    [message.RECIPE_PATH for message in published],
+                    ["recipes/a.json", "recipes/a.json", "recipes/b.json", "recipes/b.json"],
+                )
+            finally:
+                controller.shutdown()
+                store.close()
+
+    def test_recipe_change_between_folder_additions_keeps_each_snapshot(self) -> None:
+        config = AppConfig(
+            rabbitmq=RabbitMQConfig(host="127.0.0.1", port=5672, username="guest", password="guest"),
+            publish=PublishConfig(image_extensions=[".jpg"]),
+            ui=UiConfig(),
+            mock_mode=True,
+        )
+        view = DummyView()
+        store = TaskStore()
+        logger = logging.getLogger("controller_recipe_snapshot_test")
+        logger.handlers.clear()
+        logger.addHandler(logging.NullHandler())
+        controller = TaskController(
+            config=config,
+            view=view,  # type: ignore[arg-type]
+            store=store,
+            broker_provider=build_broker_provider(config),
+            logger=logger,
+        )
+
+        with TemporaryDirectory() as temp_dir:
+            folder_a = Path(temp_dir) / "folder_a"
+            folder_b = Path(temp_dir) / "folder_b"
+            folder_a.mkdir()
+            folder_b.mkdir()
+            (folder_a / "a.jpg").write_text("x", encoding="utf-8")
+            (folder_b / "b.jpg").write_text("x", encoding="utf-8")
+
+            view.recipe_selections = [("Recipe A", "recipes/a.json")]
+            controller.on_add_folder_requested([str(folder_a)])
+            view.recipe_selections = [("Recipe B", "recipes/b.json")]
+            controller.on_add_folder_requested([str(folder_b)])
+
+            grouped = dict(store.build_pending_messages_by_folder("RUN_RECIPE", "result.q", "recipes/b.json"))
+
+        self.assertEqual(grouped[str(folder_a)][0].RECIPE_PATH, "recipes/a.json")
+        self.assertEqual(grouped[str(folder_b)][0].RECIPE_PATH, "recipes/b.json")
+
+    def test_add_folder_requires_at_least_one_recipe(self) -> None:
+        config = AppConfig(
+            rabbitmq=RabbitMQConfig(host="127.0.0.1", port=5672, username="guest", password="guest"),
+            publish=PublishConfig(image_extensions=[".jpg"]),
+            ui=UiConfig(),
+            mock_mode=True,
+        )
+        view = DummyView()
+        view.recipe_selections = []
+        store = TaskStore()
+        logger = logging.getLogger("controller_empty_recipe_test")
+        logger.handlers.clear()
+        logger.addHandler(logging.NullHandler())
+        controller = TaskController(
+            config=config,
+            view=view,  # type: ignore[arg-type]
+            store=store,
+            broker_provider=build_broker_provider(config),
+            logger=logger,
+        )
+
+        controller.on_add_folder_requested(["folder_a"])
+
+        self.assertEqual(store.overall_stats()["total"], 0)
+        self.assertTrue(any("Recipe가 없습니다" in message for message in view.logs))
 
     def test_controller_uses_configured_folder_open_limits(self) -> None:
         config = AppConfig(
@@ -548,6 +1385,8 @@ class TaskControllerTest(unittest.TestCase):
             task = store.get_task(message.request_id)
             self.assertIsNotNone(task)
             assert task is not None
+            self.assertEqual(task.recipe_path, "recipe.json")
+            self.assertEqual(message.RECIPE_PATH, task.recipe_path)
             self.assertIsNotNone(task.expected_message)
 
     def test_delete_folders_requested_removes_pending_only(self) -> None:
@@ -919,7 +1758,7 @@ class TaskControllerTest(unittest.TestCase):
         self.assertEqual(started.get("queue_name"), "result.q")
         self.assertEqual(started.get("polling_interval"), 1)
         self.assertIn(published_request_ids[0], started.get("tracked_request_ids", set()))
-        self.assertTrue(any("sub_folder 등록 완료" in log for log in view.logs))
+        self.assertTrue(any("하위 폴더 등록 완료" in log for log in view.logs))
 
     def test_on_queue_metrics_updated_updates_view_with_fallback(self) -> None:
         config = AppConfig(
@@ -947,6 +1786,183 @@ class TaskControllerTest(unittest.TestCase):
 
         controller._on_queue_metrics_updated(-1, -1)
         self.assertEqual(view.queue_metrics, (None, None))
+
+    def test_user_stop_persists_pause_and_start_resumes_it(self) -> None:
+        config = AppConfig(
+            rabbitmq=RabbitMQConfig(host="127.0.0.1", port=5672, username="guest", password="guest"),
+            publish=PublishConfig(image_extensions=[".jpg"]),
+            ui=UiConfig(),
+            mock_mode=True,
+        )
+        view = DummyView()
+        logger = logging.getLogger("controller_user_pause_test")
+        logger.handlers.clear()
+        logger.addHandler(logging.NullHandler())
+        with TemporaryDirectory() as temp_dir:
+            store = SqliteTaskStore(Path(temp_dir) / "tasks.sqlite3")
+            store.register_folder_descriptors(["folder"], [("Recipe", "recipe.json")])
+            store.insert_task_batch("folder", ["a.jpg"])
+            store.set_folder_scan_state("folder", "SCANNED")
+            store.save_runtime_settings("RUN", "result.queue", 0, 1)
+            controller = TaskController(
+                config=config,
+                view=view,  # type: ignore[arg-type]
+                store=store,
+                broker_provider=build_broker_provider(config),
+                logger=logger,
+            )
+            try:
+                controller._active = True
+                controller.on_stop_requested()
+                self.assertTrue(store.is_paused_by_user())
+                self.assertFalse(store.should_auto_resume())
+                self.assertTrue(view.paused)
+
+                controller._start_lazy_session = lambda _settings=None: None  # type: ignore[method-assign]
+                controller.on_start_requested()
+                self.assertFalse(store.is_paused_by_user())
+                self.assertTrue(store.should_auto_resume())
+            finally:
+                controller.shutdown()
+                store.close()
+
+    def test_startup_keeps_user_paused_session_stopped_when_resume_is_declined(self) -> None:
+        config = AppConfig(
+            rabbitmq=RabbitMQConfig(host="127.0.0.1", port=5672, username="guest", password="guest"),
+            publish=PublishConfig(image_extensions=[".jpg"]),
+            ui=UiConfig(),
+            mock_mode=True,
+        )
+        view = DummyView()
+        view.resume_paused_accepted = False
+        logger = logging.getLogger("controller_startup_pause_prompt_test")
+        logger.handlers.clear()
+        logger.addHandler(logging.NullHandler())
+        with TemporaryDirectory() as temp_dir:
+            database = Path(temp_dir) / "tasks.sqlite3"
+            original = SqliteTaskStore(database)
+            original.register_folder_descriptors(["folder"], [("Recipe", "recipe.json")])
+            original.insert_task_batch("folder", ["a.jpg"])
+            original.save_runtime_settings("RUN", "result.queue", 0, 1)
+            original.pause_by_user()
+            original.close()
+
+            restored = SqliteTaskStore(database)
+            controller = TaskController(
+                config=config,
+                view=view,  # type: ignore[arg-type]
+                store=restored,
+                broker_provider=build_broker_provider(config),
+                logger=logger,
+            )
+            try:
+                self._app.processEvents()
+                self.assertEqual(view.paused_resume_counts, [1])
+                self.assertTrue(view.paused)
+                self.assertFalse(controller._active)
+                self.assertTrue(restored.is_paused_by_user())
+            finally:
+                controller.shutdown()
+                restored.close()
+
+    def test_preflight_cancel_stops_before_first_publish_and_persists_pause(self) -> None:
+        config = AppConfig(
+            rabbitmq=RabbitMQConfig(host="127.0.0.1", port=5672, username="guest", password="guest"),
+            publish=PublishConfig(
+                image_extensions=[".jpg"],
+                initial_open_folders=1,
+                max_active_open_folders=1,
+            ),
+            ui=UiConfig(),
+            mock_mode=True,
+        )
+        view = DummyView()
+        view.preflight_accepted = False
+        logger = logging.getLogger("controller_preflight_cancel_test")
+        logger.handlers.clear()
+        logger.addHandler(logging.NullHandler())
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            folder = root / "images"
+            folder.mkdir()
+            (folder / "1.jpg").write_text("x", encoding="utf-8")
+            store = SqliteTaskStore(root / "tasks.sqlite3")
+            controller = TaskController(
+                config=config,
+                view=view,  # type: ignore[arg-type]
+                store=store,
+                broker_provider=build_broker_provider(config),
+                logger=logger,
+            )
+            published: list = []
+
+            def synchronous_scan(folder_path: str) -> None:
+                store.insert_task_batch(folder_path, list(controller._scanner.iter_images(folder_path)))
+                store.set_folder_scan_state(folder_path, "SCANNED")
+
+            controller._start_scan_worker = synchronous_scan  # type: ignore[method-assign]
+            controller._start_publish_worker = lambda *args: published.append(args)  # type: ignore[method-assign]
+            try:
+                controller.on_add_folder_requested([str(folder)])
+                controller.on_start_requested()
+                self.assertEqual(published, [])
+                self.assertEqual(len(view.preflight_reports), 1)
+                self.assertEqual(view.preflight_reports[0]["message_count"], 1)
+                self.assertTrue(store.is_paused_by_user())
+            finally:
+                controller.shutdown()
+                store.close()
+
+    def test_paused_session_folder_priority_change_persists_without_publishing(self) -> None:
+        config = AppConfig(
+            rabbitmq=RabbitMQConfig(host="127.0.0.1", port=5672, username="guest", password="guest"),
+            publish=PublishConfig(image_extensions=[".jpg"]),
+            ui=UiConfig(),
+            mock_mode=True,
+        )
+        view = DummyView()
+        view.resume_paused_accepted = False
+        logger = logging.getLogger("controller_paused_priority_test")
+        logger.handlers.clear()
+        logger.addHandler(logging.NullHandler())
+        with TemporaryDirectory() as temp_dir:
+            database = Path(temp_dir) / "tasks.sqlite3"
+            store = SqliteTaskStore(database)
+            store.register_folder_descriptors(
+                ["first", "second", "third"], [("Recipe", "recipe.json")]
+            )
+            for folder in ("first", "second", "third"):
+                store.insert_task_batch(folder, [f"{folder}.jpg"])
+                store.set_folder_scan_state(folder, "SCANNED")
+            store.save_runtime_settings("RUN", "result.queue", 0, 1)
+            store.pause_by_user()
+            controller = TaskController(
+                config=config,
+                view=view,  # type: ignore[arg-type]
+                store=store,
+                broker_provider=build_broker_provider(config),
+                logger=logger,
+            )
+            try:
+                self._app.processEvents()
+                controller.on_move_folders_requested(["first"], "bottom")
+                self.assertTrue(store.is_paused_by_user())
+                self.assertFalse(controller._active)
+                self.assertEqual(store.get_folder_paths(), ["second", "third", "first"])
+                self.assertEqual(
+                    [summary.queue_priority for summary in store.get_folder_summaries()],
+                    [1, 2, 3],
+                )
+            finally:
+                controller.shutdown()
+                store.close()
+
+            restored = SqliteTaskStore(database)
+            try:
+                self.assertTrue(restored.is_paused_by_user())
+                self.assertEqual(restored.get_folder_paths(), ["second", "third", "first"])
+            finally:
+                restored.close()
 
     def test_start_requested_locks_runtime_options_and_stop_keeps_lock(self) -> None:
         config = AppConfig(

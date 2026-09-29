@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import unittest
 
 from models.task_models import ImageTask, TaskStatus
@@ -28,6 +29,8 @@ class ImageTableModelTest(unittest.TestCase):
                     request_id="req-1",
                     image_path=r"D:\\data\\images\\sample_01.jpg",
                     folder_path=r"D:\\data\\images",
+                    recipe_alias="Recipe A",
+                    recipe_path="recipes/a.json",
                     status=TaskStatus.PENDING,
                 )
             ]
@@ -35,12 +38,36 @@ class ImageTableModelTest(unittest.TestCase):
 
         mq_index = model.index(0, 0)
         image_index = model.index(0, 1)
-        status_index = model.index(0, 2)
+        recipe_index = model.index(0, 2)
+        status_index = model.index(0, 3)
 
         self.assertEqual(model.data(mq_index, Qt.DisplayRole), "보기")
         self.assertEqual(model.data(image_index, Qt.DisplayRole), "sample_01.jpg")
+        self.assertEqual(model.data(recipe_index, Qt.DisplayRole), "Recipe A")
         self.assertEqual(model.data(status_index, Qt.DisplayRole), "PENDING")
-        self.assertEqual(model.columnCount(), 7)
+        self.assertEqual(model.columnCount(), 8)
+
+    def test_append_tasks_adds_page_without_duplicate_request_ids(self) -> None:
+        model = ImageTableModel()
+        first = ImageTask(request_id="req-1", image_path="a.jpg", folder_path="folder")
+        second = ImageTask(request_id="req-2", image_path="b.jpg", folder_path="folder")
+        model.set_tasks([first])
+
+        model.append_tasks([first, second])
+
+        self.assertEqual(model.rowCount(), 2)
+        self.assertEqual(model.data(model.index(1, 1), Qt.DisplayRole), "b.jpg")
+
+    def test_task_times_are_displayed_in_seoul_to_one_decimal_place(self) -> None:
+        task = ImageTask(request_id="req-1", image_path="a.jpg", folder_path="folder")
+        task.sent_at = datetime(2026, 8, 13, 1, 2, 3, 456_789, tzinfo=timezone.utc)
+        model = ImageTableModel()
+        model.set_tasks([task])
+
+        self.assertEqual(
+            model.data(model.index(0, 4), Qt.DisplayRole),
+            "2026-08-13 10:02:03.4",
+        )
 
 
 if __name__ == "__main__":

@@ -13,14 +13,35 @@ from app.runtime_paths import (
     migrate_legacy_appdata_dir,
     resolve_app_icon_path,
     resolve_default_config_path,
+    resolve_folder_index_database_path,
     resolve_logs_dir,
+    resolve_task_database_path,
     resolve_stylesheet_path,
     resolve_ui_icon_path,
+    resolve_ui_settings_path,
 )
 
 
 class RuntimePathsTest(unittest.TestCase):
     """Validate AppData seeding and runtime resource lookup behavior."""
+
+    def test_folder_index_database_is_separate_from_task_state(self) -> None:
+        with TemporaryDirectory() as appdata_root:
+            with patch.dict(os.environ, {"APPDATA": appdata_root}, clear=False):
+                folder_index = resolve_folder_index_database_path()
+                task_state = resolve_task_database_path()
+
+            self.assertEqual(folder_index.name, "folder_index.sqlite3")
+            self.assertNotEqual(folder_index, task_state)
+
+    def test_ui_settings_path_is_persistent_and_separate_from_task_state(self) -> None:
+        with TemporaryDirectory() as appdata_root:
+            with patch.dict(os.environ, {"APPDATA": appdata_root}, clear=False):
+                ui_settings = resolve_ui_settings_path()
+                task_state = resolve_task_database_path()
+
+            self.assertEqual(ui_settings.name, "ui_state.ini")
+            self.assertNotEqual(ui_settings, task_state)
 
     def test_resolve_default_config_path_prefers_explicit_cli_path(self) -> None:
         with TemporaryDirectory() as temp_dir:
@@ -195,6 +216,28 @@ class RuntimePathsTest(unittest.TestCase):
             self.assertTrue((appdata_dir / ".seed_fingerprint").exists())
             self.assertTrue(list(appdata_dir.glob("app_config.yaml.bak.*")))
 
+    def test_ensure_user_config_seeded_refreshes_when_app_version_changes(self) -> None:
+        with TemporaryDirectory() as runtime_dir, TemporaryDirectory() as appdata_root:
+            base = Path(runtime_dir)
+            config_dir = base / "config"
+            config_dir.mkdir(parents=True, exist_ok=True)
+            (config_dir / "app_config.yaml").write_text("seed: true\n", encoding="utf-8")
+
+            with (
+                patch.dict(os.environ, {"APPDATA": appdata_root}, clear=False),
+                patch("app.runtime_paths.resolve_runtime_base_dir", return_value=base),
+                patch("app.runtime_paths.resolve_install_dir", return_value=base),
+                patch("app.runtime_paths._development_root", return_value=base),
+            ):
+                resolved = ensure_user_config_seeded()
+                resolved.user_config_path.write_text("user_changed: true\n", encoding="utf-8")
+
+                with patch("app.runtime_paths.APP_VERSION", "99.0.0"):
+                    ensure_user_config_seeded()
+
+            self.assertEqual(resolved.user_config_path.read_text(encoding="utf-8"), "seed: true\n")
+            self.assertTrue(list(resolved.appdata_dir.glob("app_config.yaml.bak.*")))
+
     def test_migrate_legacy_appdata_dir_copies_old_folder_when_new_one_is_empty(self) -> None:
         with TemporaryDirectory() as appdata_root:
             legacy_dir = Path(appdata_root) / "TaskWorkerRequester"
@@ -313,6 +356,16 @@ class RuntimePathsTest(unittest.TestCase):
                 resolved = resolve_logs_dir()
 
             self.assertEqual(resolved, Path(appdata_root) / "IPDK_plus" / "logs")
+
+    def test_resolve_task_database_path_points_to_runtime_appdata(self) -> None:
+        with TemporaryDirectory() as appdata_root:
+            with patch.dict(os.environ, {"APPDATA": appdata_root}, clear=False):
+                resolved = resolve_task_database_path()
+
+            self.assertEqual(
+                resolved,
+                Path(appdata_root) / "IPDK_plus" / "runtime" / "task_state.sqlite3",
+            )
 
 
 if __name__ == "__main__":

@@ -12,14 +12,18 @@ from app.runtime_paths import (
     RuntimePathError,
     resolve_app_icon_path,
     resolve_default_config_path,
+    resolve_folder_index_database_path,
     resolve_logs_dir,
     resolve_stylesheet_path,
+    resolve_task_database_path,
+    resolve_ui_settings_path,
+    resolve_worker_nodes_config_path,
 )
 from app.single_instance import SingleInstanceGuard, ensure_single_instance
 from app.version import APP_VERSION
 from config.config_loader import ConfigError, ConfigLoader
 from services.broker import build_broker_provider
-from state.task_store import TaskStore
+from state.sqlite_task_store import SqliteTaskStore
 from ui.main_window import MainWindow
 from utils.logging_setup import setup_logging
 
@@ -43,6 +47,7 @@ def run_app(config_path: str | None = None) -> int:
     try:
         resolved_config_path = resolve_default_config_path(config_path)
         app_config = ConfigLoader.load(resolved_config_path)
+        worker_nodes_config_path = resolve_worker_nodes_config_path(resolved_config_path)
     except (ConfigError, RuntimePathError) as exc:
         message = f"설정 파일을 불러오지 못했습니다.\n\n{exc}"
         print(f"[ConfigError] {exc}")
@@ -64,9 +69,15 @@ def run_app(config_path: str | None = None) -> int:
     else:
         logger.warning("스타일 파일을 찾지 못했습니다.")
 
-    store = TaskStore()
+    store = SqliteTaskStore(resolve_task_database_path())
     broker_provider = build_broker_provider(app_config)
-    window = MainWindow(config=app_config)
+    window = MainWindow(
+        config=app_config,
+        config_path=resolved_config_path,
+        folder_index_database_path=resolve_folder_index_database_path(),
+        ui_settings_path=resolve_ui_settings_path(),
+        worker_nodes_config_path=worker_nodes_config_path,
+    )
     controller = TaskController(
         config=app_config,
         view=window,
@@ -76,12 +87,15 @@ def run_app(config_path: str | None = None) -> int:
     )
 
     app.aboutToQuit.connect(controller.shutdown)
+    app.aboutToQuit.connect(window.shutdown_folder_navigation)
+    app.aboutToQuit.connect(store.close)
     app.aboutToQuit.connect(guard.release)
 
     if icon is not None:
         window.setWindowIcon(icon)
 
     window.show()
+    window.check_for_updates(manual=False)
     exit_code = app.exec()
     _release_guard(guard)
     return exit_code

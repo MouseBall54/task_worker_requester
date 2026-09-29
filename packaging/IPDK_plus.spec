@@ -8,15 +8,16 @@ from pathlib import Path
 
 PROJECT_ROOT = Path.cwd().resolve()
 ICON_PATH = PROJECT_ROOT / "assets" / "IPDK_plus.ico"
+UI_ICON_DIR = PROJECT_ROOT / "assets" / "icons"
 
 datas = [
     (str(PROJECT_ROOT / "ui" / "styles.qss"), "ui"),
     (str(PROJECT_ROOT / "config" / "app_config.yaml"), "config"),
     (str(PROJECT_ROOT / "config" / "recipe_config.yaml"), "config"),
+    (str(PROJECT_ROOT / "config" / "worker_nodes.yaml"), "config"),
     (str(PROJECT_ROOT / "assets" / "IPDK_plus.png"), "assets"),
     (str(PROJECT_ROOT / "assets" / "IPDK_plus.ico"), "assets"),
-    (str(PROJECT_ROOT / "assets" / "icons" / "status_sidebar_collapse.svg"), "assets/icons"),
-    (str(PROJECT_ROOT / "assets" / "icons" / "status_sidebar_expand.svg"), "assets/icons"),
+    *((str(icon_path), "assets/icons") for icon_path in sorted(UI_ICON_DIR.glob("*.svg"))),
 ]
 
 excludes = [

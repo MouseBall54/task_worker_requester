@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import datetime
 import logging
 from pathlib import Path
+import time
 
-from PySide6.QtCore import QObject, QThread, Slot
+from PySide6.QtCore import QObject, QThread, QTimer, Slot
 
 from config.models import AppConfig
 from models.task_models import TaskMessage, TaskStatus
@@ -16,10 +16,12 @@ from services.broker.result_queue import resolve_local_ipv4, resolve_result_queu
 from services.broker.routing import resolve_publish_route
 from services.folder_scanner import FolderScanner
 from services.result_parser import parse_task_result
-from services.workers import PollingWorker, PublishWorker
+from services.workers import FolderDiscoveryWorker, PollingWorker, PublishWorker, ScanWorker
 from services.workers.queue_metrics_worker import QueueMetricsWorker
 from state.task_store import TaskStore
+from state.sqlite_task_store import SqliteTaskStore
 from ui.main_window import MainWindow
+from utils.time_utils import format_seoul_iso, now_seoul
 
 
 class TaskController(QObject):
@@ -29,7 +31,7 @@ class TaskController(QObject):
         self,
         config: AppConfig,
         view: MainWindow,
-        store: TaskStore,
+        store: TaskStore | SqliteTaskStore,
         broker_provider: Callable[[], AbstractBrokerClient],
         logger: logging.Logger,
     ) -> None:
@@ -40,6 +42,7 @@ class TaskController(QObject):
         self._broker_provider = broker_provider
         self._logger = logger
         self._scanner = FolderScanner(config.publish.image_extensions)
+        self._lazy_mode = bool(getattr(store, "supports_lazy_loading", False))
 
         self._selected_folder: str | None = None
 
@@ -49,6 +52,12 @@ class TaskController(QObject):
         self._poll_worker: PollingWorker | None = None
         self._queue_metrics_thread: QThread | None = None
         self._queue_metrics_worker: QueueMetricsWorker | None = None
+        self._scan_threads: dict[str, QThread] = {}
+        self._scan_workers: dict[str, ScanWorker] = {}
+        self._inventory_preparing = False
+        self._discovery_thread: QThread | None = None
+        self._discovery_worker: FolderDiscoveryWorker | None = None
+        self._start_after_discovery = False
 
         self._publish_finished = True
         self._active = False
@@ -74,14 +83,41 @@ class TaskController(QObject):
         self._scheduled_request_ids: set[str] = set()
         self._planned_publish_total = 0
         self._published_count = 0
+        self._last_publish_progress_log_at = 0.0
+        self._last_publish_progress_count = 0
+        self._result_applied_count = 0
+        self._last_result_progress_log_at = 0.0
+        self._last_result_progress_count = 0
         self._last_dispatch_skip_reason: str | None = None
+        self._last_queue_message_count: int | None = None
+        self._last_worker_count: int | None = None
+        self._lazy_action = ""
+        self._lazy_priority = 0
+        self._dirty_folder_paths: set[str] = set()
+        self._dirty_task_ids: set[str] = set()
+        self._latest_overall_stats: dict[str, float | int | None] | None = None
+        self._duplicate_folder_paths: dict[str, None] = {}
+        self._preflight_confirmed = False
+        self._ui_refresh_timer = QTimer(self)
+        self._ui_refresh_timer.setInterval(max(100, int(config.publish.ui_refresh_interval_ms)))
+        self._ui_refresh_timer.timeout.connect(self._flush_ui_updates)
+        self._ui_refresh_timer.start()
 
         self._wire_signals()
+        if self._lazy_mode:
+            self._view.set_folder_rows(self._store.get_folder_summaries())
+            self._view.set_overall_stats(self._store.overall_stats())
         self._view.set_running_state(False)
         self._sync_runtime_options_enabled()
         self._check_connection_once()
         if not getattr(self._view, "_disable_queue_metrics_monitor", False):
             self._start_queue_metrics_monitor()
+        if self._lazy_mode and self._store.is_paused_by_user():  # type: ignore[attr-defined]
+            self._view.set_paused_state(True)
+            self._set_runtime_options_locked(True)
+            QTimer.singleShot(0, self._offer_paused_session_resume)
+        elif self._lazy_mode and self._store.should_auto_resume():  # type: ignore[attr-defined]
+            QTimer.singleShot(0, self._resume_persisted_lazy_session)
 
     def _wire_signals(self) -> None:
         self._view.add_folder_requested.connect(self.on_add_folder_requested)
@@ -93,13 +129,29 @@ class TaskController(QObject):
         self._view.reset_requested.connect(self.on_reset_requested)
         self._view.folder_row_selected.connect(self.on_folder_row_selected)
         self._view.mq_preview_requested.connect(self.on_mq_preview_requested)
+        page_signal = getattr(self._view, "image_page_requested", None)
+        if page_signal is not None:
+            page_signal.connect(self._on_image_page_requested)
+        move_signal = getattr(self._view, "move_folders_requested", None)
+        if move_signal is not None:
+            move_signal.connect(self.on_move_folders_requested)
+        hold_signal = getattr(self._view, "hold_folders_requested", None)
+        if hold_signal is not None:
+            hold_signal.connect(self.on_hold_folders_requested)
+        history_signal = getattr(self._view, "history_requested", None)
+        if history_signal is not None:
+            history_signal.connect(self.on_history_requested)
+        history_export_signal = getattr(self._view, "history_export_requested", None)
+        if history_export_signal is not None:
+            history_export_signal.connect(self.on_history_export_requested)
 
         self._store.folder_group_added.connect(self._on_folder_group_changed)
         self._store.folder_group_updated.connect(self._on_folder_group_changed)
         self._store.folder_group_removed.connect(self._on_folder_group_removed)
+        self._store.duplicate_folders_detected.connect(self._on_duplicate_folders_detected)
         self._store.task_updated.connect(self._on_task_updated)
         self._store.store_reset.connect(self._on_store_reset)
-        self._store.overall_updated.connect(self._view.set_overall_stats)
+        self._store.overall_updated.connect(self._on_overall_updated)
 
     @Slot(list)
     def on_add_folder_requested(self, folder_paths: list[str]) -> None:
@@ -150,7 +202,7 @@ class TaskController(QObject):
         if blocked_folders:
             self._log(
                 "삭제 차단 - 전송 중이거나 처리된 폴더는 삭제할 수 없습니다: "
-                + ", ".join(blocked_folders)
+                + ", ".join(self._folder_queue_label(path) for path in blocked_folders)
             )
         if not removed_folders and not blocked_folders:
             self._log("선택 삭제 대상이 없습니다.")
@@ -167,7 +219,28 @@ class TaskController(QObject):
         """Load selected folder's image details into bottom table."""
 
         self._selected_folder = folder_path
-        self._view.set_image_tasks(self._store.get_image_tasks(folder_path))
+        tasks = self._store.get_image_tasks(folder_path)
+        if self._lazy_mode and hasattr(self._view, "set_image_task_page"):
+            summary = self._store.get_folder_summary(folder_path)
+            self._view.set_image_task_page(
+                tasks,
+                total_count=summary.total if summary is not None else len(tasks),
+                append=False,
+            )
+        else:
+            self._view.set_image_tasks(tasks)
+
+    @Slot(int)
+    def _on_image_page_requested(self, offset: int) -> None:
+        if not self._lazy_mode or not self._selected_folder:
+            return
+        tasks = self._store.get_image_tasks(self._selected_folder, offset=offset, limit=500)
+        summary = self._store.get_folder_summary(self._selected_folder)
+        self._view.set_image_task_page(
+            tasks,
+            total_count=summary.total if summary is not None else offset + len(tasks),
+            append=True,
+        )
 
     @Slot()
     def on_start_requested(self) -> None:
@@ -175,6 +248,15 @@ class TaskController(QObject):
 
         if self._active:
             self._log("이미 작업이 실행 중입니다.")
+            return
+        if self._lazy_mode:
+            if self._store.is_paused_by_user():  # type: ignore[attr-defined]
+                self._store.resume_by_user()  # type: ignore[attr-defined]
+                self._view.set_paused_state(False)
+                self._log("사용자 일시정지 작업을 재개합니다.")
+                self._start_lazy_session(self._store.get_runtime_settings())  # type: ignore[attr-defined]
+                return
+            self._start_lazy_session()
             return
 
         action, recipe_path, polling_interval, priority = self._view.current_runtime_settings()
@@ -283,9 +365,17 @@ class TaskController(QObject):
 
     @Slot()
     def on_stop_requested(self) -> None:
-        """Stop publish/poll workers gracefully."""
+        """Persist an explicit user pause after stopping active workers."""
 
-        self._stop_workers("사용자 중지 요청")
+        if not self._active:
+            self._log("현재 실행 중인 작업이 없습니다.")
+            return
+        self._stop_workers("사용자 일시정지 요청")
+        if self._lazy_mode and self._store.has_resumable_work():  # type: ignore[attr-defined]
+            self._store.pause_by_user()  # type: ignore[attr-defined]
+            self._view.set_paused_state(True)
+            self._set_runtime_options_locked(True)
+            self._log("사용자 일시정지 상태를 저장했습니다. 앱을 다시 실행해도 자동 전송하지 않습니다.")
 
     @Slot()
     def on_reset_requested(self) -> None:
@@ -304,10 +394,69 @@ class TaskController(QObject):
             self._log(f"워커 중지 중 오류가 발생했지만 초기화를 계속 진행합니다: {exc}")
 
         self._store.reset()
+        if self._lazy_mode:
+            self._store.prune_history(self._config.publish.history_max_sessions)  # type: ignore[attr-defined]
         self._active_result_queue = None
         self._view.set_active_result_queue(None)
         self._set_runtime_options_locked(False)
         self._log("작업 상태를 초기화했습니다.")
+
+    @Slot(list, str)
+    def on_move_folders_requested(self, folder_paths: list[str], operation: str) -> None:
+        if not self._lazy_mode:
+            return
+        running_paths = set(self._active_folder_paths) | set(self._scan_threads)
+        allowed = [path for path in folder_paths if path not in running_paths]
+        blocked = [path for path in folder_paths if path in running_paths]
+        moved, store_blocked = self._store.reorder_folders(allowed, operation)  # type: ignore[attr-defined]
+        blocked.extend(store_blocked)
+        if moved:
+            self._view.set_folder_rows(self._store.get_folder_summaries())
+            labels = {"top": "맨 위", "up": "위", "down": "아래", "bottom": "맨 아래"}
+            self._log(f"대기 폴더 {len(moved)}개를 {labels.get(operation, operation)}로 이동했습니다.")
+        if blocked:
+            self._log(
+                "폴더 이동 차단 - 스캔·전송·처리가 시작된 폴더입니다: "
+                + ", ".join(self._folder_queue_label(path) for path in blocked)
+            )
+
+    @Slot(list, bool)
+    def on_hold_folders_requested(self, folder_paths: list[str], held: bool) -> None:
+        if not self._lazy_mode:
+            return
+        running_paths = set(self._active_folder_paths) | set(self._scan_threads)
+        allowed = [path for path in folder_paths if path not in running_paths]
+        blocked = [path for path in folder_paths if path in running_paths]
+        changed, store_blocked = self._store.set_folders_held(allowed, held)  # type: ignore[attr-defined]
+        blocked.extend(store_blocked)
+        if changed:
+            self._view.set_folder_rows(self._store.get_folder_summaries())
+            self._log(f"대기 폴더 {len(changed)}개를 {'보류' if held else '보류 해제'}했습니다.")
+            if self._active and not held:
+                self._maybe_dispatch_lazy()
+        if blocked:
+            self._log(
+                "폴더 보류 변경 차단 - 스캔·전송·처리가 시작된 폴더입니다: "
+                + ", ".join(self._folder_queue_label(path) for path in blocked)
+            )
+
+    @Slot()
+    def on_history_requested(self) -> None:
+        if not self._lazy_mode:
+            return
+        self._view.show_run_history(self._store.list_run_history())  # type: ignore[attr-defined]
+
+    @Slot(str, str)
+    def on_history_export_requested(self, session_id: str, destination: str) -> None:
+        if not self._lazy_mode:
+            return
+        try:
+            count = self._store.export_run_history_csv(session_id, destination)  # type: ignore[attr-defined]
+        except OSError as exc:
+            self._log(f"실행 이력 CSV 저장 실패: {exc}")
+            return
+        self._view.show_history_export_result(destination, count)
+        self._log(f"실행 이력 CSV 저장 완료 - {destination}: {count}건")
 
     @Slot(str)
     def on_mq_preview_requested(self, request_id: str) -> None:
@@ -332,6 +481,7 @@ class TaskController(QObject):
     def shutdown(self) -> None:
         """Application shutdown hook to avoid orphan threads."""
 
+        self._ui_refresh_timer.stop()
         self._stop_workers("프로그램 종료로 워커를 중지합니다.")
         self._stop_queue_metrics_monitor()
 
@@ -364,6 +514,7 @@ class TaskController(QObject):
 
         self._publish_worker.finished.connect(self._publish_thread.quit)
         self._publish_worker.finished.connect(self._publish_worker.deleteLater)
+        self._publish_thread.finished.connect(self._on_publish_thread_finished)
         self._publish_thread.finished.connect(self._publish_thread.deleteLater)
         self._publish_thread.start()
 
@@ -436,7 +587,9 @@ class TaskController(QObject):
             self._start_polling_worker(
                 queue_name=queue_name,
                 polling_interval=self._pending_polling_interval,
-                tracked_request_ids=self._store.get_known_request_ids(),
+                tracked_request_ids=(
+                    None if self._lazy_mode else self._store.get_known_request_ids()
+                ),
             )
         self._active_result_queue = queue_name
         self._view.set_active_result_queue(queue_name)
@@ -458,8 +611,23 @@ class TaskController(QObject):
         _ = index
         _ = total
         self._published_count += 1
+        if self._lazy_mode and self._last_queue_message_count is not None:
+            self._last_queue_message_count += 1
         publish_total = self._planned_publish_total if self._planned_publish_total else self._published_count
-        self._log(f"전송 완료 {self._published_count}/{publish_total} - {request_id}")
+        now = time.monotonic()
+        should_log_progress = (
+            self._published_count == publish_total
+            or self._published_count - self._last_publish_progress_count >= 100
+            or now - self._last_publish_progress_log_at >= 1.0
+        )
+        if should_log_progress:
+            recent_count = self._published_count - self._last_publish_progress_count
+            self._log(
+                f"전송 진행 {self._published_count}/{publish_total} "
+                f"· 최근 구간 {recent_count}건"
+            )
+            self._last_publish_progress_count = self._published_count
+            self._last_publish_progress_log_at = now
 
     @Slot(str, str)
     def _on_message_failed(self, request_id: str, error: str) -> None:
@@ -498,7 +666,7 @@ class TaskController(QObject):
                 "message_id": str(envelope.message_id or ""),
                 "correlation_id": str(envelope.correlation_id or ""),
                 "matched_by": matched_by,
-                "received_at": datetime.now().astimezone().isoformat(),
+                "received_at": format_seoul_iso(),
             },
         )
 
@@ -506,8 +674,24 @@ class TaskController(QObject):
         if not changed:
             return
 
-        status_label = "성공" if parsed.is_success else "실패"
-        self._log(f"결과 반영 - {parsed.request_id}: {status_label}")
+        self._result_applied_count += 1
+        if parsed.is_success:
+            now = time.monotonic()
+            if (
+                self._result_applied_count - self._last_result_progress_count >= 100
+                or now - self._last_result_progress_log_at >= 1.0
+                or self._store.all_tasks_terminal()
+            ):
+                recent_count = self._result_applied_count - self._last_result_progress_count
+                self._log(
+                    f"결과 반영 {self._result_applied_count}건 · 최근 구간 {recent_count}건"
+                )
+                self._last_result_progress_count = self._result_applied_count
+                self._last_result_progress_log_at = now
+        else:
+            self._log(f"결과 반영 - {parsed.request_id}: 실패")
+        if self._lazy_mode:
+            self._maybe_dispatch_lazy()
 
     @Slot(int)
     def _on_poll_cycle(self, received_count: int) -> None:
@@ -517,7 +701,10 @@ class TaskController(QObject):
         if running_count:
             self._log(f"진행 중 상태 반영 - {running_count}건")
 
-        self._maybe_dispatch_next_folder_batch()
+        if self._lazy_mode:
+            self._maybe_dispatch_lazy()
+        else:
+            self._maybe_dispatch_next_folder_batch()
 
         timed_out_ids = self._store.mark_timeouts(self._active_timeout_seconds)
         for request_id in timed_out_ids:
@@ -536,8 +723,36 @@ class TaskController(QObject):
         self._publish_finished = True
         self._log("전송 워커 종료")
 
+        if self._lazy_mode:
+            return
+
         if self._store.all_tasks_terminal():
             self._stop_polling_only("전송 종료 후 완료 상태 확인됨")
+
+    @Slot()
+    def _on_publish_thread_finished(self) -> None:
+        """Release a bounded chunk left unpublished and continue after thread cleanup."""
+
+        finished_thread = self.sender()
+        if finished_thread is not None and finished_thread is not self._publish_thread:
+            return
+        self._publish_thread = None
+        self._publish_worker = None
+        if not self._lazy_mode:
+            return
+        released = self._store.release_claimed()  # type: ignore[attr-defined]
+        if released:
+            retry_delay_ms = max(
+                250,
+                int(float(self._config.publish.publish_retry_backoff_seconds) * 1000),
+            )
+            self._log(
+                f"미발행 작업 {released}건을 전송 대기로 복구했습니다. "
+                f"{retry_delay_ms / 1000:.1f}초 후 자동 재시도합니다."
+            )
+            QTimer.singleShot(retry_delay_ms, self._maybe_dispatch_lazy)
+            return
+        self._maybe_dispatch_lazy()
 
     @Slot()
     def _on_poll_finished(self) -> None:
@@ -548,6 +763,9 @@ class TaskController(QObject):
             self._active = False
             self._view.set_running_state(False)
             if self._store.all_tasks_terminal():
+                if self._lazy_mode:
+                    self._store.complete_session()  # type: ignore[attr-defined]
+                    self._store.prune_history(self._config.publish.history_max_sessions)  # type: ignore[attr-defined]
                 self._set_runtime_options_locked(False)
 
     @Slot(int, int)
@@ -555,9 +773,17 @@ class TaskController(QObject):
         """Reflect request-queue metrics in connection area."""
 
         if worker_count < 0 or message_count < 0:
+            self._last_worker_count = None
+            self._last_queue_message_count = None
             self._view.set_queue_metrics(None, None)
+            if self._lazy_mode:
+                self._maybe_dispatch_lazy()
             return
+        self._last_worker_count = worker_count
+        self._last_queue_message_count = message_count
         self._view.set_queue_metrics(worker_count, message_count)
+        if self._lazy_mode:
+            self._maybe_dispatch_lazy()
 
     @Slot()
     def _on_queue_metrics_finished(self) -> None:
@@ -568,10 +794,7 @@ class TaskController(QObject):
 
     @Slot(str)
     def _on_folder_group_changed(self, folder_path: str) -> None:
-        summary = self._store.get_folder_summary(folder_path)
-        if summary is None:
-            return
-        self._view.upsert_folder_row(summary)
+        self._dirty_folder_paths.add(folder_path)
 
     @Slot(str)
     def _on_folder_group_removed(self, _folder_path: str) -> None:
@@ -579,16 +802,48 @@ class TaskController(QObject):
 
         self._view.set_folder_rows(self._store.get_folder_summaries())
 
+    @Slot(list)
+    def _on_duplicate_folders_detected(self, folder_paths: list[str]) -> None:
+        """Accumulate duplicate paths so one user action produces one notice."""
+
+        for folder_path in folder_paths:
+            normalized = str(folder_path or "").strip()
+            if normalized:
+                self._duplicate_folder_paths.setdefault(normalized, None)
+
     @Slot(str)
     def _on_task_updated(self, request_id: str) -> None:
-        task = self._store.get_task(request_id)
-        if not task:
-            return
-        if self._selected_folder and task.folder_path == self._selected_folder:
-            self._view.update_image_task(task)
+        self._dirty_task_ids.add(request_id)
+
+    @Slot(dict)
+    def _on_overall_updated(self, stats: dict[str, float | int | None]) -> None:
+        self._latest_overall_stats = dict(stats)
+
+    @Slot()
+    def _flush_ui_updates(self) -> None:
+        self._reconcile_finished_scan_threads()
+        folder_paths = self._dirty_folder_paths
+        self._dirty_folder_paths = set()
+        for folder_path in folder_paths:
+            summary = self._store.get_folder_summary(folder_path)
+            if summary is not None:
+                self._view.upsert_folder_row(summary)
+
+        task_ids = self._dirty_task_ids
+        self._dirty_task_ids = set()
+        if self._selected_folder:
+            for request_id in task_ids:
+                task = self._store.get_task(request_id)
+                if task is not None and task.folder_path == self._selected_folder:
+                    self._view.update_image_task(task)
+
+        if self._latest_overall_stats is not None:
+            self._view.set_overall_stats(self._latest_overall_stats)
+            self._latest_overall_stats = None
 
     @Slot()
     def _on_store_reset(self) -> None:
+        self._duplicate_folder_paths.clear()
         self._view.clear_progress_views()
 
     def _stop_polling_only(self, reason: str) -> None:
@@ -597,6 +852,16 @@ class TaskController(QObject):
             self._log(reason)
 
     def _stop_workers(self, reason: str) -> None:
+        self._safe_stop_worker(self._discovery_worker)
+        self._safe_quit_thread(self._discovery_thread)
+        self._discovery_worker = None
+        self._discovery_thread = None
+        for worker in list(self._scan_workers.values()):
+            self._safe_stop_worker(worker)
+        for thread in list(self._scan_threads.values()):
+            self._safe_quit_thread(thread)
+        self._scan_workers.clear()
+        self._scan_threads.clear()
         self._safe_stop_worker(self._publish_worker)
         self._safe_stop_worker(self._poll_worker)
 
@@ -609,6 +874,8 @@ class TaskController(QObject):
         self._publish_thread = None
         self._poll_thread = None
         self._reset_publish_schedule_state()
+        if self._lazy_mode:
+            self._store.release_claimed()  # type: ignore[attr-defined]
 
         self._active = False
         self._publish_finished = True
@@ -720,10 +987,28 @@ class TaskController(QObject):
             except Exception:  # pragma: no cover
                 pass
 
+    def _check_broker_for_preflight(self) -> tuple[bool, int | None, int | None]:
+        """Verify broker connectivity and the configured request queue once."""
+
+        broker = self._broker_provider()
+        try:
+            broker.connect()
+            stats = broker.get_queue_stats(self._config.rabbitmq.request_queue)
+            return True, stats.consumer_count, stats.message_count
+        except Exception as exc:  # pylint: disable=broad-except
+            self._view.set_connection_status(False, "사전 점검 연결 실패")
+            self._log(f"사전 점검 RabbitMQ 연결 실패: {exc}")
+            return False, None, None
+        finally:
+            try:
+                broker.close()
+            except Exception:  # pragma: no cover
+                pass
+
     def _log(self, message: str) -> None:
         """Write timestamped logs to UI and logger."""
 
-        timestamped = f"[{datetime.now().strftime('%H:%M:%S')}] {message}"
+        timestamped = f"[{now_seoul().strftime('%H:%M:%S.%f')[:-5]}] {message}"
         self._view.append_log(timestamped)
         self._logger.info(message)
 
@@ -746,6 +1031,19 @@ class TaskController(QObject):
             self._log("선택된 폴더가 없습니다.")
             return
 
+        recipe_selections = self._current_recipe_selections()
+        if not recipe_selections:
+            self._log("선택된 Recipe가 없습니다. Recipe를 하나 이상 선택한 뒤 폴더를 추가하세요.")
+            return
+
+        if self._lazy_mode:
+            self._register_lazy_folders(
+                normalized_paths,
+                recipe_selections,
+                include_subfolders=include_subfolders,
+            )
+            return
+
         folder_map = self._scan_selected_folder_map(
             folder_paths=normalized_paths,
             include_subfolders=include_subfolders,
@@ -759,12 +1057,16 @@ class TaskController(QObject):
                 self._log(f"선택한 {len(normalized_paths)}개 폴더에서 이미지를 찾지 못했습니다.")
             return
 
-        added_folders, added_images = self._store.register_folder_map(folder_map)
-        mode_label = "sub_folder" if include_subfolders else "폴더"
+        added_folders, added_images = self._store.register_folder_map(
+            folder_map,
+            recipe_selections=recipe_selections,
+        )
+        mode_label = "하위 폴더" if include_subfolders else "폴더"
         self._log(
             f"{mode_label} 등록 완료 - 스캔 대상 {len(normalized_paths)}개, "
-            f"신규 폴더 {added_folders}개, 신규 이미지 {added_images}개"
+            f"Recipe {len(recipe_selections)}개, 신규 폴더 {added_folders}개, 신규 작업 {added_images}개"
         )
+        self._show_duplicate_folder_notice()
 
         if not self._active or added_images <= 0:
             return
@@ -813,6 +1115,594 @@ class TaskController(QObject):
             f"{len(self._folder_message_batches) - self._next_folder_batch_index})"
         )
         self._maybe_dispatch_next_folder_batch()
+
+    def _register_lazy_folders(
+        self,
+        folder_paths: list[str],
+        recipe_selections: list[tuple[str, str]],
+        include_subfolders: bool,
+    ) -> None:
+        """Register folder descriptors only; image enumeration happens when opened."""
+
+        if include_subfolders:
+            self._start_folder_discovery(folder_paths, recipe_selections)
+            return
+
+        descriptor_paths: list[str] = []
+        seen: set[str] = set()
+        for folder_path in folder_paths:
+            candidates = [folder_path] if Path(folder_path).is_dir() else []
+            for candidate in candidates:
+                normalized = str(Path(candidate))
+                if normalized in seen:
+                    continue
+                seen.add(normalized)
+                descriptor_paths.append(normalized)
+
+        if not descriptor_paths:
+            self._log("등록 가능한 이미지 폴더를 찾지 못했습니다.")
+            return
+
+        added = self._store.register_folder_descriptors(  # type: ignore[attr-defined]
+            descriptor_paths,
+            recipe_selections,
+        )
+        self._log(
+            f"폴더 대기열 등록 완료 - 대기열 {added}개, "
+            f"Recipe {len(recipe_selections)}개 (이미지는 활성 시점에 분할 스캔)"
+        )
+        self._show_duplicate_folder_notice()
+        if self._active and added:
+            self._inventory_preparing = True
+            self._continue_lazy_inventory()
+
+    def _start_folder_discovery(
+        self,
+        root_paths: list[str],
+        recipe_selections: list[tuple[str, str]],
+    ) -> None:
+        if self._discovery_thread is not None:
+            try:
+                if self._discovery_thread.isRunning():
+                    self._log("하위 폴더 탐색이 이미 진행 중입니다.")
+                    return
+            except RuntimeError:
+                self._discovery_thread = None
+                self._discovery_worker = None
+
+        thread = QThread(self)
+        worker = FolderDiscoveryWorker(
+            scanner=self._scanner,
+            root_paths=root_paths,
+            mode=self._config.publish.scan_mode,
+            recipe_selections=recipe_selections,
+            register_batch=self._store.register_folder_descriptors,  # type: ignore[attr-defined]
+            batch_size=100,
+        )
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.batch_registered.connect(self._on_discovery_batch_registered)
+        worker.discovery_completed.connect(self._on_discovery_completed)
+        worker.discovery_failed.connect(self._on_discovery_failed)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._on_discovery_thread_finished)
+        self._discovery_thread = thread
+        self._discovery_worker = worker
+        thread.start()
+        self._log("하위 이미지 폴더 탐색을 백그라운드에서 시작했습니다.")
+
+    @Slot(int, int)
+    def _on_discovery_batch_registered(self, added: int, total_added: int) -> None:
+        if self._active and added:
+            self._inventory_preparing = True
+            self._continue_lazy_inventory()
+        if total_added and total_added % 500 == 0:
+            self._log(f"하위 폴더 탐색 진행 - {total_added}개 등록")
+
+    @Slot(int)
+    def _on_discovery_completed(self, total_added: int) -> None:
+        self._log(f"하위 폴더 탐색 완료 - 신규 대기열 {total_added}개")
+        self._show_duplicate_folder_notice()
+        if self._start_after_discovery:
+            self._start_after_discovery = False
+            self._start_lazy_session()
+            return
+        if self._active:
+            self._inventory_preparing = True
+            self._continue_lazy_inventory()
+
+    @Slot(str)
+    def _on_discovery_failed(self, error: str) -> None:
+        self._log(f"하위 폴더 탐색 실패: {error}")
+        self._show_duplicate_folder_notice()
+
+    def _show_duplicate_folder_notice(self) -> None:
+        """Show accumulated duplicates with their current folder-table location."""
+
+        if not self._duplicate_folder_paths:
+            return
+
+        rows: list[tuple[str, str]] = []
+        for folder_path in self._duplicate_folder_paths:
+            summary = self._store.get_folder_summary(folder_path)
+            location = (
+                "완료된 폴더"
+                if summary is not None and summary.status.is_done
+                else "진행중/대기 폴더"
+            )
+            if summary is None:
+                display_name = folder_path
+            else:
+                source_path = summary.source_path or summary.folder_path
+                recipe_label = ", ".join(summary.recipe_aliases)
+                display_name = (
+                    f"{source_path} [{recipe_label}]" if recipe_label else source_path
+                )
+            rows.append((display_name, location))
+
+        self._duplicate_folder_paths.clear()
+        self._log(f"중복 폴더+Recipe {len(rows)}개는 이미 등록되어 추가하지 않았습니다.")
+        self._view.show_duplicate_folders(rows)
+
+    @Slot()
+    def _on_discovery_thread_finished(self) -> None:
+        self._discovery_thread = None
+        self._discovery_worker = None
+
+    def _start_lazy_session(self, runtime_override: dict[str, object] | None = None) -> None:
+        """Start disk-backed scanning and chunked publishing without prebuilding messages."""
+
+        folder_paths = self._store.get_folder_paths()
+        if not folder_paths and not self._store.has_inflight_tasks():
+            if self._discovery_thread is not None:
+                try:
+                    if self._discovery_thread.isRunning():
+                        self._start_after_discovery = True
+                        self._log("하위 폴더 탐색 완료 후 전송을 자동 시작합니다.")
+                        return
+                except RuntimeError:
+                    pass
+            self._log("전송할 폴더가 없습니다.")
+            return
+
+        action, recipe_path, polling_interval, priority = self._view.current_runtime_settings()
+        restored_queue = ""
+        if runtime_override:
+            action = str(runtime_override.get("action") or action)
+            polling_interval = int(runtime_override.get("polling_interval") or polling_interval)
+            priority = int(runtime_override.get("priority") or 0)
+            restored_queue = str(runtime_override.get("result_queue") or "")
+        if not action:
+            self._log("Action 값이 비어 있습니다.")
+            return
+        if not recipe_path:
+            self._log("Recipe Path 값이 비어 있습니다.")
+            return
+        try:
+            queue_name = restored_queue or self._ensure_resolved_result_queue()
+        except RuntimeError as exc:
+            self._view.set_connection_status(False, "결과 큐 결정 실패")
+            self._log(f"결과 큐 이름 결정 실패: {exc}")
+            return
+
+        self._reset_publish_schedule_state()
+        self._lazy_action = action
+        self._lazy_priority = priority
+        self._active_timeout_seconds = self._config.publish.timeout_seconds
+        self._pending_polling_interval = polling_interval
+        self._active_result_queue = queue_name
+        self._store.save_runtime_settings(  # type: ignore[attr-defined]
+            action,
+            queue_name,
+            priority,
+            polling_interval,
+        )
+        self._publish_exchange, self._publish_routing_key = resolve_publish_route(self._config.rabbitmq)
+        self._preflight_confirmed = self._store.has_inflight_tasks()
+        self._active = True
+        self._publish_finished = True
+        self._view.set_active_result_queue(queue_name)
+        self._view.set_running_state(True)
+        self._set_runtime_options_locked(True)
+
+        if self._store.has_inflight_tasks() and not self._is_poll_worker_running():
+            self._start_polling_worker(
+                queue_name=queue_name,
+                polling_interval=polling_interval,
+                tracked_request_ids=None,
+            )
+
+        self._log(
+            f"전체 작업 집계 시작 - 최대 동시 스캔 {self._max_active_open_folders}개, "
+            f"메모리 적재 없이 SQLite에 청크 저장"
+        )
+        self._inventory_preparing = True
+        self._continue_lazy_inventory()
+
+    @Slot()
+    def _resume_persisted_lazy_session(self) -> None:
+        """Automatically continue a disk-backed session restored at application startup."""
+
+        if self._active or not self._store.should_auto_resume():  # type: ignore[attr-defined]
+            return
+        self._log("미완료 대용량 세션을 복구하여 자동으로 재개합니다.")
+        self._start_lazy_session(self._store.get_runtime_settings())  # type: ignore[attr-defined]
+
+    @Slot()
+    def _offer_paused_session_resume(self) -> None:
+        """Ask before resuming a session explicitly paused by the user."""
+
+        if not self._store.is_paused_by_user():  # type: ignore[attr-defined]
+            return
+        pending_count = self._store.paused_work_count()  # type: ignore[attr-defined]
+        if self._view.confirm_resume_paused(pending_count):
+            self._store.resume_by_user()  # type: ignore[attr-defined]
+            self._view.set_paused_state(False)
+            self._log("중지된 작업 재개를 사용자가 확인했습니다.")
+            self._resume_persisted_lazy_session()
+            return
+        self._view.set_paused_state(True)
+        self._log("중지된 작업을 재개하지 않고 일시정지 상태로 유지합니다.")
+
+    def _open_next_lazy_folders(self, count: int) -> None:
+        """Activate the next already-inventoried folders in display order."""
+
+        if count <= 0:
+            return
+        candidates = self._store.get_active_candidate_folder_paths()  # type: ignore[attr-defined]
+        opened = 0
+        for folder_path in candidates:
+            if opened >= count:
+                break
+            if folder_path in self._opened_folder_paths:
+                continue
+            summary = self._store.get_folder_summary(folder_path)
+            if summary is None or summary.status.is_done or summary.total <= 0:
+                continue
+            self._opened_folder_paths.add(folder_path)
+            self._active_folder_paths.add(folder_path)
+            opened += 1
+
+    def _continue_lazy_inventory(self) -> None:
+        """Scan every waiting folder with bounded concurrency before publishing."""
+
+        if not self._inventory_preparing or not self._active:
+            return
+
+        while True:
+            waiting = self._store.get_waiting_folder_paths()  # type: ignore[attr-defined]
+            available = max(0, self._max_active_open_folders - len(self._scan_threads))
+            if not waiting or available <= 0:
+                break
+
+            launched_async = False
+            reused_inventory = False
+            active_sources = {
+                self._store.get_folder_source_path(path)  # type: ignore[attr-defined]
+                for path in self._scan_threads
+            }
+            for folder_path in waiting:
+                if available <= 0:
+                    break
+                source_path = self._store.get_folder_source_path(folder_path)  # type: ignore[attr-defined]
+                if source_path in active_sources:
+                    continue
+                if self._store.populate_folder_from_scanned_sibling(folder_path):  # type: ignore[attr-defined]
+                    reused_inventory = True
+                    continue
+                self._store.set_folder_scan_state(folder_path, "SCANNING")  # type: ignore[attr-defined]
+                self._start_scan_worker(folder_path)
+                if folder_path in self._scan_threads:
+                    launched_async = True
+                    active_sources.add(source_path)
+                    available -= 1
+                else:
+                    reused_inventory = True
+            if launched_async:
+                break
+            if reused_inventory:
+                continue
+            break
+
+        if self._store.get_waiting_folder_paths() or self._scan_threads:  # type: ignore[attr-defined]
+            return
+
+        self._inventory_preparing = False
+        self._planned_publish_total = int(self._store.overall_stats()["total"] or 0)
+        if not self._preflight_confirmed:
+            broker_connected, worker_count, queued_message_count = self._check_broker_for_preflight()
+            report = self._store.build_preflight_report(  # type: ignore[attr-defined]
+                broker_connected=broker_connected,
+                request_queue=self._config.rabbitmq.request_queue,
+                priority=self._lazy_priority,
+                initial_open_folders=self._max_initial_open_folders,
+                max_active_open_folders=self._max_active_open_folders,
+                warning_threshold=self._config.publish.preflight_warning_task_threshold,
+                worker_count=worker_count,
+                queued_message_count=queued_message_count,
+            )
+            if not self._view.confirm_preflight(report):
+                self._stop_workers("사전 점검에서 전송 시작을 취소했습니다.")
+                self._store.pause_by_user()  # type: ignore[attr-defined]
+                self._view.set_paused_state(True)
+                self._set_runtime_options_locked(True)
+                return
+            self._preflight_confirmed = True
+        self._open_next_lazy_folders(self._max_initial_open_folders)
+        self._log(
+            f"전체 작업 집계 완료 - 총 {self._planned_publish_total}건, "
+            f"화면 폴더 순서대로 전송 시작"
+        )
+        self._log(
+            f"대용량 전송 - Chunk {self._config.publish.publish_chunk_size}건, "
+            f"queue 상한 {self._config.publish.fallback_max_queued_messages}건"
+        )
+        self._maybe_dispatch_lazy()
+
+    def _start_scan_worker(self, folder_path: str) -> None:
+        if folder_path in self._scan_threads:
+            return
+        source_path = self._store.get_folder_source_path(folder_path)  # type: ignore[attr-defined]
+        if not source_path:
+            self._on_scan_failed(folder_path, "원본 폴더 경로를 찾을 수 없습니다.")
+            return
+        thread = QThread(self)
+        worker = ScanWorker(
+            scanner=self._scanner,
+            folder_path=source_path,
+            insert_batch=self._store.insert_task_batch,  # type: ignore[attr-defined]
+            batch_size=min(1000, max(500, int(self._config.publish.publish_chunk_size))),
+            queue_key=folder_path,
+        )
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.batch_inserted.connect(self._on_scan_batch_inserted)
+        worker.scan_completed.connect(self._on_scan_completed)
+        worker.scan_stopped.connect(self._on_scan_stopped)
+        worker.scan_failed.connect(self._on_scan_failed)
+        worker.access_issues_found.connect(self._on_scan_access_issues)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(
+            lambda path=folder_path, finished_thread=thread: self._on_scan_thread_finished(
+                path, finished_thread
+            )
+        )
+        thread.finished.connect(thread.deleteLater)
+        self._scan_threads[folder_path] = thread
+        self._scan_workers[folder_path] = worker
+        thread.start()
+
+    @Slot(str, int, int)
+    def _on_scan_batch_inserted(self, folder_path: str, inserted: int, total_inserted: int) -> None:
+        _ = folder_path, inserted, total_inserted
+        self._planned_publish_total = int(self._store.overall_stats()["total"] or 0)
+        if not self._inventory_preparing:
+            self._maybe_dispatch_lazy()
+
+    @Slot(str, int)
+    def _on_scan_completed(self, folder_path: str, total_inserted: int) -> None:
+        summary = self._store.get_folder_summary(folder_path)
+        self._store.set_folder_scan_state(  # type: ignore[attr-defined]
+            folder_path,
+            "SCANNED" if total_inserted or (summary is not None and summary.total) else "EMPTY",
+        )
+        self._log(
+            f"폴더 분할 스캔 완료 - {self._folder_queue_label(folder_path)}: "
+            f"Task {total_inserted}건"
+        )
+        if not self._inventory_preparing:
+            self._maybe_dispatch_lazy()
+
+    @Slot(str, int)
+    def _on_scan_access_issues(self, folder_path: str, inaccessible_count: int) -> None:
+        self._store.set_folder_inaccessible_count(folder_path, inaccessible_count)  # type: ignore[attr-defined]
+        if inaccessible_count:
+            self._log(
+                f"접근할 수 없어 제외한 이미지 - {self._folder_queue_label(folder_path)}: "
+                f"{inaccessible_count}건"
+            )
+
+    @Slot(str, int)
+    def _on_scan_stopped(self, folder_path: str, total_inserted: int) -> None:
+        self._store.set_folder_scan_state(folder_path, "WAITING")  # type: ignore[attr-defined]
+        self._active_folder_paths.discard(folder_path)
+        self._log(
+            f"폴더 스캔 중지 - {self._folder_queue_label(folder_path)}: "
+            f"이번 실행에서 Task {total_inserted}건 저장"
+        )
+
+    @Slot(str, str)
+    def _on_scan_failed(self, folder_path: str, error: str) -> None:
+        self._store.set_folder_scan_state(folder_path, "ERROR")  # type: ignore[attr-defined]
+        self._active_folder_paths.discard(folder_path)
+        self._log(f"폴더 스캔 실패 - {self._folder_queue_label(folder_path)}: {error}")
+        if not self._inventory_preparing:
+            self._open_next_lazy_folders(self._available_open_slots())
+
+    def _on_scan_thread_finished(
+        self,
+        folder_path: str,
+        finished_thread: QThread | None = None,
+    ) -> None:
+        current_thread = self._scan_threads.get(folder_path)
+        if finished_thread is not None and current_thread is not finished_thread:
+            return
+        self._scan_threads.pop(folder_path, None)
+        self._scan_workers.pop(folder_path, None)
+        if self._inventory_preparing:
+            self._continue_lazy_inventory()
+
+    def _reconcile_finished_scan_threads(self) -> None:
+        """Recover inventory slots if a Qt thread-finished callback was missed."""
+
+        if not self._lazy_mode or not self._active or not self._inventory_preparing:
+            return
+        stale_paths: list[str] = []
+        for folder_path, thread in list(self._scan_threads.items()):
+            try:
+                running = thread.isRunning()
+            except RuntimeError:
+                running = False
+            if running:
+                continue
+            if self._scan_threads.get(folder_path) is thread:
+                self._scan_threads.pop(folder_path, None)
+                self._scan_workers.pop(folder_path, None)
+                stale_paths.append(folder_path)
+        if stale_paths:
+            self._log(
+                f"종료된 스캔 슬롯 {len(stale_paths)}개를 자동 복구하여 다음 폴더를 계속합니다."
+            )
+            self._continue_lazy_inventory()
+
+    def _folder_queue_label(self, folder_path: str) -> str:
+        """Return a user-facing physical path and Recipe label for a queue key."""
+
+        summary = self._store.get_folder_summary(folder_path)
+        if summary is None:
+            return folder_path
+        source_path = summary.source_path or summary.folder_path
+        recipe_label = ", ".join(summary.recipe_aliases)
+        return f"{source_path} [{recipe_label}]" if recipe_label else source_path
+
+    def _lazy_queue_high_watermark(self) -> int:
+        fallback = max(1, int(self._config.publish.fallback_max_queued_messages))
+        chunk_size = max(1, int(self._config.publish.publish_chunk_size))
+        if self._last_worker_count is None:
+            return fallback
+        if self._last_worker_count <= 0:
+            return min(fallback, chunk_size)
+        return min(fallback, max(chunk_size, self._last_worker_count * chunk_size))
+
+    def _maybe_dispatch_lazy(self) -> None:
+        """Publish only one bounded chunk when scan and broker capacity allow it."""
+
+        if (
+            not self._lazy_mode
+            or not self._active
+            or self._inventory_preparing
+            or self._is_publish_worker_running()
+        ):
+            return
+        freed_slots = self._refresh_lazy_active_folders()
+        if freed_slots:
+            self._open_next_lazy_folders(freed_slots)
+        self._maybe_expand_lazy_folders()
+        high_watermark = self._lazy_queue_high_watermark()
+        queued = self._last_queue_message_count
+        outstanding = self._store.inflight_count()  # type: ignore[attr-defined]
+        pressure = max(queued or 0, outstanding)
+        if pressure >= high_watermark:
+            return
+
+        capacity = max(1, int(self._config.publish.publish_chunk_size))
+        capacity = min(capacity, max(0, high_watermark - pressure))
+        if capacity <= 0:
+            return
+
+        active_folders = list(self._active_folder_paths)
+        messages = self._store.claim_pending_messages(  # type: ignore[attr-defined]
+            active_folders,
+            self._lazy_action,
+            self._active_result_queue or self._ensure_resolved_result_queue(),
+            self._lazy_priority,
+            capacity,
+        )
+        if messages:
+            self._publish_finished = False
+            self._start_publish_worker(
+                messages,
+                self._publish_exchange,
+                self._publish_routing_key,
+            )
+            return
+
+        if self._scan_threads:
+            return
+        if self._store.has_pending_tasks() or self._store.has_inflight_tasks():
+            if (
+                not self._store.has_inflight_tasks()
+                and not self._store.has_dispatchable_pending_tasks()  # type: ignore[attr-defined]
+                and self._store.held_pending_count() > 0  # type: ignore[attr-defined]
+            ):
+                self._active = False
+                self._publish_finished = True
+                self._view.set_running_state(False)
+                self._store.pause_by_user()  # type: ignore[attr-defined]
+                self._view.set_paused_state(True)
+                self._set_runtime_options_locked(True)
+                if self._is_poll_worker_running():
+                    self._stop_polling_only("보류 작업만 남아 결과 polling을 종료합니다.")
+                self._log("전송 가능한 작업이 없고 남은 폴더가 모두 보류 상태입니다.")
+            return
+        if self._store.get_waiting_folder_paths():  # type: ignore[attr-defined]
+            return
+
+        self._publish_finished = True
+        if self._is_poll_worker_running():
+            self._stop_polling_only("모든 대용량 작업이 완료되어 polling을 종료합니다.")
+        else:
+            self._active = False
+            self._view.set_running_state(False)
+            self._store.complete_session()  # type: ignore[attr-defined]
+            self._store.prune_history(self._config.publish.history_max_sessions)  # type: ignore[attr-defined]
+            self._set_runtime_options_locked(False)
+            self._log("모든 대용량 작업이 완료되었습니다.")
+
+    def _refresh_lazy_active_folders(self) -> int:
+        before = len(self._active_folder_paths)
+        for folder_path in list(self._active_folder_paths):
+            scan_state = self._store.folder_scan_state(folder_path)  # type: ignore[attr-defined]
+            summary = self._store.get_folder_summary(folder_path)
+            if scan_state in {"EMPTY", "ERROR"} or (
+                scan_state == "SCANNED" and summary is not None and summary.status.is_done
+            ):
+                self._active_folder_paths.discard(folder_path)
+        return min(
+            before - len(self._active_folder_paths),
+            self._available_open_slots(),
+        )
+
+    def _maybe_expand_lazy_folders(self) -> None:
+        if len(self._active_folder_paths) >= self._max_active_open_folders:
+            return
+        unopened = [
+            path
+            for path in self._store.get_active_candidate_folder_paths()  # type: ignore[attr-defined]
+            if path not in self._opened_folder_paths
+        ]
+        if not unopened:
+            return
+        if any(
+            (summary := self._store.get_folder_summary(folder_path)) is not None
+            and summary.progress >= self._next_open_threshold
+            for folder_path in self._active_folder_paths
+        ):
+            self._open_next_lazy_folders(1)
+
+    def _current_recipe_selections(self) -> list[tuple[str, str]]:
+        """Return the view's current recipe selection as an immutable snapshot."""
+
+        selection_reader = getattr(self._view, "current_recipe_selections", None)
+        if callable(selection_reader):
+            selections = selection_reader()
+        else:
+            _, recipe_path, _, _ = self._view.current_runtime_settings()
+            selections = [(recipe_path, recipe_path)] if recipe_path else []
+
+        normalized: list[tuple[str, str]] = []
+        seen_paths: set[str] = set()
+        for alias, path in selections:
+            normalized_alias = str(alias or "").strip()
+            normalized_path = str(path or "").strip()
+            if not normalized_path or normalized_path in seen_paths:
+                continue
+            seen_paths.add(normalized_path)
+            normalized.append((normalized_alias or normalized_path, normalized_path))
+        return normalized
 
     def _scan_selected_folder_map(
         self,
@@ -941,6 +1831,7 @@ class TaskController(QObject):
     def _reset_publish_schedule_state(self) -> None:
         """Reset folder-based dispatch scheduling state."""
 
+        self._inventory_preparing = False
         self._folder_message_batches = []
         self._next_folder_batch_index = 0
         self._opened_folder_paths.clear()
@@ -948,6 +1839,11 @@ class TaskController(QObject):
         self._scheduled_request_ids.clear()
         self._planned_publish_total = 0
         self._published_count = 0
+        self._last_publish_progress_log_at = 0.0
+        self._last_publish_progress_count = 0
+        self._result_applied_count = 0
+        self._last_result_progress_log_at = 0.0
+        self._last_result_progress_count = 0
         self._publish_exchange = ""
         self._publish_routing_key = ""
         self._last_dispatch_skip_reason = None

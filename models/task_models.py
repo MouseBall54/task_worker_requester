@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime
 from enum import StrEnum
 from typing import Any
+
+from utils.time_utils import now_seoul
 
 
 class TaskStatus(StrEnum):
     """Possible states for an image task lifecycle."""
 
     PENDING = "PENDING"
+    CLAIMED = "CLAIMED"
     SENT = "SENT"
     RUNNING = "RUNNING"
     SUCCESS = "SUCCESS"
@@ -80,8 +83,10 @@ class ImageTask:
     request_id: str
     image_path: str
     folder_path: str
+    recipe_alias: str = ""
+    recipe_path: str = ""
     status: TaskStatus = TaskStatus.PENDING
-    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = field(default_factory=now_seoul)
     sent_at: datetime | None = None
     completed_at: datetime | None = None
     result: list[str] = field(default_factory=list)
@@ -106,6 +111,39 @@ class FolderSummary:
     error: int
     progress: float
     status: TaskStatus
+    recipe_aliases: tuple[str, ...] = ()
+    stage_label: str = ""
+    held: bool = False
+    queue_priority: int = 0
+    source_path: str = ""
+
+
+@dataclass(slots=True)
+class RunHistorySummary:
+    """Compact aggregate for one persisted execution session."""
+
+    session_id: str
+    state: str
+    created_at: str
+    ended_at: str | None
+    folder_count: int
+    recipe_count: int
+    total: int
+    success: int
+    fail: int
+    timeout: int
+    error: int
+    cancelled: int
+    avg_processing_seconds: float | None = None
+    error_types: tuple[str, ...] = ()
+
+    @property
+    def completed(self) -> int:
+        return self.success + self.fail + self.timeout + self.error + self.cancelled
+
+    @property
+    def success_rate(self) -> float:
+        return (self.success / self.total * 100.0) if self.total else 0.0
 
 
 @dataclass(slots=True)
@@ -140,6 +178,13 @@ class FolderTaskGroup:
             status = TaskStatus.PENDING
 
         progress = (completed / total * 100.0) if total else 0.0
+        recipe_aliases = tuple(
+            dict.fromkeys(
+                (task.recipe_alias or task.recipe_path)
+                for task in tasks
+                if task.recipe_alias or task.recipe_path
+            )
+        )
 
         return FolderSummary(
             folder_path=self.folder_path,
@@ -151,4 +196,5 @@ class FolderTaskGroup:
             error=error,
             progress=progress,
             status=status,
+            recipe_aliases=recipe_aliases,
         )

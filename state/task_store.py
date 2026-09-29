@@ -18,6 +18,8 @@ from models.task_models import (
 )
 from services.broker.result_queue import resolve_result_queue_name
 from services.broker.routing import resolve_publish_route
+from utils.time_utils import format_seoul_iso, now_seoul, parse_datetime, to_seoul
+from utils.image_sort import image_path_sort_key
 from utils.qt_compat import QObject, Signal
 
 
@@ -27,6 +29,7 @@ class TaskStore(QObject):
     folder_group_added = Signal(str)
     folder_group_updated = Signal(str)
     folder_group_removed = Signal(str)
+    duplicate_folders_detected = Signal(list)
     task_updated = Signal(str)
     store_reset = Signal()
     overall_updated = Signal(dict)
@@ -37,7 +40,7 @@ class TaskStore(QObject):
         self._groups: dict[str, FolderTaskGroup] = {}
         self._folder_order: list[str] = []
         self._processed_request_ids: set[str] = set()
-        self._folder_image_index: dict[str, set[str]] = {}
+        self._folder_image_index: dict[str, set[tuple[str, str]]] = {}
 
     def reset(self) -> None:
         """Clear every runtime state item."""
@@ -50,14 +53,22 @@ class TaskStore(QObject):
         self.store_reset.emit()
         self._emit_overall()
 
-    def register_folder_map(self, folder_map: dict[str, list[str]]) -> tuple[int, int]:
-        """Register image tasks grouped by folder.
+    def register_folder_map(
+        self,
+        folder_map: dict[str, list[str]],
+        recipe_selections: list[tuple[str, str]] | None = None,
+    ) -> tuple[int, int]:
+        """Register image-by-recipe tasks grouped by folder.
 
         Returns
         -------
         tuple[int, int]
             Added folder count, added image count.
         """
+
+        selections = self._normalize_recipe_selections(recipe_selections)
+        if not selections:
+            return 0, 0
 
         added_folders = 0
         added_images = 0
@@ -75,24 +86,32 @@ class TaskStore(QObject):
 
             group = self._groups[folder_path]
             index = self._folder_image_index[folder_path]
+            folder_added_images = 0
 
             for image_path in image_paths:
-                if image_path in index:
-                    continue
+                for recipe_alias, recipe_path in selections:
+                    task_key = (image_path, recipe_path)
+                    if task_key in index:
+                        continue
 
-                request_id = str(uuid4())
-                task = ImageTask(
-                    request_id=request_id,
-                    image_path=image_path,
-                    folder_path=folder_path,
-                )
-                self._tasks[request_id] = task
-                group.task_ids.append(request_id)
-                index.add(image_path)
-                added_images += 1
-                self.task_updated.emit(request_id)
+                    request_id = str(uuid4())
+                    task = ImageTask(
+                        request_id=request_id,
+                        image_path=image_path,
+                        folder_path=folder_path,
+                        recipe_alias=recipe_alias,
+                        recipe_path=recipe_path,
+                    )
+                    self._tasks[request_id] = task
+                    group.task_ids.append(request_id)
+                    index.add(task_key)
+                    added_images += 1
+                    folder_added_images += 1
+                    self.task_updated.emit(request_id)
 
             self.folder_group_updated.emit(folder_path)
+            if not folder_added_images and folder_path in self._groups:
+                self.duplicate_folders_detected.emit([folder_path])
 
         if added_folders or added_images:
             self._emit_overall()
@@ -117,7 +136,7 @@ class TaskStore(QObject):
                     request_id=task.request_id,
                     action=action,
                     QUEUE_NAME=result_queue_name,
-                    RECIPE_PATH=recipe_path,
+                    RECIPE_PATH=task.recipe_path or recipe_path,
                     IMG_LIST=[task.image_path],
                     priority=priority,
                 )
@@ -149,7 +168,7 @@ class TaskStore(QObject):
                         request_id=task.request_id,
                         action=action,
                         QUEUE_NAME=result_queue_name,
-                        RECIPE_PATH=recipe_path,
+                        RECIPE_PATH=task.recipe_path or recipe_path,
                         IMG_LIST=[task.image_path],
                         priority=priority,
                     )
@@ -194,7 +213,7 @@ class TaskStore(QObject):
                         request_id=task.request_id,
                         action=action,
                         QUEUE_NAME=result_queue_name,
-                        RECIPE_PATH=recipe_path,
+                        RECIPE_PATH=task.recipe_path or recipe_path,
                         IMG_LIST=[task.image_path],
                         priority=priority,
                     )
@@ -269,7 +288,7 @@ class TaskStore(QObject):
         if not task or task.status != TaskStatus.PENDING:
             return
         task.status = TaskStatus.SENT
-        task.sent_at = datetime.now(timezone.utc)
+        task.sent_at = now_seoul()
         self.task_updated.emit(request_id)
         self.folder_group_updated.emit(task.folder_path)
         self._emit_overall()
@@ -363,7 +382,7 @@ class TaskStore(QObject):
 
         task.status = TaskStatus.ERROR
         task.error_message = message
-        task.completed_at = datetime.now(timezone.utc)
+        task.completed_at = now_seoul()
         self.task_updated.emit(request_id)
         self.folder_group_updated.emit(task.folder_path)
         self._emit_overall()
@@ -407,7 +426,7 @@ class TaskStore(QObject):
     def mark_timeouts(self, timeout_seconds: int) -> list[str]:
         """Mark non-terminal sent tasks as timeout after threshold."""
 
-        now = datetime.now(timezone.utc)
+        now = now_seoul()
         timed_out_request_ids: list[str] = []
 
         for task in self._tasks.values():
@@ -453,7 +472,13 @@ class TaskStore(QObject):
             return []
 
         tasks = [self._tasks[task_id] for task_id in group.task_ids if task_id in self._tasks]
-        return sorted(tasks, key=lambda task: task.image_path.lower())
+        return sorted(
+            tasks,
+            key=lambda task: (
+                image_path_sort_key(task.image_path),
+                (task.recipe_alias or task.recipe_path).casefold(),
+            ),
+        )
 
     def get_task(self, request_id: str) -> ImageTask | None:
         """Return task by request ID."""
@@ -488,7 +513,11 @@ class TaskStore(QObject):
         else:
             predicted_queue = rabbitmq.result_queue_base
         resolved_action = (runtime_action or "").strip() or app_config.publish.default_action
-        resolved_recipe_path = (runtime_recipe_path or "").strip() or app_config.recipe_config.default_path
+        resolved_recipe_path = (
+            task.recipe_path.strip()
+            or (runtime_recipe_path or "").strip()
+            or app_config.recipe_config.default_path
+        )
         resolved_priority = self._normalize_priority(
             runtime_priority if runtime_priority is not None else app_config.publish.default_priority
         )
@@ -555,6 +584,30 @@ class TaskStore(QObject):
 
         return list(self._folder_order)
 
+    @staticmethod
+    def _normalize_recipe_selections(
+        recipe_selections: list[tuple[str, str]] | None,
+    ) -> list[tuple[str, str]]:
+        """Return stable, path-deduplicated recipe snapshots.
+
+        ``None`` preserves the legacy registration API for callers that supply
+        the fallback recipe later while building messages.
+        """
+
+        if recipe_selections is None:
+            return [("", "")]
+
+        normalized: list[tuple[str, str]] = []
+        seen_paths: set[str] = set()
+        for alias, path in recipe_selections:
+            normalized_alias = str(alias or "").strip()
+            normalized_path = str(path or "").strip()
+            if not normalized_path or normalized_path in seen_paths:
+                continue
+            seen_paths.add(normalized_path)
+            normalized.append((normalized_alias or normalized_path, normalized_path))
+        return normalized
+
     def get_known_request_ids(self) -> set[str]:
         """Return every request_id currently tracked in this runtime store."""
 
@@ -589,7 +642,7 @@ class TaskStore(QObject):
         progress = (completed / total * 100.0) if total else 0.0
 
         first_sent_at: datetime | None = None
-        now_utc = datetime.now(timezone.utc)
+        now_utc = now_seoul().astimezone(timezone.utc)
 
         for task in self._tasks.values():
             sent_at = self._to_utc_datetime(task.sent_at)
@@ -635,24 +688,18 @@ class TaskStore(QObject):
         """Parse completed timestamp from message or fallback to now."""
 
         if not raw_completed_at:
-            return datetime.now(timezone.utc)
+            return now_seoul()
         try:
-            parsed = datetime.fromisoformat(raw_completed_at)
-            normalized = TaskStore._to_utc_datetime(parsed)
-            if normalized is not None:
-                return normalized
-            return datetime.now(timezone.utc)
+            parsed = parse_datetime(raw_completed_at)
+            return to_seoul(parsed) if parsed is not None else now_seoul()
         except ValueError:
-            return datetime.now(timezone.utc)
+            return now_seoul()
 
     @staticmethod
     def _datetime_to_str(value: datetime | None) -> str:
         """Format datetime for preview output."""
 
-        normalized = TaskStore._to_utc_datetime(value)
-        if normalized is None:
-            return ""
-        return normalized.astimezone().isoformat()
+        return format_seoul_iso(value) if value is not None else ""
 
     @staticmethod
     def _to_utc_datetime(value: datetime | None) -> datetime | None:

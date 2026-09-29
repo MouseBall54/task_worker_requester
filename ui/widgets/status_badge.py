@@ -26,6 +26,13 @@ class StatusBadgeDelegate(QStyledItemDelegate):
         "TIMEOUT": ("#9A3412", "#FFEDD5"),
         "ERROR": ("#7F1D1D", "#FECACA"),
         "CANCELLED": ("#374151", "#E5E7EB"),
+        "스캔 대기": ("#475569", "#E2E8F0"),
+        "스캔 중": ("#1E40AF", "#DBEAFE"),
+        "전송 대기": ("#4B5563", "#F1F5F9"),
+        "처리 중": ("#1D4ED8", "#DBEAFE"),
+        "완료": ("#166534", "#DCFCE7"),
+        "이미지 없음": ("#57534E", "#E7E5E4"),
+        "스캔 오류": ("#7F1D1D", "#FECACA"),
     }
 
     def sizeHint(self, option, index) -> QSize:  # type: ignore[override]

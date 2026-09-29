@@ -1,13 +1,14 @@
 /* Brighter operator style for RabbitMQ task tracker */
 QWidget {
-    background-color: #1a2335;
+    background-color: transparent;
     color: #edf4fb;
     font-family: "Segoe UI Variable Text", "Segoe UI", "Malgun Gothic", "Noto Sans KR";
     font-size: 13px;
 }
 
-QMainWindow {
-    background-color: #162033;
+QMainWindow,
+QWidget#appRoot {
+    background-color: #111827;
 }
 
 QMenuBar {
@@ -44,15 +45,14 @@ QMenu::item:selected {
 
 QFrame#leftPanel,
 QGroupBox {
-    background-color: #202b3d;
-    border: 1px solid #34445f;
-    border-radius: 10px;
+    background-color: #1b2639;
+    border: 1px solid #33445f;
+    border-radius: 12px;
 }
 
 QFrame#statusSidebar {
-    background-color: #202b3d;
-    border: 1px solid #34445f;
-    border-radius: 10px;
+    background-color: transparent;
+    border: none;
 }
 
 QGroupBox {
@@ -85,14 +85,23 @@ QLabel#subPanelTitle {
 QLabel#connectionStatus {
     border-radius: 8px;
     padding: 8px 11px;
-    background-color: #2f435f;
+    background-color: #26364d;
     color: #edf4fb;
 }
 
-QLabel#queueMetricsLabel {
+QPushButton#queueMetricsButton {
     color: #d8e3ef;
     font-size: 12px;
     padding-left: 2px;
+    text-align: left;
+    background-color: transparent;
+    border: none;
+    border-radius: 4px;
+}
+
+QPushButton#queueMetricsButton:hover {
+    color: #93c5fd;
+    background-color: rgba(37, 99, 235, 0.12);
 }
 
 QLabel#connectionStatus[state="connected"] {
@@ -135,12 +144,30 @@ QPlainTextEdit,
 QTreeView,
 QListWidget,
 QTextBrowser {
-    background-color: #182236;
-    border: 1px solid #334155;
+    background-color: #111b2d;
+    border: 1px solid #3a4b66;
     border-radius: 8px;
     padding: 7px;
     selection-background-color: #2563eb;
     selection-color: #eff6ff;
+}
+
+QLineEdit:focus,
+QComboBox:focus,
+QTextEdit:focus,
+QPlainTextEdit:focus,
+QTreeView:focus,
+QTableView:focus {
+    border-color: #60a5fa;
+}
+
+QComboBox QAbstractItemView {
+    background-color: #111b2d;
+    border: 1px solid #3a4b66;
+    selection-background-color: #2f5f9e;
+    selection-color: #eff6ff;
+    outline: none;
+    padding: 4px;
 }
 
 QListWidget#helpTopicList::item {
@@ -158,6 +185,39 @@ QListWidget#helpTopicList::item:selected {
     color: #eff6ff;
 }
 
+QListWidget#favoriteRootList,
+QListWidget#folderSearchResults {
+    background-color: #111b2d;
+    border: 1px solid #3a4b66;
+    border-radius: 8px;
+    padding: 3px;
+}
+
+QListWidget#favoriteRootList::item,
+QListWidget#folderSearchResults::item {
+    height: 26px;
+    margin: 1px 2px;
+    padding: 0 8px;
+    border-radius: 6px;
+}
+
+QListWidget#favoriteRootList::item:hover,
+QListWidget#folderSearchResults::item:hover {
+    background-color: #29476b;
+}
+
+QListWidget#favoriteRootList::item:selected,
+QListWidget#folderSearchResults::item:selected {
+    background-color: #2f5f9e;
+    color: #eff6ff;
+}
+
+QLabel#folderSearchStatus {
+    color: #a9bad0;
+    font-size: 11px;
+    padding: 1px 3px;
+}
+
 QLabel#helpMatchLabel {
     color: #d8e3ef;
     background-color: #1d2a3f;
@@ -167,10 +227,10 @@ QLabel#helpMatchLabel {
 }
 
 QTreeView#folderTree {
-    background-color: #1d2c43;
-    border: 1px solid #3d5878;
+    background-color: #111b2d;
+    border: 1px solid #3a4b66;
     border-radius: 10px;
-    alternate-background-color: #243754;
+    alternate-background-color: #17243a;
     padding: 4px 3px;
 }
 
@@ -210,6 +270,184 @@ QToolButton#statusSidebarToggle {
     min-height: 30px;
 }
 
+QDialog#appConfigSettingsDialog,
+QDialog#recipeConfigSettingsDialog,
+QDialog#workerStatusDialog {
+    background-color: #111827;
+    color: #edf4fb;
+}
+
+QLabel#workerStatusHeader {
+    color: #7dd3fc;
+    font-size: 14px;
+    font-weight: 600;
+}
+
+QLabel#workerStatusFooter {
+    color: #a9bad0;
+}
+
+QTableWidget#workerNodeTable QLineEdit {
+    background-color: #0f1a2b;
+    color: #ffffff;
+    border: 2px solid #60a5fa;
+    border-radius: 3px;
+    padding: 2px 6px;
+    min-height: 24px;
+    selection-background-color: #2563eb;
+    selection-color: #ffffff;
+}
+
+QTabWidget#settingsTabs::pane {
+    background-color: #111b2d;
+    border: 1px solid #3a4b66;
+    border-radius: 8px;
+    top: -1px;
+}
+
+QTabWidget#settingsTabs QTabBar::tab {
+    background-color: #1b2639;
+    color: #a9bad0;
+    border: 1px solid #3a4b66;
+    padding: 8px 18px;
+    min-width: 92px;
+}
+
+QTabWidget#settingsTabs QTabBar::tab:selected {
+    background-color: #2563eb;
+    color: #ffffff;
+}
+
+QTabWidget#settingsTabs QTabBar::tab:hover:!selected {
+    background-color: #29476b;
+    color: #edf4fb;
+}
+
+QWidget#settingsTabPage {
+    background-color: #111b2d;
+    color: #edf4fb;
+    border-radius: 7px;
+}
+
+QDialog#appConfigSettingsDialog QSpinBox,
+QDialog#appConfigSettingsDialog QDoubleSpinBox {
+    background-color: #111b2d;
+    color: #edf4fb;
+    border: 1px solid #3a4b66;
+    border-radius: 8px;
+    padding: 6px 8px;
+    min-height: 20px;
+    selection-background-color: #2563eb;
+    selection-color: #ffffff;
+}
+
+QDialog#appConfigSettingsDialog QSpinBox:focus,
+QDialog#appConfigSettingsDialog QDoubleSpinBox:focus {
+    border-color: #60a5fa;
+}
+
+QTableWidget#recipeSettingsTable QLineEdit {
+    background-color: #0f1a2b;
+    color: #ffffff;
+    border: 2px solid #60a5fa;
+    border-radius: 3px;
+    padding: 2px 7px;
+    min-height: 24px;
+    font-size: 13px;
+    selection-background-color: #2563eb;
+    selection-color: #ffffff;
+}
+
+QToolButton#recipeMultiButton {
+    background-color: #111b2d;
+    color: #edf4fb;
+    border: 1px solid #3a4b66;
+    border-radius: 8px;
+    padding: 7px 34px 7px 11px;
+    text-align: left;
+    font-weight: 500;
+}
+
+QToolButton#recipeMultiButton:hover,
+QToolButton#recipeMultiButton:checked {
+    background-color: #17243a;
+    border-color: #60a5fa;
+}
+
+QToolButton#recipeMultiButton:pressed {
+    background-color: #203652;
+}
+
+QToolButton#recipeMultiButton::menu-indicator {
+    subcontrol-origin: padding;
+    subcontrol-position: right center;
+    right: 10px;
+    width: 12px;
+    height: 12px;
+}
+
+QToolButton#recipeMultiButton:disabled {
+    background-color: #253044;
+    color: #8290a4;
+    border-color: #344054;
+}
+
+QMenu#recipeComboMenu {
+    min-width: 230px;
+    padding: 6px;
+}
+
+QMenu#recipeComboMenu::item {
+    padding: 8px 28px 8px 26px;
+}
+
+QMenu#recipeComboMenu::indicator {
+    width: 14px;
+    height: 14px;
+    left: 7px;
+}
+
+QLabel#recipePathsTitle {
+    color: #cbd5e1;
+    font-weight: 600;
+    padding-top: 2px;
+}
+
+QFrame#recipePathsPanel {
+    background-color: #121d30;
+    border: 1px solid #34445f;
+    border-radius: 8px;
+}
+
+QScrollArea#recipePathsScroll {
+    background-color: transparent;
+    border: none;
+}
+
+QScrollArea#recipePathsScroll > QWidget > QWidget {
+    background-color: transparent;
+}
+
+QFrame#recipePathRow {
+    background-color: #17243a;
+    border: 1px solid #293a54;
+    border-radius: 6px;
+}
+
+QLabel#recipePathAlias {
+    color: #dbeafe;
+    font-weight: 600;
+}
+
+QLabel#recipePathValue {
+    color: #aebed2;
+}
+
+QLabel#recipePathEmpty {
+    color: #8290a4;
+    padding: 8px;
+}
+
 QToolButton#statusSidebarToggle:hover {
     background-color: rgba(59, 130, 246, 0.24);
     border-color: rgba(125, 211, 252, 0.6);
@@ -221,8 +459,13 @@ QToolButton#statusSidebarToggle:checked {
     border-color: rgba(186, 230, 253, 0.78);
 }
 
+QPushButton#folderActionIconButton {
+    padding: 0;
+    border-radius: 7px;
+}
+
 QHeaderView::section {
-    background-color: #1b2538;
+    background-color: #172237;
     color: #dbeafe;
     border: 0;
     border-bottom: 1px solid #34445f;
@@ -231,13 +474,13 @@ QHeaderView::section {
 }
 
 QTableView {
-    background-color: #172033;
-    border: 1px solid #34445f;
+    background-color: #111b2d;
+    border: 1px solid #3a4b66;
     border-radius: 8px;
     selection-background-color: #2f5f9e;
     selection-color: #eff6ff;
     gridline-color: #2d3c55;
-    alternate-background-color: #1d2a3f;
+    alternate-background-color: #17243a;
     padding: 0px;
 }
 
@@ -246,9 +489,9 @@ QTableView::item {
 }
 
 QTabWidget#bottomTabs::pane {
-    border: 1px solid #34445f;
+    border: 1px solid #3a4b66;
     border-radius: 10px;
-    background-color: #172033;
+    background-color: #111b2d;
     top: -1px;
 }
 
@@ -276,10 +519,10 @@ QTabWidget#bottomTabs QTabBar::tab:hover:!selected {
 }
 
 QProgressBar {
-    border: 1px solid #34445f;
+    border: 1px solid #3a4b66;
     border-radius: 8px;
     text-align: center;
-    background-color: #172033;
+    background-color: #111b2d;
     color: #edf4fb;
 }
 

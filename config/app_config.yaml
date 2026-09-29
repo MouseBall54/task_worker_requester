@@ -40,17 +40,22 @@ publish:
   publish_retry_backoff_seconds: 1.5
   initial_open_folders: 2
   max_active_open_folders: 3
+  publish_chunk_size: 500
+  fallback_max_queued_messages: 2000
+  ui_refresh_interval_ms: 500
+  ui_log_max_lines: 5000
+  preflight_warning_task_threshold: 10000
+  history_max_sessions: 100
   image_extensions: [".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"]
   scan_mode: "direct"
 
 ui:
   app_name: "IPDK_plus"
-  window_width: 1480
-  window_height: 900
+  window_width: 1920
+  window_height: 1000
   theme: "dark"
   font_family: "Segoe UI"
 
 update:
   enabled: true
-  latest_release_url: "https://github.com/MouseBall54/task_worker_requester/releases/latest"
-  manifest_url: "https://github.com/MouseBall54/task_worker_requester/releases/latest/download/latest.json"
+  share_dir: '\\12.56.53.186\ssa_new\sw\ipdk_plus'
