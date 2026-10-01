@@ -84,7 +84,7 @@ uv run python main.py --config config/app_config.yaml
 - `update.share_dir`(NAS 폴더)에서 앱 시작 시와 `도움말 > 업데이트 확인` 때 더 높은 버전의 `IPDK_plusSetup_<버전>.exe`를 찾아 설치를 제안합니다.
 - 설치형 실행에서는 기본 편집 대상 설정 파일이 `%APPDATA%\IPDK_plus\app_config.yaml` 입니다.
 - 로그 파일은 `%APPDATA%\IPDK_plus\logs\app.log` 에 기록되며, 설치 폴더 아래에는 로그를 만들지 않습니다.
-- 앱 버전이 바뀌거나 번들 설정 fingerprint가 바뀌면 다음 앱 실행 때 새 기본 설정이 `%APPDATA%\IPDK_plus`에 반영됩니다. 기존 `app_config.yaml`, `recipe_config.yaml`은 같은 폴더에 `.bak.<timestamp>` 백업으로 남깁니다.
+- 앱 버전이 바뀌거나 번들 설정 fingerprint가 바뀌면 다음 앱 실행 때 새 기본 설정이 `%APPDATA%\IPDK_plus`에 반영됩니다. 기존 `app_config.yaml`, `recipe_config.yaml`, `worker_nodes.yaml`은 같은 폴더에 `.bak.<timestamp>` 백업으로 남깁니다.
 - 설치 제거(Uninstall)는 사용자 AppData 설정을 삭제하지 않습니다.
 
 ### Recipe 설정 분리

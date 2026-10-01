@@ -143,12 +143,12 @@ Avg Time/Image는 완료된 작업과 경과 시간을 바탕으로 계산되는
     ),
     HelpTopic(
         title="설정 파일",
-        keywords=("app_config.yaml", "recipe_config.yaml", "AppData", "seed", "fingerprint", "mock_mode", "update"),
+        keywords=("app_config.yaml", "recipe_config.yaml", "worker_nodes.yaml", "AppData", "seed", "fingerprint", "mock_mode", "update"),
         body="""앱 설정은 app_config.yaml과 recipe_config.yaml을 중심으로 관리됩니다. 상단 `설정` 메뉴의 `MQ 연결 설정`에서는 RabbitMQ 연결·queue 및 주요 전송/조회 값을 수정할 수 있고, `Recipe 설정`에서는 기본 alias와 Recipe alias/path 행을 추가·수정·삭제할 수 있습니다. 현재 실행에 사용된 값과 실제 저장 경로가 창에 표시되며, 저장 전 전체 설정 검증을 통과한 경우에만 파일이 교체됩니다.
 
 설정 탐색 우선순위는 CLI --config 경로, 호환용 positional config 경로, %APPDATA%\\IPDK_plus\\app_config.yaml, 설치 패키지 seed, 실행파일 옆 config, 개발 repo 기본값 순서입니다. 설치형 실행에서는 기본 편집 대상이 %APPDATA%\\IPDK_plus\\app_config.yaml입니다.
 
-첫 실행 시 AppData 설정이 없으면 번들된 app_config.yaml과 recipe_config.yaml seed를 복사합니다. 새 버전을 설치했거나 seed 내용이 바뀌어 fingerprint가 기존 .seed_fingerprint와 다르면 기존 AppData 설정은 .bak.<timestamp>로 백업되고 새 seed가 반영됩니다. 언인스톨은 AppData 설정을 삭제하지 않습니다.
+첫 실행 시 AppData 설정이 없으면 번들된 app_config.yaml, recipe_config.yaml, worker_nodes.yaml seed를 복사합니다. 새 버전을 설치했거나 seed 내용이 바뀌어 fingerprint가 기존 .seed_fingerprint와 다르면 기존 AppData 설정은 .bak.<timestamp>로 백업되고 새 seed가 반영됩니다. 언인스톨은 AppData 설정을 삭제하지 않습니다.
 
 mock_mode가 true이면 실제 RabbitMQ 대신 내부 mock broker를 사용합니다. 실제 worker 연동 검증에서는 false로 두고 rabbitmq 섹션을 맞춰야 합니다.
 

@@ -112,7 +112,7 @@ Python 이 전혀 설치되지 않은 PC에서도 Qt DLL 로딩 실패를 방지
 로그도 동일한 AppData 루트 아래에 기록되며, 설치 폴더(`Program Files` 등) 아래에 `logs` 디렉터리를 만들지 않습니다.
 
 앱은 마지막으로 적용한 seed fingerprint를 `%APPDATA%\IPDK_plus\.seed_fingerprint`에 저장합니다.
-fingerprint에는 앱 버전이 포함되므로 새 버전을 설치하면 항상, 같은 버전이라도 `app_config.yaml`, `recipe_config.yaml` 내용이 달라지면 다음 앱 실행 시 기존 파일은 `.bak.<timestamp>`로 백업되고 새 seed 템플릿으로 갱신됩니다.
+fingerprint에는 앱 버전이 포함되므로 새 버전을 설치하면 항상, 같은 버전이라도 `app_config.yaml`, `recipe_config.yaml`, `worker_nodes.yaml` 내용이 달라지면 다음 앱 실행 시 기존 파일은 `.bak.<timestamp>`로 백업되고 새 seed 템플릿으로 갱신됩니다.
 
 주의: 언인스톨 시 `%APPDATA%\IPDK_plus`는 삭제하지 않습니다.
 

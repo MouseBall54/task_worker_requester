@@ -155,7 +155,9 @@ def ensure_user_config_seeded() -> RuntimeConfigPaths:
     seed_worker_nodes_config_source = find_bundled_resource(
         Path("config") / WORKER_NODES_CONFIG_FILE_NAME
     )
-    seed_fingerprint = _calculate_seed_fingerprint(seed_config_source, seed_recipe_source)
+    seed_fingerprint = _calculate_seed_fingerprint(
+        seed_config_source, seed_recipe_source, seed_worker_nodes_config_source
+    )
     refresh_seed = _consume_seed_refresh_marker(appdata_dir) or (
         migrated_dir is None
         and _seed_fingerprint_changed(
@@ -172,6 +174,8 @@ def ensure_user_config_seeded() -> RuntimeConfigPaths:
         _replace_seeded_file_with_backup(user_config_path, seed_config_source)
         if seed_recipe_source is not None:
             _replace_seeded_file_with_backup(user_recipe_config_path, seed_recipe_source)
+        if seed_worker_nodes_config_source is not None:
+            _replace_seeded_file_with_backup(user_worker_nodes_config_path, seed_worker_nodes_config_source)
     elif not user_config_path.exists():
         if seed_config_source is None:
             raise RuntimePathError(
@@ -391,7 +395,11 @@ def _next_backup_path(target_path: Path) -> Path:
     raise RuntimePathError(f"설정 백업 파일 이름을 만들 수 없습니다: {target_path}")
 
 
-def _calculate_seed_fingerprint(seed_config_source: Path | None, seed_recipe_source: Path | None) -> str | None:
+def _calculate_seed_fingerprint(
+    seed_config_source: Path | None,
+    seed_recipe_source: Path | None,
+    seed_worker_nodes_config_source: Path | None,
+) -> str | None:
     """Calculate a fingerprint for bundled seed files; a new app version always changes it."""
 
     if seed_config_source is None:
@@ -401,6 +409,7 @@ def _calculate_seed_fingerprint(seed_config_source: Path | None, seed_recipe_sou
     for label, seed_path in (
         (CONFIG_FILE_NAME, seed_config_source),
         (RECIPE_CONFIG_FILE_NAME, seed_recipe_source),
+        (WORKER_NODES_CONFIG_FILE_NAME, seed_worker_nodes_config_source),
     ):
         digest.update(label.encode("utf-8"))
         digest.update(b"\0")

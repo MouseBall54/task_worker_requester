@@ -222,6 +222,7 @@ class RuntimePathsTest(unittest.TestCase):
             config_dir = base / "config"
             config_dir.mkdir(parents=True, exist_ok=True)
             (config_dir / "app_config.yaml").write_text("seed: true\n", encoding="utf-8")
+            (config_dir / "worker_nodes.yaml").write_text("nodes: []\n", encoding="utf-8")
 
             with (
                 patch.dict(os.environ, {"APPDATA": appdata_root}, clear=False),
@@ -231,12 +232,17 @@ class RuntimePathsTest(unittest.TestCase):
             ):
                 resolved = ensure_user_config_seeded()
                 resolved.user_config_path.write_text("user_changed: true\n", encoding="utf-8")
+                resolved.user_worker_nodes_config_path.write_text("nodes: [old]\n", encoding="utf-8")
 
                 with patch("app.runtime_paths.APP_VERSION", "99.0.0"):
                     ensure_user_config_seeded()
 
             self.assertEqual(resolved.user_config_path.read_text(encoding="utf-8"), "seed: true\n")
             self.assertTrue(list(resolved.appdata_dir.glob("app_config.yaml.bak.*")))
+            self.assertEqual(
+                resolved.user_worker_nodes_config_path.read_text(encoding="utf-8"), "nodes: []\n"
+            )
+            self.assertTrue(list(resolved.appdata_dir.glob("worker_nodes.yaml.bak.*")))
 
     def test_migrate_legacy_appdata_dir_copies_old_folder_when_new_one_is_empty(self) -> None:
         with TemporaryDirectory() as appdata_root:

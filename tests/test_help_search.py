@@ -14,7 +14,7 @@ class HelpSearchTest(unittest.TestCase):
     def test_search_matches_title_keyword_and_body(self) -> None:
         title_matches = find_help_matches(HELP_TOPICS, "프로그램 개요")
         keyword_matches = find_help_matches(HELP_TOPICS, "RabbitMQ")
-        body_matches = find_help_matches(HELP_TOPICS, "자동 다운로드")
+        body_matches = find_help_matches(HELP_TOPICS, "설치 여부를 묻고")
 
         self.assertTrue(any(match.field == "title" for match in title_matches))
         self.assertTrue(any(match.field.startswith("keyword:") for match in keyword_matches))
